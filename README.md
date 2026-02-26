@@ -44,7 +44,31 @@ Built for homelabbers, sysadmins, and small teams who want visibility without en
 
 ## Screenshots
 
-*Coming soon*
+<p align="center">
+  <img src="docs/screenshots/dashboard-light.jpg" alt="Dashboard — Light theme" width="280" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/dashboard-dark.jpg" alt="Dashboard — Dark theme" width="280" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/host-detail-dark.jpg" alt="Host detail view" width="280" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/activity-dark.jpg" alt="Activity log" width="280" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/schedules-dark.jpg" alt="Scheduled jobs" width="280" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/settings-dark.jpg" alt="Settings" width="280" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/add-host-dark.jpg" alt="Add host form" width="280" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/sidebar-dark.jpg" alt="Sidebar navigation" width="280" />
+</p>
+
+> Mobile views shown above. Desktop screenshots coming soon.
 
 ## Quick Start
 
