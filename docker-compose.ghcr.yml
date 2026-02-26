@@ -1,0 +1,41 @@
+# docker-compose.ghcr.yml — Pull pre-built images from GitHub Container Registry.
+# Usage:
+#   cp .env.example .env   # edit with your secrets
+#   docker compose -f docker-compose.ghcr.yml up -d
+#
+# To pin a specific version, replace :latest with :1.0.0
+
+services:
+  api:
+    image: ghcr.io/roydufek/patchdeck-api:latest
+    container_name: patchdeck-api
+    restart: unless-stopped
+    environment:
+      PATCHDECK_PORT: 6070
+      PATCHDECK_DB_PATH: /data/patchdeck.db
+      PATCHDECK_MASTER_KEY: ${PATCHDECK_MASTER_KEY}
+      PATCHDECK_JWT_SECRET: ${PATCHDECK_JWT_SECRET}
+      PATCHDECK_APPRISE_URL: ${PATCHDECK_APPRISE_URL:-}
+      PATCHDECK_APPRISE_TIMEOUT_SECONDS: ${PATCHDECK_APPRISE_TIMEOUT_SECONDS:-10}
+      PATCHDECK_APPRISE_BIN: ${PATCHDECK_APPRISE_BIN:-apprise}
+      PATCHDECK_SSH_TIMEOUT_SECONDS: ${PATCHDECK_SSH_TIMEOUT_SECONDS:-20}
+      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+    volumes:
+      - ./data:/data
+    networks:
+      - docknet
+
+  web:
+    image: ghcr.io/roydufek/patchdeck-web:latest
+    container_name: patchdeck-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "6070:80"
+    networks:
+      - docknet
+
+networks:
+  docknet:
+    external: true

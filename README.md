@@ -53,8 +53,16 @@ openssl rand -hex 32  # Use output for PATCHDECK_JWT_SECRET
 
 ### 2. Start
 
+**Option A: Build from source**
+
 ```bash
 docker compose up -d --build
+```
+
+**Option B: Pull pre-built images from GHCR** (no build required)
+
+```bash
+docker compose -f docker-compose.ghcr.yml up -d
 ```
 
 Patchdeck will be available at `http://localhost:6070`.
