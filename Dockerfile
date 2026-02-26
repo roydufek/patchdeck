@@ -20,10 +20,13 @@ RUN cd api && CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/patchdeck ./cmd/se
 # --- Final runtime image ---
 FROM python:3.12-alpine
 WORKDIR /app
+
+# su-exec for privilege drop; create default user (entrypoint adjusts UID/GID at runtime)
 RUN apk add --no-cache ca-certificates su-exec \
     && pip install --no-cache-dir apprise \
     && apprise --version \
-    && adduser -D -H -u 10001 patchdeck \
+    && addgroup -g 1000 patchdeck \
+    && adduser -D -H -u 1000 -G patchdeck patchdeck \
     && mkdir -p /data && chown patchdeck:patchdeck /data
 
 COPY --from=api-build /out/patchdeck /app/patchdeck

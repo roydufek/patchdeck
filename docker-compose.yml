@@ -8,6 +8,8 @@ services:
     ports:
       - "6070:6070"
     environment:
+      PUID: 1000                                         # default, set to match your host user
+      PGID: 1000                                         # default, set to match your host group
       PATCHDECK_PORT: 6070
       PATCHDECK_MASTER_KEY: ${PATCHDECK_MASTER_KEY}
       PATCHDECK_JWT_SECRET: ${PATCHDECK_JWT_SECRET}

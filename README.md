@@ -74,6 +74,8 @@ services:
     ports:
       - "6070:6070"
     environment:
+      PUID: 1000                                         # default, set to match your host user
+      PGID: 1000                                         # default, set to match your host group
       PATCHDECK_PORT: 6070
       PATCHDECK_MASTER_KEY: ${PATCHDECK_MASTER_KEY}
       PATCHDECK_JWT_SECRET: ${PATCHDECK_JWT_SECRET}
@@ -128,6 +130,8 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` and 
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
+| `PUID` | | `1000` | User ID for the container process (linuxserver.io convention) |
+| `PGID` | | `1000` | Group ID for the container process (linuxserver.io convention) |
 | `PATCHDECK_MASTER_KEY` | ✅ | — | 32+ char string for AES-GCM credential encryption |
 | `PATCHDECK_JWT_SECRET` | ✅ | — | 32+ char string for JWT signing |
 | `PATCHDECK_DB_PATH` | | `/data/patchdeck.db` | SQLite database path inside the container |
