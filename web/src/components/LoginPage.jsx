@@ -82,6 +82,8 @@ export default function LoginPage({
                   </p>
                   <form className="space-y-4" onSubmit={doLogin}>
                     <input
+                      id="totp-code"
+                      name="totp-code"
                       className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/50 px-3 py-2.5 text-sm text-center font-mono tracking-widest placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
                       placeholder="000000"
                       value={login.code}
@@ -89,6 +91,7 @@ export default function LoginPage({
                       autoFocus
                       autoComplete="one-time-code"
                       inputMode="numeric"
+                      maxLength={19}
                     />
                     <button
                       type="submit"
@@ -115,18 +118,24 @@ export default function LoginPage({
                   ) : null}
                   <form className="space-y-4" onSubmit={doLogin}>
                     <input
+                      id="username"
+                      name="username"
                       className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/50 px-3 py-2.5 text-sm placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
                       placeholder="Username"
                       value={login.username}
                       onChange={e => setLogin(s => ({ ...s, username: e.target.value }))}
+                      autoComplete="username"
                       required
                     />
                     <input
+                      id="password"
+                      name="password"
                       type="password"
                       className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/50 px-3 py-2.5 text-sm placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
                       placeholder="Password"
                       value={login.password}
                       onChange={e => setLogin(s => ({ ...s, password: e.target.value }))}
+                      autoComplete="current-password"
                       required
                     />
                     <button

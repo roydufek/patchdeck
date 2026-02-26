@@ -10,7 +10,9 @@ export function createAuthedFetch(token, onUnauthorized) {
       throw new Error('Unable to reach Patchdeck server')
     }
     if (resp.status === 401) {
-      onUnauthorized()
+      if (onUnauthorized) onUnauthorized()
+      // Don't surface "session expired" if there was never a real token
+      if (!token) throw new Error('Authentication required')
       throw new Error('Session expired. Please log in again.')
     }
     return resp

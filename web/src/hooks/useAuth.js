@@ -145,6 +145,7 @@ export function useAuth() {
 
   const clearToken = useCallback(() => {
     setToken('')
+    setError('')
     localStorage.removeItem('token')
   }, [])
 
