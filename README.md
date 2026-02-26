@@ -60,6 +60,14 @@ Built for homelabbers, sysadmins, and small teams who want visibility without en
   <img src="docs/screenshots/settings-dark-desktop.jpg" alt="Settings — TOTP, API tokens, audit log" width="720" />
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/activity-dark-desktop.jpg" alt="Activity log" width="720" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/schedules-dark-desktop.jpg" alt="Scheduled jobs" width="720" />
+</p>
+
 > Mobile screenshots coming soon.
 
 ## Quick Start
