@@ -20,7 +20,7 @@ RUN cd api && CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/patchdeck ./cmd/se
 # --- Final runtime image ---
 FROM python:3.12-alpine
 WORKDIR /app
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache ca-certificates su-exec \
     && pip install --no-cache-dir apprise \
     && apprise --version \
     && adduser -D -H -u 10001 patchdeck \
@@ -28,7 +28,7 @@ RUN apk add --no-cache ca-certificates \
 
 COPY --from=api-build /out/patchdeck /app/patchdeck
 COPY --from=web-build /web/dist /app/static
+COPY entrypoint.sh /app/entrypoint.sh
 
-USER patchdeck
 EXPOSE 6070
-ENTRYPOINT ["/app/patchdeck"]
+ENTRYPOINT ["/app/entrypoint.sh"]
