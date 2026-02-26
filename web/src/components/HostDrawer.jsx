@@ -12,9 +12,9 @@ export default function HostDrawer({
   const hostFormPinnedFingerprint = (hostForm.host_key_pinned_fingerprint || '').trim()
   const hostFormPinnedFingerprintMissing = hostFormPinnedMode && !hostFormPinnedFingerprint
 
-  // Clear validation errors when form changes
+  // Clear validation errors when form changes (only if errors exist)
   useEffect(() => {
-    setValidationErrors({})
+    setValidationErrors(prev => Object.keys(prev).length > 0 ? {} : prev)
   }, [hostForm.name, hostForm.address, hostForm.ssh_user, hostForm.port])
 
   function handleSubmit(e) {
@@ -39,6 +39,9 @@ export default function HostDrawer({
     onSubmit(e)
   }
 
+  const onCloseRef = useRef(onClose)
+  useEffect(() => { onCloseRef.current = onClose }, [onClose])
+
   useEffect(() => {
     if (!open) return
 
@@ -47,7 +50,7 @@ export default function HostDrawer({
 
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
-        onClose()
+        onCloseRef.current()
         return
       }
       if (event.key !== 'Tab') return
@@ -78,7 +81,7 @@ export default function HostDrawer({
       window.removeEventListener('keydown', onKeyDown)
       document.body.style.overflow = originalOverflow
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 
