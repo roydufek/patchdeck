@@ -47,7 +47,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		AppVersion:          envOr("PATCHDECK_VERSION", "0.1.0-alpha"),
 		Port:                port,
-		DatabasePath:        envOr("PATCHDECK_DB_PATH", "./data/patchdeck.db"),
+		DatabasePath:        envOr("PATCHDECK_DB_PATH", "/data/patchdeck.db"),
 		MasterKey:           os.Getenv("PATCHDECK_MASTER_KEY"),
 		JWTSecret:           os.Getenv("PATCHDECK_JWT_SECRET"),
 		SSHTimeout:          t,

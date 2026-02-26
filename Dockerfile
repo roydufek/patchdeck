@@ -23,7 +23,8 @@ WORKDIR /app
 RUN apk add --no-cache ca-certificates \
     && pip install --no-cache-dir apprise \
     && apprise --version \
-    && adduser -D -H -u 10001 patchdeck
+    && adduser -D -H -u 10001 patchdeck \
+    && mkdir -p /data && chown patchdeck:patchdeck /data
 
 COPY --from=api-build /out/patchdeck /app/patchdeck
 COPY --from=web-build /web/dist /app/static

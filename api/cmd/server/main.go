@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,13 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
+	}
+
+	// Ensure database directory exists (handles fresh volumes/bind-mounts)
+	if dir := filepath.Dir(cfg.DatabasePath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0750); err != nil {
+			log.Fatalf("create database directory %s: %v", dir, err)
+		}
 	}
 
 	database, err := sql.Open("sqlite", cfg.DatabasePath)

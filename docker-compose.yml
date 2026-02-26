@@ -9,13 +9,13 @@ services:
       - "6070:6070"
     environment:
       PATCHDECK_PORT: 6070
-      PATCHDECK_DB_PATH: /data/patchdeck.db
       PATCHDECK_MASTER_KEY: ${PATCHDECK_MASTER_KEY}
       PATCHDECK_JWT_SECRET: ${PATCHDECK_JWT_SECRET}
-      PATCHDECK_APPRISE_URL: ${PATCHDECK_APPRISE_URL:-}
-      PATCHDECK_APPRISE_TIMEOUT_SECONDS: ${PATCHDECK_APPRISE_TIMEOUT_SECONDS:-10}
-      PATCHDECK_APPRISE_BIN: ${PATCHDECK_APPRISE_BIN:-apprise}
-      PATCHDECK_SSH_TIMEOUT_SECONDS: ${PATCHDECK_SSH_TIMEOUT_SECONDS:-20}
-      REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-true}
+      #PATCHDECK_DB_PATH: /data/patchdeck.db            # default, optional
+      #PATCHDECK_SSH_TIMEOUT_SECONDS: 20                 # default, optional
+      #REGISTRATION_ENABLED: true                        # default, optional
+      #PATCHDECK_APPRISE_TIMEOUT_SECONDS: 10             # default, optional
+      #PATCHDECK_APPRISE_BIN: /usr/local/bin/apprise     # default, optional — override only if apprise binary is not in bin
+      #PATCHDECK_APPRISE_URL: tgram://bot_token/chat_id  # optional
     volumes:
       - ./data:/data

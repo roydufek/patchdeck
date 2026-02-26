@@ -36,45 +36,82 @@ Built for homelabbers, sysadmins, and small teams who want visibility without en
 - Docker & Docker Compose
 - SSH access to your target hosts (password or key auth)
 
-### 1. Clone & configure
+### 1. Create your project directory
+
+```bash
+mkdir patchdeck && cd patchdeck
+```
+
+### 2. Create your `.env` file
+
+```bash
+# Generate secure keys
+echo "PATCHDECK_MASTER_KEY=$(openssl rand -hex 32)" > .env
+echo "PATCHDECK_JWT_SECRET=$(openssl rand -hex 32)" >> .env
+```
+
+Or copy the example and edit manually:
+
+```bash
+cp .env.example .env
+```
+
+`.env.example`:
+```env
+# Required: 32+ chars each
+PATCHDECK_MASTER_KEY=replace-with-32plus-char-random-string
+PATCHDECK_JWT_SECRET=replace-with-another-32plus-char-random-string
+```
+
+### 3. Create your `compose.yaml`
+
+```yaml
+services:
+  patchdeck:
+    image: ghcr.io/roydufek/patchdeck:latest
+    container_name: patchdeck
+    restart: unless-stopped
+    ports:
+      - "6070:6070"
+    environment:
+      PATCHDECK_PORT: 6070
+      PATCHDECK_MASTER_KEY: ${PATCHDECK_MASTER_KEY}
+      PATCHDECK_JWT_SECRET: ${PATCHDECK_JWT_SECRET}
+      #PATCHDECK_DB_PATH: /data/patchdeck.db            # default, optional
+      #PATCHDECK_SSH_TIMEOUT_SECONDS: 20                 # default, optional
+      #REGISTRATION_ENABLED: true                        # default, optional
+      #PATCHDECK_APPRISE_TIMEOUT_SECONDS: 10             # default, optional
+      #PATCHDECK_APPRISE_BIN: /usr/local/bin/apprise     # default, optional — override only if apprise binary is not in bin
+      #PATCHDECK_APPRISE_URL: tgram://bot_token/chat_id  # optional
+    volumes:
+      - ./data:/data
+```
+
+### 4. Start
+
+```bash
+docker compose up -d
+```
+
+Patchdeck will be available at `http://localhost:6070`.
+
+### 5. Create your admin account
+
+Open the web UI and complete the setup wizard to create your admin account with optional TOTP two-factor auth.
+
+### 6. Add hosts
+
+Click **Add Host** and enter your server's SSH connection details. Patchdeck encrypts all credentials at rest.
+
+## Building from Source
 
 ```bash
 git clone https://github.com/roydufek/patchdeck.git
 cd patchdeck
 cp .env.example .env
-```
-
-Edit `.env` and set strong random secrets:
-
-```bash
-# Generate secure keys
-openssl rand -hex 32  # Use output for PATCHDECK_MASTER_KEY
-openssl rand -hex 32  # Use output for PATCHDECK_JWT_SECRET
-```
-
-### 2. Start
-
-**Option A: Build from source**
-
-```bash
+# Edit .env with your secrets
 docker compose up -d --build
 ```
-
-**Option B: Pull pre-built images from GHCR** (no build required)
-
-```bash
-docker compose -f docker-compose.ghcr.yml up -d
-```
-
-Patchdeck will be available at `http://localhost:6070`.
-
-### 3. Create your admin account
-
-Open the web UI and complete the setup wizard to create your admin account with optional TOTP two-factor auth.
-
-### 4. Add hosts
-
-Click **Add Host** and enter your server's SSH connection details. Patchdeck encrypts all credentials at rest.
 
 ## Stack
 
@@ -87,14 +124,16 @@ Click **Add Host** and enter your server's SSH connection details. Patchdeck enc
 
 ## Configuration
 
-All configuration is via environment variables in `.env`:
+All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` and `PATCHDECK_JWT_SECRET` are required — everything else has sensible defaults.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `PATCHDECK_MASTER_KEY` | ✅ | — | 32+ char hex string for AES-GCM credential encryption |
-| `PATCHDECK_JWT_SECRET` | ✅ | — | 32+ char hex string for JWT signing |
+| `PATCHDECK_MASTER_KEY` | ✅ | — | 32+ char string for AES-GCM credential encryption |
+| `PATCHDECK_JWT_SECRET` | ✅ | — | 32+ char string for JWT signing |
+| `PATCHDECK_DB_PATH` | | `/data/patchdeck.db` | SQLite database path inside the container |
 | `PATCHDECK_SSH_TIMEOUT_SECONDS` | | `20` | SSH connection timeout |
 | `PATCHDECK_APPRISE_TIMEOUT_SECONDS` | | `10` | Notification delivery timeout |
+| `PATCHDECK_APPRISE_BIN` | | `apprise` | Path to apprise binary (bundled in image) |
 | `PATCHDECK_APPRISE_URL` | | — | Default Apprise destination URL |
 | `REGISTRATION_ENABLED` | | `true` | Set `false` to disable new account registration |
 
@@ -131,8 +170,6 @@ All configuration is via environment variables in `.env`:
 - **Parameterized SQL** — no raw string interpolation
 - **Rate limiting** — 30-second per-host cooldown on scan/apply
 - **Audit trail** — all operations logged with retention policy
-
-For a detailed security review, see [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md).
 
 ## API
 
