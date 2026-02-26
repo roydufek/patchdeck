@@ -1,12 +1,29 @@
-# Patchdeck
+<p align="center">
+  <img src="web/public/logo-192.png" alt="Patchdeck" width="96" height="96" />
+</p>
 
-**Agentless patch management dashboard for Debian & Ubuntu servers.**
+<h1 align="center">Patchdeck</h1>
+
+<p align="center">
+  <strong>Agentless patch management dashboard for Debian &amp; Ubuntu servers.</strong>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> · <a href="#features">Features</a> · <a href="#configuration">Configuration</a> · <a href="#api">API</a> · <a href="#development">Development</a>
+</p>
+
+<p align="center">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-blue" />
+  <img alt="Go" src="https://img.shields.io/badge/go-1.22-00ADD8?logo=go&logoColor=white" />
+  <img alt="React" src="https://img.shields.io/badge/react-18-61DAFB?logo=react&logoColor=white" />
+  <img alt="Docker" src="https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white" />
+</p>
+
+---
 
 Patchdeck gives you a single pane of glass over your Linux fleet's patch status — scan for updates, apply them, restart services, and schedule recurring maintenance. No agents to install on your hosts — just SSH.
 
 Built for homelabbers, sysadmins, and small teams who want visibility without enterprise complexity.
-
-![License](https://img.shields.io/badge/license-MIT-blue)
 
 ## Features
 
