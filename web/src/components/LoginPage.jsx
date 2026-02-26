@@ -80,10 +80,16 @@ export default function LoginPage({
                   <p className="text-sm text-gray-500 dark:text-zinc-500 mb-5">
                     Enter the 6-digit code from your authenticator app, or a recovery code.
                   </p>
-                  <form className="space-y-4" onSubmit={doLogin}>
+                  <form className="space-y-4" onSubmit={doLogin} action="/api/login" method="POST">
+                    {/* Hidden fields so 1Password/password managers associate TOTP with the login item */}
+                    <input type="hidden" name="username" autoComplete="username" value={login.username} readOnly />
+                    <input type="hidden" name="password" autoComplete="current-password" value={login.password} readOnly />
+                    <label htmlFor="one-time-code" className="sr-only">Verification code</label>
                     <input
-                      id="totp-code"
-                      name="totp-code"
+                      id="one-time-code"
+                      name="one-time-code"
+                      type="tel"
+                      aria-label="verification-code-input-0"
                       className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/50 px-3 py-2.5 text-sm text-center font-mono tracking-widest placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
                       placeholder="000000"
                       value={login.code}
