@@ -82,9 +82,8 @@ Click **Add Host** and enter your server's SSH connection details. Patchdeck enc
 |-----------|-----------|
 | Backend | Go (Chi router + SQLite) |
 | Frontend | React 18 + Vite + Tailwind CSS |
-| Reverse proxy | Caddy |
-| Notifications | Apprise CLI (bundled in API image) |
-| Deployment | Docker Compose |
+| Notifications | Apprise CLI (bundled in image) |
+| Deployment | Docker Compose (single container) |
 
 ## Configuration
 
@@ -102,24 +101,24 @@ All configuration is via environment variables in `.env`:
 ## Architecture
 
 ```
-┌─────────────┐     ┌─────────────┐
-│   Browser    │────▶│  Caddy :6070│
-└─────────────┘     └──────┬──────┘
-                           │
-                    ┌──────▼──────┐
-                    │  React SPA  │
-                    └──────┬──────┘
-                           │ /api/*
-                    ┌──────▼──────┐
-                    │  Go API     │
-                    │  + SQLite   │
-                    │  + Apprise  │
-                    │  + Scheduler│
-                    └──────┬──────┘
-                           │ SSH
-                    ┌──────▼──────┐
-                    │ Your hosts  │
-                    └─────────────┘
+┌─────────────┐
+│   Browser    │
+└──────┬──────┘
+       │ :6070
+┌──────▼──────────────┐
+│  Patchdeck          │
+│  ┌───────────────┐  │
+│  │ Go API server  │  │
+│  │ + static SPA   │  │
+│  │ + SQLite       │  │
+│  │ + Apprise CLI  │  │
+│  │ + Scheduler    │  │
+│  └───────┬───────┘  │
+└──────────┼──────────┘
+           │ SSH
+    ┌──────▼──────┐
+    │ Your hosts  │
+    └─────────────┘
 ```
 
 ## Security

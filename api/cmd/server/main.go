@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,7 +28,6 @@ import (
 	"patchdeck/api/internal/sshx"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/cors"
 	_ "modernc.org/sqlite"
 )
 
@@ -84,7 +85,6 @@ func main() {
 	a.sched = scheduler.NewEngine(database, a.sshClient, seal, notifier, cfg.AppriseURL)
 
 	r := chi.NewRouter()
-	r.Use(cors.Handler(cors.Options{AllowedOrigins: []string{"*"}, AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}, AllowedHeaders: []string{"*"}}))
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "name": "patchdeck", "version": cfg.AppVersion})
@@ -141,6 +141,33 @@ func main() {
 		sr.Get("/api/hosts/{id}/apply/stream", a.applyStream)
 		sr.Get("/api/hosts/{id}/await-recovery", a.awaitRecovery)
 	})
+
+	// Serve static frontend files (SPA)
+	staticDir := os.Getenv("PATCHDECK_STATIC_DIR")
+	if staticDir == "" {
+		staticDir = "/app/static"
+	}
+	if info, err := os.Stat(staticDir); err == nil && info.IsDir() {
+		log.Printf("serving static files from %s", staticDir)
+		fsys := http.Dir(staticDir)
+		fileServer := http.FileServer(fsys)
+		r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
+			// Try to serve the file directly; if not found, serve index.html (SPA fallback)
+			path := req.URL.Path
+			if f, err := fsys.Open(path); err == nil {
+				f.Close()
+				fileServer.ServeHTTP(w, req)
+				return
+			}
+			// SPA fallback: serve index.html for client-side routing
+			if idx, err := fs.Stat(os.DirFS(staticDir), "index.html"); err == nil && !idx.IsDir() {
+				req.URL.Path = "/"
+				fileServer.ServeHTTP(w, req)
+				return
+			}
+			http.NotFound(w, req)
+		})
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
