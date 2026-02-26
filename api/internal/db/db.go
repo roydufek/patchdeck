@@ -29,6 +29,8 @@ func Migrate(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
 		`CREATE TABLE IF NOT EXISTS host_notification_prefs (host_id TEXT PRIMARY KEY, updates_available INTEGER NOT NULL DEFAULT 1, auto_apply_success INTEGER NOT NULL DEFAULT 1, auto_apply_failure INTEGER NOT NULL DEFAULT 1, scan_failure INTEGER NOT NULL DEFAULT 1);`,
 		`CREATE TABLE IF NOT EXISTS host_key_audit (id TEXT PRIMARY KEY, host_id TEXT NOT NULL, event TEXT NOT NULL, previous_fingerprint TEXT NOT NULL DEFAULT '', new_fingerprint TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL);`,
+		`CREATE TABLE IF NOT EXISTS recovery_codes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, code_hash TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, created_at DATETIME NOT NULL);`,
+		`CREATE INDEX IF NOT EXISTS idx_recovery_codes_user ON recovery_codes(user_id);`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -1071,4 +1073,65 @@ func ListHostsByIDs(db *sql.DB, ids []string) ([]models.Host, error) {
 		}
 	}
 	return out, nil
+}
+
+func SaveRecoveryCodes(db *sql.DB, userID string, hashedCodes []string) error {
+	if len(hashedCodes) == 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	for _, hash := range hashedCodes {
+		codeHash := strings.TrimSpace(hash)
+		if codeHash == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO recovery_codes(id,user_id,code_hash,used,created_at) VALUES(?,?,?,?,?)`, uuid.NewString(), userID, codeHash, 0, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func GetUnusedRecoveryCodes(db *sql.DB, userID string) ([]models.RecoveryCode, error) {
+	rows, err := db.Query(`SELECT id, user_id, code_hash, used, created_at FROM recovery_codes WHERE user_id=? AND used=0`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.RecoveryCode
+	for rows.Next() {
+		var rc models.RecoveryCode
+		var used int
+		if err := rows.Scan(&rc.ID, &rc.UserID, &rc.CodeHash, &used, &rc.CreatedAt); err != nil {
+			return nil, err
+		}
+		rc.Used = used == 1
+		out = append(out, rc)
+	}
+	return out, rows.Err()
+}
+
+func UseRecoveryCode(db *sql.DB, codeID string) error {
+	_, err := db.Exec(`UPDATE recovery_codes SET used=1 WHERE id=?`, codeID)
+	return err
+}
+
+func DeleteRecoveryCodes(db *sql.DB, userID string) error {
+	_, err := db.Exec(`DELETE FROM recovery_codes WHERE user_id=?`, userID)
+	return err
+}
+
+func ClearUserTOTP(db *sql.DB, userID string) error {
+	_, err := db.Exec(`UPDATE users SET totp_secret='' WHERE id=?`, userID)
+	return err
+}
+
+func SetUserTOTP(db *sql.DB, userID, secret string) error {
+	_, err := db.Exec(`UPDATE users SET totp_secret=? WHERE id=?`, strings.TrimSpace(secret), userID)
+	return err
 }

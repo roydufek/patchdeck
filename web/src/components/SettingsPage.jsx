@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import Spinner from './Spinner.jsx'
 import { useToastContext } from './Toast.jsx'
 
@@ -8,6 +8,8 @@ export default function SettingsPage({
   settingsBusy, onSave, onTest,
   tokens, tokensBusy, newToken, onClearNewToken, onCreateToken, onRevokeToken,
   auditRetentionDays, setAuditRetentionDays, auditBusy, onSaveAuditRetention, onExportActivity,
+  totpStatus, setupData, recoveryCodes, totpBusy, totpError,
+  onTotpStartSetup, onTotpConfirm, onTotpDisable, onTotpCancelSetup, onTotpDismissRecoveryCodes,
   error, loading
 }) {
   const toast = useToastContext()
@@ -384,7 +386,261 @@ export default function SettingsPage({
         </div>
       </div>
 
+      {/* Two-Factor Authentication */}
+      <TOTPSection
+        totpStatus={totpStatus}
+        setupData={setupData}
+        recoveryCodes={recoveryCodes}
+        totpBusy={totpBusy}
+        totpError={totpError}
+        onStartSetup={onTotpStartSetup}
+        onConfirm={onTotpConfirm}
+        onDisable={onTotpDisable}
+        onCancelSetup={onTotpCancelSetup}
+        onDismissRecoveryCodes={onTotpDismissRecoveryCodes}
+        toast={toast}
+      />
+
       {error && <p className="text-sm text-red-500 dark:text-red-400 mt-4">{error}</p>}
+    </div>
+  )
+}
+
+function TOTPSection({
+  totpStatus, setupData, recoveryCodes, totpBusy, totpError,
+  onStartSetup, onConfirm, onDisable, onCancelSetup, onDismissRecoveryCodes,
+  toast
+}) {
+  const [verifyCode, setVerifyCode] = useState('')
+  const [secretInput, setSecretInput] = useState('')
+  const [disablePassword, setDisablePassword] = useState('')
+  const [showDisableForm, setShowDisableForm] = useState(false)
+  const [codesCopied, setCodesCopied] = useState(false)
+  const debounceRef = useRef(null)
+
+  // Sync secret input when setup data arrives
+  useEffect(() => {
+    if (setupData?.secret) {
+      setSecretInput(setupData.secret)
+    }
+  }, [setupData?.secret])
+
+  function handleSecretChange(val) {
+    setSecretInput(val)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      if (val.trim()) onStartSetup(val.trim())
+    }, 500)
+  }
+
+  async function handleConfirm(e) {
+    e.preventDefault()
+    const result = await onConfirm(secretInput, verifyCode)
+    if (result) {
+      setVerifyCode('')
+      setSecretInput('')
+      toast.addToast({ type: 'success', message: 'TOTP enabled successfully.' })
+    }
+  }
+
+  async function handleDisable(e) {
+    e.preventDefault()
+    const result = await onDisable(disablePassword)
+    if (result) {
+      setDisablePassword('')
+      setShowDisableForm(false)
+      toast.addToast({ type: 'success', message: 'TOTP disabled.' })
+    }
+  }
+
+  function handleCopyRecoveryCodes() {
+    if (recoveryCodes?.length) {
+      navigator.clipboard.writeText(recoveryCodes.join('\n')).then(() => {
+        setCodesCopied(true)
+        setTimeout(() => setCodesCopied(false), 2000)
+      })
+    }
+  }
+
+  function handleDismissRecoveryCodes() {
+    setCodesCopied(false)
+    onDismissRecoveryCodes()
+  }
+
+  return (
+    <div className="mt-6 rounded-xl border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900/40 p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <label className="block text-xs text-gray-500 dark:text-zinc-500 font-medium uppercase tracking-wider">Two-Factor Authentication</label>
+        {totpStatus && !setupData && !recoveryCodes && (
+          totpStatus.enabled ? (
+            <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/50">Enabled</span>
+          ) : (
+            <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-gray-100 dark:bg-zinc-800 text-gray-500 dark:text-zinc-400 border border-gray-200 dark:border-zinc-700">Disabled</span>
+          )
+        )}
+      </div>
+
+      {/* Loading */}
+      {totpStatus === null && (
+        <p className="text-sm text-gray-400 dark:text-zinc-600">Loading…</p>
+      )}
+
+      {/* Recovery codes display */}
+      {recoveryCodes && recoveryCodes.length > 0 && (
+        <div className="space-y-3">
+          <div className="rounded-lg border border-amber-300 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-950/30 p-4 space-y-3">
+            <p className="text-sm font-medium text-amber-700 dark:text-amber-400">Recovery codes</p>
+            <p className="text-xs text-amber-600 dark:text-amber-400/80 flex items-center gap-1">
+              <span>⚠</span> Save these codes — they won't be shown again. Each code can only be used once.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {recoveryCodes.map((code, i) => (
+                <code key={i} className="rounded bg-white dark:bg-zinc-800 px-3 py-1.5 text-sm font-mono text-gray-800 dark:text-zinc-200 text-center select-all border border-gray-200 dark:border-zinc-700">
+                  {code}
+                </code>
+              ))}
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={handleCopyRecoveryCodes}
+                className="rounded-lg px-3 py-1.5 border border-gray-300 dark:border-zinc-700 text-xs text-gray-600 dark:text-zinc-300 hover:text-gray-900 dark:hover:text-white hover:border-gray-400 dark:hover:border-zinc-500 transition-colors"
+              >
+                {codesCopied ? '✓ Copied' : 'Copy all'}
+              </button>
+              <button
+                type="button"
+                onClick={handleDismissRecoveryCodes}
+                className="rounded-lg px-3 py-1.5 bg-gray-900 dark:bg-white text-white dark:text-zinc-900 text-xs font-medium hover:bg-gray-800 dark:hover:bg-zinc-200 transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Setup flow */}
+      {setupData && !recoveryCodes && (
+        <form className="space-y-4" onSubmit={handleConfirm}>
+          <div className="flex flex-col sm:flex-row gap-4">
+            <div className="shrink-0">
+              <img src={setupData.qr_data_url} alt="TOTP QR Code" className="w-48 h-48 rounded-lg bg-white p-2 border border-gray-200 dark:border-zinc-700" />
+            </div>
+            <div className="flex-1 space-y-3">
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-zinc-500 mb-1">Secret key</label>
+                <input
+                  className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800/50 px-3 py-2 text-sm font-mono text-gray-800 dark:text-zinc-100 placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
+                  value={secretInput}
+                  onChange={e => handleSecretChange(e.target.value)}
+                  spellCheck={false}
+                />
+                <p className="text-[11px] text-gray-400 dark:text-zinc-600 mt-1">
+                  Scan the QR code or enter this key manually in your authenticator app. You can also paste your own secret.
+                </p>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-zinc-500 mb-1">Verification code</label>
+                <input
+                  className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800/50 px-3 py-2 text-sm text-gray-800 dark:text-zinc-100 placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
+                  placeholder="6-digit code from your app"
+                  value={verifyCode}
+                  onChange={e => setVerifyCode(e.target.value)}
+                  maxLength={6}
+                  autoComplete="one-time-code"
+                />
+              </div>
+            </div>
+          </div>
+          {totpError && <p className="text-sm text-red-500 dark:text-red-400">{totpError}</p>}
+          <div className="flex items-center gap-3">
+            <button
+              type="submit"
+              disabled={totpBusy || !verifyCode.trim()}
+              className="rounded-lg px-4 py-2 bg-gray-900 dark:bg-white text-white dark:text-zinc-900 text-sm font-medium hover:bg-gray-800 dark:hover:bg-zinc-200 disabled:opacity-50 transition-colors"
+            >
+              {totpBusy ? 'Verifying…' : 'Verify & Enable'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { onCancelSetup(); setVerifyCode(''); setSecretInput(''); }}
+              className="rounded-lg px-3 py-2 border border-gray-300 dark:border-zinc-700 text-sm text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white hover:border-gray-400 dark:hover:border-zinc-500 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* TOTP enabled — disable option */}
+      {totpStatus && totpStatus.enabled && !setupData && !recoveryCodes && (
+        <div className="space-y-3">
+          <p className="text-sm text-gray-600 dark:text-zinc-400">
+            Your account is protected with TOTP two-factor authentication.
+          </p>
+          {!showDisableForm ? (
+            <button
+              type="button"
+              onClick={() => setShowDisableForm(true)}
+              className="rounded-lg px-3 py-1.5 text-xs border border-gray-300 dark:border-zinc-700 text-gray-500 dark:text-zinc-400 hover:text-red-500 dark:hover:text-red-400 hover:border-red-300 dark:hover:border-red-700 transition-colors"
+            >
+              Disable TOTP
+            </button>
+          ) : (
+            <form onSubmit={handleDisable} className="flex gap-3 items-end">
+              <div className="flex-1 max-w-[280px]">
+                <label className="block text-xs text-gray-500 dark:text-zinc-500 mb-1">Confirm with password</label>
+                <input
+                  type="password"
+                  className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800/50 px-3 py-2 text-sm text-gray-800 dark:text-zinc-100 placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
+                  placeholder="Current password"
+                  value={disablePassword}
+                  onChange={e => setDisablePassword(e.target.value)}
+                  autoFocus
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={totpBusy || !disablePassword}
+                className="rounded-lg px-4 py-2 bg-red-600 text-white text-sm font-medium hover:bg-red-500 disabled:opacity-50 transition-colors"
+              >
+                {totpBusy ? 'Disabling…' : 'Disable'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowDisableForm(false); setDisablePassword(''); }}
+                className="rounded-lg px-3 py-2 border border-gray-300 dark:border-zinc-700 text-sm text-gray-500 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+            </form>
+          )}
+          {totpError && <p className="text-sm text-red-500 dark:text-red-400 mt-2">{totpError}</p>}
+        </div>
+      )}
+
+      {/* TOTP disabled — enable option */}
+      {totpStatus && !totpStatus.enabled && !setupData && !recoveryCodes && (
+        <div className="space-y-3">
+          <p className="text-sm text-gray-500 dark:text-zinc-500">
+            Add an extra layer of security to your account with a time-based one-time password.
+          </p>
+          <button
+            type="button"
+            onClick={() => onStartSetup()}
+            disabled={totpBusy}
+            className="rounded-lg px-4 py-2 bg-gray-900 dark:bg-white text-white dark:text-zinc-900 text-sm font-medium hover:bg-gray-800 dark:hover:bg-zinc-200 disabled:opacity-50 transition-colors"
+          >
+            {totpBusy ? 'Setting up…' : 'Enable TOTP'}
+          </button>
+          {totpError && <p className="text-sm text-red-500 dark:text-red-400 mt-2">{totpError}</p>}
+        </div>
+      )}
+
+      <p className="text-[11px] text-gray-400 dark:text-zinc-600">
+        Use any TOTP authenticator app (Google Authenticator, Authy, 1Password, etc). Recovery codes can be used if you lose access to your authenticator.
+      </p>
     </div>
   )
 }

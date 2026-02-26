@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,8 @@ import (
 	"patchdeck/api/internal/sshx"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/skip2/go-qrcode"
+	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
 )
 
@@ -42,6 +45,8 @@ type app struct {
 	limiter   *ratelimit.HostLimiter
 	startTime time.Time
 }
+
+const totpIssuer = "Patchdeck"
 
 func main() {
 	cfg, err := config.Load()
@@ -139,6 +144,10 @@ func main() {
 		pr.Get("/api/settings/tokens", a.listAPITokens)
 		pr.Post("/api/settings/tokens", a.createAPIToken)
 		pr.Delete("/api/settings/tokens/{id}", a.revokeAPIToken)
+		pr.Get("/api/settings/totp", a.getTOTPStatus)
+		pr.Post("/api/settings/totp/setup", a.setupTOTP)
+		pr.Post("/api/settings/totp/confirm", a.confirmTOTP)
+		pr.Post("/api/settings/totp/disable", a.disableTOTP)
 		pr.Get("/api/activity", a.listActivity)
 	})
 
@@ -192,20 +201,8 @@ func (a *app) setupStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"bootstrap_required":   !db.HasUsers(a.db),
 		"supported_roles":      rbac.SupportedRoles(),
-		"bootstrap_roles":      []string{"admin"},
-		"totp_optional":        true,
 		"registration_enabled": a.cfg.RegistrationEnabled,
 	})
-}
-
-func validateBootstrapRole(role string) string {
-	if !rbac.IsSupportedRole(role) {
-		return "unsupported role"
-	}
-	if role != "admin" {
-		return "bootstrap role must be admin"
-	}
-	return ""
 }
 
 func (a *app) bootstrap(w http.ResponseWriter, r *http.Request) {
@@ -218,25 +215,15 @@ func (a *app) bootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Username   string `json:"username"`
-		Password   string `json:"password"`
-		Role       string `json:"role"`
-		EnableTOTP *bool  `json:"enable_totp"`
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
 	if !decodeJSON(w, r, &req) {
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)
-	req.Role = strings.TrimSpace(strings.ToLower(req.Role))
 	if req.Username == "" || len(req.Password) < 12 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "username required and password must be >=12 chars"})
-		return
-	}
-	if req.Role == "" {
-		req.Role = "admin"
-	}
-	if errMsg := validateBootstrapRole(req.Role); errMsg != "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
 		return
 	}
 	hash, err := auth.HashPassword(req.Password)
@@ -244,25 +231,12 @@ func (a *app) bootstrap(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to process password"})
 		return
 	}
-	enableTOTP := true
-	if req.EnableTOTP != nil {
-		enableTOTP = *req.EnableTOTP
-	}
-
-	secret := ""
-	uri := ""
-	if enableTOTP {
-		secret, uri, err = auth.NewTOTPSecret("Patchdeck", req.Username)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to generate TOTP secret"})
-			return
-		}
-	}
-	if err := db.CreateInitialUser(a.db, req.Username, req.Role, hash, secret); err != nil {
+	role := "admin"
+	if err := db.CreateInitialUser(a.db, req.Username, role, hash, ""); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create admin account"})
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"otpauth": uri, "totp_enabled": enableTOTP, "role": req.Role, "message": "bootstrap complete"})
+	writeJSON(w, http.StatusCreated, map[string]any{"message": "bootstrap complete"})
 }
 
 func (a *app) login(w http.ResponseWriter, r *http.Request) {
@@ -276,17 +250,50 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := db.GetUserByUsername(a.db, req.Username)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Invalid username or password"})
 		return
 	}
 	if !auth.CheckPassword(user.PasswordHash, req.Password) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Invalid username or password"})
 		return
 	}
-	if strings.TrimSpace(user.TOTPSecret) != "" && !auth.ValidateTOTP(user.TOTPSecret, strings.TrimSpace(req.Code)) {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
-		return
+
+	// Password is valid. Check if TOTP is required.
+	totpSecret := strings.TrimSpace(user.TOTPSecret)
+	code := strings.TrimSpace(req.Code)
+	if totpSecret != "" {
+		// TOTP is enabled but no code was provided — tell the client to prompt for it
+		if code == "" {
+			writeJSON(w, http.StatusForbidden, map[string]any{
+				"error":         "Two-factor authentication required",
+				"totp_required": true,
+			})
+			return
+		}
+		// Validate TOTP code first
+		if !auth.ValidateTOTP(totpSecret, code) {
+			// Try recovery codes: normalize input (uppercase, strip dashes)
+			normalizedCode := strings.ToUpper(strings.ReplaceAll(code, "-", ""))
+			recoveryCodes, err := db.GetUnusedRecoveryCodes(a.db, user.ID)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to validate credentials"})
+				return
+			}
+			matched := false
+			for _, rc := range recoveryCodes {
+				if bcrypt.CompareHashAndPassword([]byte(rc.CodeHash), []byte(normalizedCode)) == nil {
+					matched = true
+					_ = db.UseRecoveryCode(a.db, rc.ID)
+					break
+				}
+			}
+			if !matched {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Invalid two-factor code"})
+				return
+			}
+		}
 	}
+
 	token, err := auth.SignJWT(a.cfg.JWTSecret, user.ID, user.Username, user.Role, 12*time.Hour)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to generate session token"})
@@ -1113,6 +1120,175 @@ func (a *app) testNotificationSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"message": "test notification sent"})
+}
+
+func (a *app) getTOTPStatus(w http.ResponseWriter, r *http.Request) {
+	user, ok := a.requestUser(w, r)
+	if !ok {
+		return
+	}
+	enabled := strings.TrimSpace(user.TOTPSecret) != ""
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": enabled})
+}
+
+func (a *app) setupTOTP(w http.ResponseWriter, r *http.Request) {
+	user, ok := a.requestUser(w, r)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(user.TOTPSecret) != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "TOTP is already enabled. Disable it before reconfiguring."})
+		return
+	}
+	var req struct{
+		Secret string `json:"secret"`
+	}
+	if r.ContentLength > 0 {
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+	}
+	secretValue := strings.TrimSpace(req.Secret)
+	secret := ""
+	var otpauth string
+	var err error
+	if secretValue == "" {
+		generated, _, genErr := auth.NewTOTPSecret(totpIssuer, user.Username)
+		if genErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to generate TOTP secret"})
+			return
+		}
+		secret = auth.NormalizeBase32Secret(generated)
+		otpauth, err = auth.GenerateTOTPWithSecret(totpIssuer, user.Username, secret)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to prepare TOTP configuration"})
+			return
+		}
+	} else {
+		if !auth.ValidateBase32Secret(secretValue) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid TOTP secret"})
+			return
+		}
+		secret = auth.NormalizeBase32Secret(secretValue)
+		otpauth, err = auth.GenerateTOTPWithSecret(totpIssuer, user.Username, secret)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Failed to build otpauth URI"})
+			return
+		}
+	}
+	qrPNG, err := qrcode.Encode(otpauth, qrcode.Medium, 200)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to render QR code"})
+		return
+	}
+	qrDataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(qrPNG)
+	writeJSON(w, http.StatusOK, map[string]any{"secret": secret, "otpauth": otpauth, "qr_data_url": qrDataURL})
+}
+
+func (a *app) confirmTOTP(w http.ResponseWriter, r *http.Request) {
+	user, ok := a.requestUser(w, r)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(user.TOTPSecret) != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "TOTP is already enabled. Disable it before reconfiguring."})
+		return
+	}
+	var req struct {
+		Secret string `json:"secret"`
+		Code   string `json:"code"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	secret := strings.TrimSpace(req.Secret)
+	code := strings.TrimSpace(req.Code)
+	if secret == "" || code == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Secret and verification code are required"})
+		return
+	}
+	if !auth.ValidateBase32Secret(secret) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid TOTP secret"})
+		return
+	}
+	normalized := auth.NormalizeBase32Secret(secret)
+	if !auth.ValidateTOTP(normalized, code) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid verification code"})
+		return
+	}
+	if err := db.SetUserTOTP(a.db, user.ID, normalized); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to save TOTP secret"})
+		return
+	}
+	if err := db.DeleteRecoveryCodes(a.db, user.ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to refresh recovery codes"})
+		return
+	}
+	codes := auth.GenerateRecoveryCodes(10)
+	hashed := make([]string, 0, len(codes))
+	for _, c := range codes {
+		// Hash without dashes so recovery code input normalization matches
+		stripped := strings.ReplaceAll(c, "-", "")
+		hash, err := bcrypt.GenerateFromPassword([]byte(stripped), bcrypt.DefaultCost)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to protect recovery codes"})
+			return
+		}
+		hashed = append(hashed, string(hash))
+	}
+	if err := db.SaveRecoveryCodes(a.db, user.ID, hashed); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to store recovery codes"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "recovery_codes": codes})
+}
+
+func (a *app) disableTOTP(w http.ResponseWriter, r *http.Request) {
+	user, ok := a.requestUser(w, r)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(user.TOTPSecret) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "TOTP is not enabled"})
+		return
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if !auth.CheckPassword(user.PasswordHash, req.Password) {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
+		return
+	}
+	if err := db.ClearUserTOTP(a.db, user.ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to disable TOTP"})
+		return
+	}
+	if err := db.DeleteRecoveryCodes(a.db, user.ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to clear recovery codes"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+}
+
+func (a *app) requestUser(w http.ResponseWriter, r *http.Request) (models.User, bool) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return models.User{}, false
+	}
+	user, err := db.GetUserByUsername(a.db, claims.Username)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return models.User{}, false
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to load user"})
+		return models.User{}, false
+	}
+	return user, true
 }
 
 func validateAppriseTarget(raw string, allowEmpty bool) string {

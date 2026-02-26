@@ -6,8 +6,6 @@ export function useAuth() {
   const [setupStatus, setSetupStatus] = useState({
     bootstrap_required: false,
     supported_roles: ['admin'],
-    bootstrap_roles: ['admin'],
-    totp_optional: true,
     registration_enabled: true
   })
   const [setupLoading, setSetupLoading] = useState(true)
@@ -15,13 +13,13 @@ export function useAuth() {
 
   const [login, setLogin] = useState({ username: '', password: '', code: '' })
   const [loginBusy, setLoginBusy] = useState(false)
+  const [totpRequired, setTotpRequired] = useState(false)
 
   const [bootstrapForm, setBootstrapForm] = useState({
-    username: '', password: '', confirm_password: '',
-    role: 'admin', enable_totp: true
+    username: '', password: '', confirm_password: ''
   })
   const [bootstrapBusy, setBootstrapBusy] = useState(false)
-  const [bootstrapResult, setBootstrapResult] = useState({ otpauth: '', totp_enabled: false })
+  const [bootstrapDone, setBootstrapDone] = useState(false)
 
   useEffect(() => {
     if (token) {
@@ -37,14 +35,12 @@ export function useAuth() {
         setSetupStatus({
           bootstrap_required: !!data.bootstrap_required,
           supported_roles: Array.isArray(data.supported_roles) && data.supported_roles.length ? data.supported_roles : ['admin'],
-          bootstrap_roles: Array.isArray(data.bootstrap_roles) && data.bootstrap_roles.length ? data.bootstrap_roles : ['admin'],
-          totp_optional: data.totp_optional !== false,
           registration_enabled: data.registration_enabled !== false
         })
       })
       .catch(() => {
         if (!active) return
-        setSetupStatus({ bootstrap_required: false, supported_roles: ['admin'], bootstrap_roles: ['admin'], totp_optional: true, registration_enabled: true })
+        setSetupStatus({ bootstrap_required: false, supported_roles: ['admin'], registration_enabled: true })
       })
       .finally(() => {
         if (!active) return
@@ -52,11 +48,6 @@ export function useAuth() {
       })
     return () => { active = false }
   }, [token])
-
-  useEffect(() => {
-    const roles = Array.isArray(setupStatus.bootstrap_roles) && setupStatus.bootstrap_roles.length ? setupStatus.bootstrap_roles : ['admin']
-    setBootstrapForm(s => ({ ...s, role: roles.includes(s.role) ? s.role : roles[0] }))
-  }, [setupStatus.bootstrap_roles])
 
   const doLogin = useCallback(async (e) => {
     e.preventDefault()
@@ -68,22 +59,31 @@ export function useAuth() {
         resp = await fetch(`${API}/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(login)
+          body: JSON.stringify({
+            username: login.username,
+            password: login.password,
+            code: login.code || ''
+          })
         })
       } catch (err) {
         throw new Error('Unable to reach Patchdeck server')
       }
       const data = await resp.json().catch(() => ({}))
+
+      // Server says TOTP is required — show the code step
+      if (resp.status === 403 && data.totp_required) {
+        setTotpRequired(true)
+        return
+      }
+
       if (!resp.ok || !data.token) {
-        if (resp.status === 401) {
-          throw new Error('Invalid username or password')
-        }
         throw new Error(data.error || 'Login failed')
       }
       setToken(data.token)
       localStorage.setItem('token', data.token)
       setLogin(s => ({ ...s, password: '', code: '' }))
-      setBootstrapResult({ otpauth: '', totp_enabled: false })
+      setTotpRequired(false)
+      setBootstrapDone(false)
     } catch (e) {
       setError(e.message || 'Login failed')
     } finally {
@@ -91,11 +91,16 @@ export function useAuth() {
     }
   }, [login])
 
+  const cancelTotp = useCallback(() => {
+    setTotpRequired(false)
+    setLogin(s => ({ ...s, code: '' }))
+    setError('')
+  }, [])
+
   const doBootstrap = useCallback(async (e) => {
     e.preventDefault()
     setBootstrapBusy(true)
     setError('')
-    setBootstrapResult({ otpauth: '', totp_enabled: false })
     try {
       if (bootstrapForm.password.length < 12) {
         throw new Error('Password must be at least 12 characters')
@@ -110,9 +115,7 @@ export function useAuth() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             username: bootstrapForm.username.trim(),
-            password: bootstrapForm.password,
-            role: (bootstrapForm.role || 'admin').trim().toLowerCase(),
-            enable_totp: !!bootstrapForm.enable_totp
+            password: bootstrapForm.password
           })
         })
       } catch (err) {
@@ -122,10 +125,10 @@ export function useAuth() {
       if (!resp.ok) {
         throw new Error(data.error || 'Bootstrap failed')
       }
-      setBootstrapResult({ otpauth: data.otpauth || '', totp_enabled: !!data.totp_enabled })
+      setBootstrapDone(true)
       setSetupStatus(s => ({ ...s, bootstrap_required: false }))
       setLogin(s => ({ ...s, username: bootstrapForm.username.trim(), code: '' }))
-      setBootstrapForm(s => ({ ...s, username: '', password: '', confirm_password: '', enable_totp: true }))
+      setBootstrapForm({ username: '', password: '', confirm_password: '' })
     } catch (err) {
       setError(err.message || 'Bootstrap failed')
     } finally {
@@ -150,8 +153,9 @@ export function useAuth() {
     setupStatus, setupLoading,
     error, setError,
     login, setLogin, loginBusy, doLogin,
+    totpRequired, cancelTotp,
     bootstrapForm, setBootstrapForm, bootstrapBusy, doBootstrap,
-    bootstrapResult,
+    bootstrapDone,
     logout, clearToken
   }
 }

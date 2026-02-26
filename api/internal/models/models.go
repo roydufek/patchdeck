@@ -148,3 +148,11 @@ type ActivityEntry struct {
 	Summary   string    `json:"summary,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+type RecoveryCode struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"user_id"`
+	CodeHash  string    `json:"-"`
+	Used      bool      `json:"used"`
+	CreatedAt time.Time `json:"created_at"`
+}

@@ -3,6 +3,7 @@ import { useAuth } from './hooks/useAuth.js'
 import { useHosts } from './hooks/useHosts.js'
 import { useJobs } from './hooks/useJobs.js'
 import { useSettings } from './hooks/useSettings.js'
+import { useTOTP } from './hooks/useTOTP.js'
 import useActivity from './hooks/useActivity.js'
 import { API } from './api.js'
 import Layout from './components/Layout.jsx'
@@ -29,6 +30,9 @@ function AppInner() {
   // Settings
   const settingsHook = useSettings(auth.token, auth.clearToken)
 
+  // TOTP
+  const totpHook = useTOTP(auth.token)
+
   // Activity
   const activityHook = useActivity(auth.token)
 
@@ -51,6 +55,13 @@ function AppInner() {
       setTags(Array.isArray(tagsData) ? tagsData : [])
     })
   }, [auth.token])
+
+  // Load TOTP status when viewing settings
+  useEffect(() => {
+    if (page === 'settings' && auth.token) {
+      totpHook.fetchStatus()
+    }
+  }, [page, auth.token])
 
   // Sync job mode with host eligibility
   // (no longer needed — removed auto_update_policy gating)
@@ -158,11 +169,13 @@ function AppInner() {
         setLogin={auth.setLogin}
         loginBusy={auth.loginBusy}
         doLogin={auth.doLogin}
+        totpRequired={auth.totpRequired}
+        cancelTotp={auth.cancelTotp}
         bootstrapForm={auth.bootstrapForm}
         setBootstrapForm={auth.setBootstrapForm}
         bootstrapBusy={auth.bootstrapBusy}
         doBootstrap={auth.doBootstrap}
-        bootstrapResult={auth.bootstrapResult}
+        bootstrapDone={auth.bootstrapDone}
         error={auth.error}
       />
     )
@@ -274,6 +287,16 @@ function AppInner() {
             auditBusy={settingsHook.auditBusy}
             onSaveAuditRetention={settingsHook.saveAuditRetention}
             onExportActivity={settingsHook.exportActivityCSV}
+            totpStatus={totpHook.totpStatus}
+            setupData={totpHook.setupData}
+            recoveryCodes={totpHook.recoveryCodes}
+            totpBusy={totpHook.totpBusy}
+            totpError={totpHook.totpError}
+            onTotpStartSetup={totpHook.startSetup}
+            onTotpConfirm={totpHook.confirmSetup}
+            onTotpDisable={totpHook.disableTOTP}
+            onTotpCancelSetup={totpHook.cancelSetup}
+            onTotpDismissRecoveryCodes={totpHook.dismissRecoveryCodes}
             error=""
           />
         )}

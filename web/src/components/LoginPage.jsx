@@ -3,8 +3,9 @@ import React from 'react'
 export default function LoginPage({
   setupLoading, setupStatus,
   login, setLogin, loginBusy, doLogin,
+  totpRequired, cancelTotp,
   bootstrapForm, setBootstrapForm, bootstrapBusy, doBootstrap,
-  bootstrapResult,
+  bootstrapDone,
   error
 }) {
   return (
@@ -22,6 +23,7 @@ export default function LoginPage({
             <p className="text-sm text-gray-500 dark:text-zinc-500">Checking setup…</p>
           ) : null}
 
+          {/* Bootstrap / First-run setup */}
           {!setupLoading && setupStatus.bootstrap_required ? (
             setupStatus.registration_enabled === false ? (
               <>
@@ -56,27 +58,6 @@ export default function LoginPage({
                   onChange={e => setBootstrapForm(s => ({ ...s, confirm_password: e.target.value }))}
                   required
                 />
-                <div>
-                  <label className="block text-xs text-gray-500 dark:text-zinc-500 mb-1">Initial role</label>
-                  <select
-                    className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/50 px-3 py-2.5 text-sm focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
-                    value={bootstrapForm.role}
-                    onChange={e => setBootstrapForm(s => ({ ...s, role: e.target.value }))}
-                  >
-                    {(setupStatus.bootstrap_roles || ['admin']).map(role => (
-                      <option key={role} value={role}>{role}</option>
-                    ))}
-                  </select>
-                </div>
-                <label className="flex items-center gap-2 text-sm text-gray-600 dark:text-zinc-400">
-                  <input
-                    type="checkbox"
-                    checked={bootstrapForm.enable_totp}
-                    onChange={e => setBootstrapForm(s => ({ ...s, enable_totp: e.target.checked }))}
-                    className="rounded border-gray-300 dark:border-zinc-600"
-                  />
-                  Enable TOTP 2FA {setupStatus.totp_optional ? '(optional)' : ''}
-                </label>
                 <button
                   type="submit"
                   disabled={bootstrapBusy}
@@ -89,45 +70,75 @@ export default function LoginPage({
             )
           ) : null}
 
+          {/* Login form */}
           {!setupLoading && !setupStatus.bootstrap_required ? (
             <>
-              <h2 className="font-medium text-lg mb-5">Sign in</h2>
-              <form className="space-y-4" onSubmit={doLogin}>
-                <input
-                  className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/50 px-3 py-2.5 text-sm placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
-                  placeholder="Username"
-                  value={login.username}
-                  onChange={e => setLogin(s => ({ ...s, username: e.target.value }))}
-                  required
-                />
-                <input
-                  type="password"
-                  className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/50 px-3 py-2.5 text-sm placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
-                  placeholder="Password"
-                  value={login.password}
-                  onChange={e => setLogin(s => ({ ...s, password: e.target.value }))}
-                  required
-                />
-                <input
-                  className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/50 px-3 py-2.5 text-sm placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
-                  placeholder="TOTP code (if enabled)"
-                  value={login.code}
-                  onChange={e => setLogin(s => ({ ...s, code: e.target.value }))}
-                />
-                <button
-                  type="submit"
-                  disabled={loginBusy}
-                  className="w-full rounded-lg px-4 py-2.5 bg-gray-900 dark:bg-white text-white dark:text-zinc-900 text-sm font-medium hover:bg-gray-800 dark:hover:bg-zinc-200 disabled:opacity-50 transition-colors"
-                >
-                  {loginBusy ? 'Signing in…' : 'Sign in'}
-                </button>
-              </form>
-              {bootstrapResult.totp_enabled ? (
-                <p className="text-xs text-gray-500 dark:text-zinc-500 mt-4 break-all">
-                  Setup complete. Save this TOTP URI in your authenticator app before signing in:<br />
-                  <span className="font-mono text-gray-700 dark:text-zinc-300">{bootstrapResult.otpauth}</span>
-                </p>
-              ) : null}
+              {/* Step 2: TOTP code entry */}
+              {totpRequired ? (
+                <>
+                  <h2 className="font-medium text-lg mb-1">Two-factor authentication</h2>
+                  <p className="text-sm text-gray-500 dark:text-zinc-500 mb-5">
+                    Enter the 6-digit code from your authenticator app, or a recovery code.
+                  </p>
+                  <form className="space-y-4" onSubmit={doLogin}>
+                    <input
+                      className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/50 px-3 py-2.5 text-sm text-center font-mono tracking-widest placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
+                      placeholder="000000"
+                      value={login.code}
+                      onChange={e => setLogin(s => ({ ...s, code: e.target.value }))}
+                      autoFocus
+                      autoComplete="one-time-code"
+                      inputMode="numeric"
+                    />
+                    <button
+                      type="submit"
+                      disabled={loginBusy || !login.code.trim()}
+                      className="w-full rounded-lg px-4 py-2.5 bg-gray-900 dark:bg-white text-white dark:text-zinc-900 text-sm font-medium hover:bg-gray-800 dark:hover:bg-zinc-200 disabled:opacity-50 transition-colors"
+                    >
+                      {loginBusy ? 'Verifying…' : 'Verify'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelTotp}
+                      className="w-full text-center text-xs text-gray-500 dark:text-zinc-500 hover:text-gray-700 dark:hover:text-zinc-300 transition-colors"
+                    >
+                      ← Back to sign in
+                    </button>
+                  </form>
+                </>
+              ) : (
+                /* Step 1: Username + password */
+                <>
+                  <h2 className="font-medium text-lg mb-5">Sign in</h2>
+                  {bootstrapDone ? (
+                    <p className="text-sm text-emerald-600 dark:text-emerald-400 mb-4">Account created! You can now sign in.</p>
+                  ) : null}
+                  <form className="space-y-4" onSubmit={doLogin}>
+                    <input
+                      className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/50 px-3 py-2.5 text-sm placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
+                      placeholder="Username"
+                      value={login.username}
+                      onChange={e => setLogin(s => ({ ...s, username: e.target.value }))}
+                      required
+                    />
+                    <input
+                      type="password"
+                      className="w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-800/50 px-3 py-2.5 text-sm placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
+                      placeholder="Password"
+                      value={login.password}
+                      onChange={e => setLogin(s => ({ ...s, password: e.target.value }))}
+                      required
+                    />
+                    <button
+                      type="submit"
+                      disabled={loginBusy}
+                      className="w-full rounded-lg px-4 py-2.5 bg-gray-900 dark:bg-white text-white dark:text-zinc-900 text-sm font-medium hover:bg-gray-800 dark:hover:bg-zinc-200 disabled:opacity-50 transition-colors"
+                    >
+                      {loginBusy ? 'Signing in…' : 'Sign in'}
+                    </button>
+                  </form>
+                </>
+              )}
             </>
           ) : null}
 
