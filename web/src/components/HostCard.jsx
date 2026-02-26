@@ -644,6 +644,22 @@ export default function HostCard({
             Edit
           </button>
           <button
+            onClick={() => { handleRebootClick(); setShowMore(false) }}
+            disabled={!!scanBlockedReason || anyBusy}
+            title={scanBlockedReason || 'Reboot host'}
+            className="rounded-lg px-3 py-1.5 text-xs border border-amber-600/50 dark:border-amber-800/60 text-amber-600 dark:text-amber-400 hover:text-amber-500 dark:hover:text-amber-300 hover:border-amber-500 dark:hover:border-amber-700 disabled:opacity-30 transition-colors"
+          >
+            Reboot
+          </button>
+          <button
+            onClick={() => { handleShutdownClick(); setShowMore(false) }}
+            disabled={!!scanBlockedReason || anyBusy}
+            title={scanBlockedReason || 'Shut down host'}
+            className="rounded-lg px-3 py-1.5 text-xs border border-red-600/50 dark:border-red-800/60 text-red-500 dark:text-red-400 hover:text-red-400 dark:hover:text-red-300 hover:border-red-500 dark:hover:border-red-700 disabled:opacity-30 transition-colors"
+          >
+            Shut down
+          </button>
+          <button
             onClick={() => { handleDeleteClick(); setShowMore(false) }}
             disabled={anyBusy}
             className="rounded-lg px-3 py-1.5 text-xs border border-red-800/60 text-red-400 hover:text-red-300 hover:border-red-700 disabled:opacity-30 transition-colors"

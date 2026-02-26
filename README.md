@@ -22,6 +22,7 @@ Built for homelabbers, sysadmins, and small teams who want visibility without en
 - **API tokens** — programmatic access with `Bearer` auth
 - **Dark & light themes** — system preference detection with manual toggle
 - **Mobile responsive** — works on phones and tablets
+- **Two-factor auth** — optional TOTP (Google Authenticator, Authy, etc.) on admin login
 - **Encrypted secrets** — AES-GCM at rest for all SSH credentials
 
 ## Screenshots
@@ -126,6 +127,7 @@ All configuration is via environment variables in `.env`:
 - **Credentials encrypted at rest** — AES-GCM with a 32-byte master key
 - **Password hashing** — bcrypt
 - **JWT auth** — HS256 with 12-hour TTL
+- **TOTP two-factor** — optional time-based one-time password on login
 - **SSH host key verification** — TOFU with optional manual pinning; mismatches block operations until resolved
 - **Parameterized SQL** — no raw string interpolation
 - **Rate limiting** — 30-second per-host cooldown on scan/apply
