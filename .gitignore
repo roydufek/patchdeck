@@ -1,0 +1,12 @@
+.env
+node_modules/
+web/dist/
+api/data/
+data/
+
+patchdeck-logos/
+b2b/
+b2c/
+b2d/
+out-arrow-dark/
+out-arrow-light/

@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1.7
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+RUN apk add --no-cache git
+COPY api/go.mod ./api/go.mod
+RUN cd api && go mod download
+COPY api ./api
+RUN cd api && CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/patchdeck ./cmd/server
+
+FROM python:3.12-alpine
+WORKDIR /app
+RUN apk add --no-cache ca-certificates \
+    && pip install --no-cache-dir apprise \
+    && apprise --version \
+    && adduser -D -H -u 10001 patchdeck
+COPY --from=build /out/patchdeck /app/patchdeck
+USER patchdeck
+EXPOSE 6070
+ENTRYPOINT ["/app/patchdeck"]
