@@ -68,7 +68,15 @@ Built for homelabbers, sysadmins, and small teams who want visibility without en
   <img src="docs/screenshots/schedules-dark-desktop.jpg" alt="Scheduled jobs" width="720" />
 </p>
 
-> Mobile screenshots coming soon.
+<details>
+<summary><strong>📱 Mobile views</strong></summary>
+<br>
+<p align="center">
+  <img src="docs/screenshots/dashboard-dark-mobile.jpg" alt="Dashboard — Mobile" width="280" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/host-detail-light-mobile.jpg" alt="Host detail — Mobile" width="280" />
+</p>
+</details>
 
 ## Quick Start
 
