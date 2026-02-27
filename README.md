@@ -129,6 +129,9 @@ services:
       PATCHDECK_PORT: 6070
       PATCHDECK_MASTER_KEY: ${PATCHDECK_MASTER_KEY}
       PATCHDECK_JWT_SECRET: ${PATCHDECK_JWT_SECRET}
+      #PATCHDECK_TLS: true                              # default, set false if behind a reverse proxy
+      #PATCHDECK_TLS_CERT: /data/tls/cert.pem           # default, optional — path to custom TLS certificate
+      #PATCHDECK_TLS_KEY: /data/tls/key.pem             # default, optional — path to custom TLS key
       #PATCHDECK_DB_PATH: /data/patchdeck.db            # default, optional
       #PATCHDECK_SSH_TIMEOUT_SECONDS: 20                 # default, optional
       #REGISTRATION_ENABLED: true                        # default, optional
