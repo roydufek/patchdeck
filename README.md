@@ -45,37 +45,41 @@ Built for homelabbers, sysadmins, and small teams who want visibility without en
 
 ## Screenshots
 
+<details>
+<summary><strong>🖥️ Desktop views</strong></summary>
+<br>
 <p align="center">
-  <img src="docs/screenshots/dashboard-dark-desktop.jpg" alt="Dashboard — Dark theme" width="720" />
+  <img src="docs/screenshots/dashboard-dark-desktop.png" alt="Dashboard — Dark theme" width="720" />
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/dashboard-light-desktop.jpg" alt="Dashboard — Light theme" width="720" />
+  <img src="docs/screenshots/dashboard-light-desktop.png" alt="Dashboard — Light theme" width="720" />
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/host-detail-dark-desktop.jpg" alt="Host detail view" width="720" />
+  <img src="docs/screenshots/host-detail-dark-desktop.png" alt="Host detail view" width="720" />
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/settings-dark-desktop.jpg" alt="Settings — TOTP, API tokens, audit log" width="720" />
+  <img src="docs/screenshots/settings-dark-desktop.png" alt="Settings — TOTP, API tokens, audit log" width="720" />
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/activity-dark-desktop.jpg" alt="Activity log" width="720" />
+  <img src="docs/screenshots/activity-dark-desktop.png" alt="Activity log" width="720" />
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/schedules-dark-desktop.jpg" alt="Scheduled jobs" width="720" />
+  <img src="docs/screenshots/schedules-dark-desktop.png" alt="Scheduled jobs" width="720" />
 </p>
+</details>
 
 <details>
 <summary><strong>📱 Mobile views</strong></summary>
 <br>
 <p align="center">
-  <img src="docs/screenshots/dashboard-dark-mobile.jpg" alt="Dashboard — Mobile" width="280" />
+  <img src="docs/screenshots/dashboard-dark-mobile.png" alt="Dashboard — Mobile" width="280" />
   &nbsp;&nbsp;
-  <img src="docs/screenshots/host-detail-light-mobile.jpg" alt="Host detail — Mobile" width="280" />
+  <img src="docs/screenshots/host-detail-light-mobile.png" alt="Host detail — Mobile" width="280" />
 </p>
 </details>
 
