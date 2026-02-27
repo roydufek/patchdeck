@@ -154,7 +154,7 @@ Patchdeck will be available at `https://localhost:6070`.
 
 ### 5. Create your admin account
 
-Open the web UI and complete the setup wizard to create your admin account with optional TOTP two-factor auth.
+Open the web UI and create your admin account. You can enable TOTP two-factor authentication afterwards in **Settings**.
 
 ### 6. Add hosts
 
