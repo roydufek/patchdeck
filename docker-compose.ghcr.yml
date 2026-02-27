@@ -17,5 +17,8 @@ services:
       #PATCHDECK_APPRISE_TIMEOUT_SECONDS: 10             # default, optional
       #PATCHDECK_APPRISE_BIN: /usr/local/bin/apprise     # default, optional — override only if apprise binary is not in bin
       #PATCHDECK_APPRISE_URL: tgram://bot_token/chat_id  # optional
+      #PATCHDECK_TLS: true                              # default, set false if behind a reverse proxy
+      #PATCHDECK_TLS_CERT: /data/tls/cert.pem           # default, optional — path to custom TLS certificate
+      #PATCHDECK_TLS_KEY: /data/tls/key.pem             # default, optional — path to custom TLS key
     volumes:
       - ./data:/data

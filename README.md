@@ -41,6 +41,7 @@ Built for homelabbers, sysadmins, and small teams who want visibility without en
 - **Mobile responsive** — works on phones and tablets
 - **Two-factor auth** — optional TOTP (Google Authenticator, Authy, etc.) on admin login
 - **Encrypted secrets** — AES-GCM at rest for all SSH credentials
+- **HTTPS by default** — auto-generated self-signed TLS certificate, no configuration needed; disable with a single env var if behind a reverse proxy
 
 ## Screenshots
 
@@ -144,7 +145,9 @@ services:
 docker compose up -d
 ```
 
-Patchdeck will be available at `http://localhost:6070`.
+Patchdeck will be available at `https://localhost:6070`.
+
+> **Note:** Patchdeck serves HTTPS by default with an auto-generated self-signed certificate. Your browser will show a certificate warning on first visit — this is expected. If running behind a reverse proxy (Nginx, Caddy, Traefik), set `PATCHDECK_TLS=false` to avoid double encryption.
 
 ### 5. Create your admin account
 
@@ -189,6 +192,9 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` and 
 | `PATCHDECK_APPRISE_BIN` | | `apprise` | Path to apprise binary (bundled in image) |
 | `PATCHDECK_APPRISE_URL` | | — | Default Apprise destination URL |
 | `REGISTRATION_ENABLED` | | `true` | Set `false` to disable new account registration |
+| `PATCHDECK_TLS` | | `true` | Enable HTTPS with auto-generated self-signed cert; set `false` if behind a reverse proxy |
+| `PATCHDECK_TLS_CERT` | | `/data/tls/cert.pem` | Path to TLS certificate (auto-generated if missing) |
+| `PATCHDECK_TLS_KEY` | | `/data/tls/key.pem` | Path to TLS private key (auto-generated if missing) |
 
 ## Architecture
 
@@ -196,7 +202,7 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` and 
 ┌─────────────┐
 │   Browser    │
 └──────┬──────┘
-       │ :6070
+       │ :6070 (HTTPS)
 ┌──────▼──────────────┐
 │  Patchdeck          │
 │  ┌───────────────┐  │
@@ -223,6 +229,7 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` and 
 - **Parameterized SQL** — no raw string interpolation
 - **Rate limiting** — 30-second per-host cooldown on scan/apply
 - **Audit trail** — all operations logged with retention policy
+- **HTTPS by default** — auto-generated self-signed TLS; supports user-provided certificates
 
 ## API
 

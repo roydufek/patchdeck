@@ -19,6 +19,9 @@ type Config struct {
 	AppriseBinPath      string
 	AppriseTimeout      time.Duration
 	RegistrationEnabled bool // REGISTRATION_ENABLED env var; default true. Set to "false" to block bootstrap/register.
+	TLSEnabled          bool
+	TLSCertPath         string
+	TLSKeyPath          string
 }
 
 func Load() (Config, error) {
@@ -44,6 +47,10 @@ func Load() (Config, error) {
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("REGISTRATION_ENABLED"))); v == "false" || v == "0" {
 		registrationEnabled = false
 	}
+	tlsEnabled := true
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("PATCHDECK_TLS"))); v == "false" || v == "0" {
+		tlsEnabled = false
+	}
 	cfg := Config{
 		AppVersion:          envOr("PATCHDECK_VERSION", "0.1.0-alpha"),
 		Port:                port,
@@ -55,6 +62,9 @@ func Load() (Config, error) {
 		AppriseBinPath:      envOr("PATCHDECK_APPRISE_BIN", "apprise"),
 		AppriseTimeout:      appriseTimeout,
 		RegistrationEnabled: registrationEnabled,
+		TLSEnabled:          tlsEnabled,
+		TLSCertPath:         envOr("PATCHDECK_TLS_CERT", "/data/tls/cert.pem"),
+		TLSKeyPath:          envOr("PATCHDECK_TLS_KEY", "/data/tls/key.pem"),
 	}
 	if len(cfg.MasterKey) < 32 || len(cfg.JWTSecret) < 32 {
 		return Config{}, errors.New("PATCHDECK_MASTER_KEY and PATCHDECK_JWT_SECRET must be set to 32+ characters")

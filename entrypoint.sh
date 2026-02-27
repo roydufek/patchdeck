@@ -25,5 +25,10 @@ DATA_DIR="$(dirname "${PATCHDECK_DB_PATH:-/data/patchdeck.db}")"
 mkdir -p "$DATA_DIR"
 chown -R "$PUID:$PGID" "$DATA_DIR"
 
+# Ensure the TLS directory exists and is writable.
+TLS_DIR="$(dirname "${PATCHDECK_TLS_CERT:-/data/tls/cert.pem}")"
+mkdir -p "$TLS_DIR"
+chown -R "$PUID:$PGID" "$TLS_DIR"
+
 echo "Starting Patchdeck with UID=$PUID GID=$PGID"
 exec su-exec patchdeck /app/patchdeck "$@"

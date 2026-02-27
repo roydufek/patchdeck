@@ -28,6 +28,7 @@ import (
 	"patchdeck/api/internal/rbac"
 	"patchdeck/api/internal/scheduler"
 	"patchdeck/api/internal/sshx"
+	"patchdeck/api/internal/tlsutil"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/skip2/go-qrcode"
@@ -191,9 +192,19 @@ func main() {
 	go a.sched.Run(ctx)
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
-	log.Printf("patchdeck API listening on %s", addr)
-	if err := http.ListenAndServe(addr, r); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("server: %v", err)
+	if cfg.TLSEnabled {
+		if err := tlsutil.EnsureSelfSignedCert(cfg.TLSCertPath, cfg.TLSKeyPath); err != nil {
+			log.Fatalf("TLS cert: %v", err)
+		}
+		log.Printf("patchdeck API listening on https://%s (TLS)", addr)
+		if err := http.ListenAndServeTLS(addr, cfg.TLSCertPath, cfg.TLSKeyPath, r); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server: %v", err)
+		}
+	} else {
+		log.Printf("patchdeck API listening on http://%s (TLS disabled)", addr)
+		if err := http.ListenAndServe(addr, r); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server: %v", err)
+		}
 	}
 }
 
