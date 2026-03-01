@@ -145,7 +145,7 @@ export function useAuth() {
 
   const clearToken = useCallback(() => {
     setToken('')
-    setError('')
+    setError('Your session expired. Please log in again.')
     localStorage.removeItem('token')
   }, [])
 
