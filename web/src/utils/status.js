@@ -44,6 +44,11 @@ export function connectionIndicator(host, connectivity, fallbackError, snap) {
 
   const hasConnectivityResult = !!(connectivity && (connectivity.checked_at || connectivity.error || connectivity.connected === false))
   if (!hasConnectivityResult && !fallbackError) {
+    // No connectivity data and no snap yet — data is still loading on first page load.
+    // Show a neutral pending state instead of red to avoid false alarms.
+    if (!snap?.updated_at) {
+      return { ok: null, tone: 'pending', label: 'Checking…', detail: 'Connectivity check in progress.' }
+    }
     const fallbackHealth = connectionHealth(host, snap, '')
     if (fallbackHealth.ok) {
       return {

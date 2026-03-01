@@ -305,7 +305,7 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	token, err := auth.SignJWT(a.cfg.JWTSecret, user.ID, user.Username, user.Role, 12*time.Hour)
+	token, err := auth.SignJWT(a.cfg.JWTSecret, user.ID, user.Username, user.Role, 7*24*time.Hour)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to generate session token"})
 		return

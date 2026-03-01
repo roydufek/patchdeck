@@ -81,6 +81,7 @@ export function useAuth() {
       }
       setToken(data.token)
       localStorage.setItem('token', data.token)
+      setError('')  // clear any stale "session expired" message after successful login
       setLogin(s => ({ ...s, password: '', code: '' }))
       setTotpRequired(false)
       setBootstrapDone(false)
@@ -138,6 +139,7 @@ export function useAuth() {
 
   const logout = useCallback(() => {
     setToken('')
+    setError('')
     localStorage.removeItem('token')
     localStorage.removeItem('patchdeck.hostActionState.v3')
     localStorage.removeItem('patchdeck.hostActionState.v2')
@@ -145,7 +147,7 @@ export function useAuth() {
 
   const clearToken = useCallback(() => {
     setToken('')
-    setError('')
+    setError('Your session expired. Please log in again.')
     localStorage.removeItem('token')
   }, [])
 
