@@ -81,6 +81,7 @@ export function useAuth() {
       }
       setToken(data.token)
       localStorage.setItem('token', data.token)
+      setError('')  // clear any stale "session expired" message after successful login
       setLogin(s => ({ ...s, password: '', code: '' }))
       setTotpRequired(false)
       setBootstrapDone(false)
