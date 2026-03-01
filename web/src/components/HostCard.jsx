@@ -535,7 +535,7 @@ export default function HostCard({
 
           {/* Connection dot */}
           <span
-            className={`flex-shrink-0 h-2.5 w-2.5 rounded-full ${connected ? 'bg-emerald-500' : hostKeyMismatchPending ? 'bg-red-500' : 'bg-red-500'}`}
+            className={`flex-shrink-0 h-2.5 w-2.5 rounded-full ${connection.tone === 'pending' ? 'bg-gray-400 dark:bg-zinc-500 animate-pulse' : connected ? 'bg-emerald-500' : hostKeyMismatchPending ? 'bg-red-500' : 'bg-red-500'}`}
             title={connection.label}
           />
 
