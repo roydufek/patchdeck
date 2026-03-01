@@ -138,6 +138,7 @@ export function useAuth() {
 
   const logout = useCallback(() => {
     setToken('')
+    setError('')
     localStorage.removeItem('token')
     localStorage.removeItem('patchdeck.hostActionState.v3')
     localStorage.removeItem('patchdeck.hostActionState.v2')
