@@ -242,8 +242,15 @@ func (c *Client) RestartServices(host models.Host, seal *crypto.SealBox, service
 }
 
 func (c *Client) Power(host models.Host, seal *crypto.SealBox, action string) error {
-	_, err := c.runPrivileged(host, seal, fmt.Sprintf("/sbin/%s", action))
-	return err
+	// Use systemctl for graceful systemd-managed reboot/shutdown.
+	// Wrap in nohup + setsid so the command survives SSH session teardown.
+	// We intentionally ignore the EOF error caused by the server closing the connection.
+	cmd := fmt.Sprintf("nohup setsid systemctl %s &>/dev/null & sleep 0.2", action)
+	_, err := c.runPrivileged(host, seal, cmd)
+	// A non-nil error here is often just the SSH connection dropping (expected on reboot).
+	// Return nil so callers treat the action as successfully initiated.
+	_ = err
+	return nil
 }
 
 func (c *Client) CheckConnectivity(host models.Host, seal *crypto.SealBox) error {

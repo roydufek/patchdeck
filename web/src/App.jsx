@@ -41,9 +41,12 @@ function AppInner() {
 
   // Theme is managed by useTheme hook in Layout
 
-  // Load data when authenticated
+  // Load data when authenticated — clear stale errors first so login never shows a banner from a previous session
   useEffect(() => {
     if (!auth.token) return
+    hostsHook.setError('')
+    jobsHook.setError('')
+    settingsHook.setError('')
     Promise.all([
       hostsHook.loadData(),
       jobsHook.loadJobs(),
@@ -206,6 +209,7 @@ function AppInner() {
             actionBusy={hostsHook.actionBusy}
             loading={hostsHook.loading}
             onScan={(hostId) => hostsHook.hostAction(hostId, 'scan')}
+            onScanBulk={(hostId) => hostsHook.hostAction(hostId, 'scan', { skipReload: true })}
             onApply={(hostId) => hostsHook.hostAction(hostId, 'apply')}
             onRefreshConnectivity={(hostId) => hostsHook.refreshConnectivity(hostId)}
             onDeleteHost={(host) => hostsHook.deleteHost(host)}

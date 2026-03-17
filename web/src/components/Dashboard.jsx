@@ -51,7 +51,7 @@ function useAutoRefresh(onRefresh) {
 
 export default function Dashboard({
   hosts, scanByHost, connectivityByHost, hostActionState, hostActionError,
-  actionBusy, onScan, onApply, onRefreshConnectivity, onDeleteHost,
+  actionBusy, onScan, onScanBulk, onApply, onRefreshConnectivity, onDeleteHost,
   onEditHost, onAddHost, onExpandHost,
   hostDetailsOpen, onToggleDetails,
   // pass-through for HostDetails
@@ -316,7 +316,8 @@ export default function Dashboard({
       setBulkProgress({ type, current: i + 1, total })
       try {
         if (type === 'scan') {
-          await onScan(hostIds[i])
+          // Use skipReload variant — do one refresh after all hosts are done
+          await (onScanBulk || onScan)(hostIds[i])
         } else if (type === 'apply') {
           await onApply(hostIds[i])
         } else if (type === 'reboot') {
@@ -330,12 +331,16 @@ export default function Dashboard({
 
     setBulkProgress(null)
 
+    // Single reload after all bulk scans complete — avoids race condition
+    // where concurrent loadData() calls from individual scans clobber each other
+    if (type === 'scan' && onRefreshAll) onRefreshAll()
+
     const labels = { scan: 'Scanned', apply: 'Applied updates to', reboot: 'Rebooted' }
     toast.addToast({
       type: successCount === total ? 'success' : 'info',
       message: `${labels[type]} ${successCount}/${total} host${total !== 1 ? 's' : ''}`
     })
-  }, [onScan, onApply, onReboot, toast])
+  }, [onScan, onScanBulk, onApply, onReboot, onRefreshAll, toast])
 
   // Confirmation labels
   function bulkConfirmConfig(type, ids) {

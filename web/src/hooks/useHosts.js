@@ -196,7 +196,7 @@ export function useHosts(token, clearToken) {
     }
   }, [authedFetch])
 
-  const hostAction = useCallback(async (hostId, mode) => {
+  const hostAction = useCallback(async (hostId, mode, { skipReload = false } = {}) => {
     if (!authedFetch) return
     const key = `${hostId}:${mode}`
     setActionBusy(prev => ({ ...prev, [key]: true }))
@@ -228,7 +228,7 @@ export function useHosts(token, clearToken) {
         }
       })
       setHostConnectivityState(hostId, true)
-      await loadData({ skipConnectivity: true })
+      if (!skipReload) await loadData({ skipConnectivity: true })
     } catch (e) {
       const msg = e.message || `${mode} failed`
       setError(msg)
@@ -643,6 +643,7 @@ export function useHosts(token, clearToken) {
     setConnectivityByHost({})
     setHostActionError({})
     setPostApplyPrompt(null)
+    setError('')
     recoveryMonitor.reset()
     stream.resetStream()
     setStreamHostId(null)
