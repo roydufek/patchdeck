@@ -29,34 +29,64 @@ export function useRecoveryMonitor() {
     if (token) params.set('token', token)
     params.set('timeout', String(timeoutSec))
     const url = `${API}/hosts/${hId}/await-recovery?${params}`
-    const es = new EventSource(url)
-    eventSourceRef.current = es
 
-    es.addEventListener('ping', (e) => {
-      try {
-        const d = JSON.parse(e.data)
-        setAttempts(d.attempt || 0)
-        setElapsed(d.elapsed_seconds || 0)
-      } catch {}
-    })
+    let gotStart = false
+    let gotResult = false
+    let retryTimer = null
 
-    es.addEventListener('result', (e) => {
-      try {
-        const d = JSON.parse(e.data)
-        setElapsed(d.elapsed_seconds || 0)
-        setStatus(d.recovered ? 'recovered' : 'timeout')
-      } catch {}
-    })
+    const connect = () => {
+      const es = new EventSource(url)
+      eventSourceRef.current = es
 
-    es.addEventListener('done', () => {
-      cleanup()
-    })
+      es.addEventListener('start', () => {
+        gotStart = true
+      })
 
-    es.onerror = () => {
-      if (eventSourceRef.current === es) {
+      es.addEventListener('ping', (e) => {
+        try {
+          const d = JSON.parse(e.data)
+          setAttempts(d.attempt || 0)
+          setElapsed(d.elapsed_seconds || 0)
+        } catch {}
+      })
+
+      es.addEventListener('result', (e) => {
+        try {
+          const d = JSON.parse(e.data)
+          gotResult = true
+          setElapsed(d.elapsed_seconds || 0)
+          setStatus(d.recovered ? 'recovered' : 'timeout')
+        } catch {}
+      })
+
+      es.addEventListener('done', () => {
         cleanup()
+      })
+
+      es.onerror = () => {
+        if (eventSourceRef.current !== es) return
+        cleanup()
+        if (gotResult) return // already handled via result event
+        if (!gotStart) {
+          // Connection dropped before server sent 'start' — host is mid-shutdown,
+          // retry after a short delay (the server's 10s initial wait may not have fired yet)
+          retryTimer = setTimeout(() => {
+            if (eventSourceRef.current === null) connect()
+          }, 3000)
+          return
+        }
+        // Got start but lost connection mid-monitoring — treat as error
         setStatus(prev => prev === 'monitoring' ? 'error' : prev)
       }
+    }
+
+    connect()
+
+    // Store cleanup for retryTimer too
+    const originalCleanup = cleanup
+    eventSourceRef._retryCleanup = () => {
+      if (retryTimer) clearTimeout(retryTimer)
+      retryTimer = null
     }
   }, [cleanup])
 

@@ -611,14 +611,12 @@ export function useHosts(token, clearToken) {
         return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
       })
       setHostActionError(prev => ({ ...prev, [hostId]: '' }))
-      // Single loadData + connectivity refresh, then one scan once host is stable
-      loadData()
+      // Use hostAction (not hostActionStream) so the scan works regardless of
+      // whether the stream panel is open or the card is collapsed
       refreshConnectivity(hostId)
-      if (tokenRef.current) {
-        setTimeout(() => {
-          if (tokenRef.current) hostActionStream(hostId, 'scan', tokenRef.current)
-        }, 2000)
-      }
+      setTimeout(() => {
+        hostAction(hostId, 'scan')
+      }, 2000)
     } else if (recoveryMonitor.status === 'timeout' && recoveryMonitor.hostId) {
       recoveryActedRef.current = true
       const hostId = recoveryMonitor.hostId
