@@ -590,27 +590,37 @@ export function useHosts(token, clearToken) {
   }, [stream])
 
   // Watch recovery monitor status
+  // NOTE: intentionally excludes recoveryMonitor.elapsed from deps — elapsed ticks on every
+  // ping and would re-fire this effect repeatedly, causing multiple scans and UI flicker.
+  // recoveryActedRef ensures post-recovery actions fire exactly once per reboot event.
+  const recoveryActedRef = useRef(false)
   useEffect(() => {
+    if (recoveryMonitor.status === 'idle') {
+      recoveryActedRef.current = false
+      return
+    }
+    if (recoveryActedRef.current) return
     if (recoveryMonitor.status === 'recovered' && recoveryMonitor.hostId) {
+      recoveryActedRef.current = true
       const hostId = recoveryMonitor.hostId
+      const elapsed = recoveryMonitor.elapsed
       const actionAt = new Date().toISOString()
       setHostActionState(prev => {
         const existing = prev[hostId] || {}
-        const nextAction = { mode: 'reboot', ok: true, summary: `Host recovered after ${recoveryMonitor.elapsed}s`, at: actionAt }
+        const nextAction = { mode: 'reboot', ok: true, summary: `Host recovered after ${elapsed}s`, at: actionAt }
         return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
       })
       setHostActionError(prev => ({ ...prev, [hostId]: '' }))
-      // Auto-trigger a scan to refresh state
-      if (tokenRef.current) {
-        setTimeout(() => {
-          if (tokenRef.current) {
-            hostActionStream(hostId, 'scan', tokenRef.current)
-          }
-        }, 2000)
-      }
+      // Single loadData + connectivity refresh, then one scan once host is stable
       loadData()
       refreshConnectivity(hostId)
+      if (tokenRef.current) {
+        setTimeout(() => {
+          if (tokenRef.current) hostActionStream(hostId, 'scan', tokenRef.current)
+        }, 2000)
+      }
     } else if (recoveryMonitor.status === 'timeout' && recoveryMonitor.hostId) {
+      recoveryActedRef.current = true
       const hostId = recoveryMonitor.hostId
       const actionAt = new Date().toISOString()
       setHostActionState(prev => {
@@ -620,6 +630,7 @@ export function useHosts(token, clearToken) {
       })
       refreshConnectivity(hostId)
     } else if (recoveryMonitor.status === 'error' && recoveryMonitor.hostId) {
+      recoveryActedRef.current = true
       const hostId = recoveryMonitor.hostId
       const actionAt = new Date().toISOString()
       setHostActionState(prev => {
@@ -628,7 +639,7 @@ export function useHosts(token, clearToken) {
         return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
       })
     }
-  }, [recoveryMonitor.status, recoveryMonitor.hostId, recoveryMonitor.elapsed, loadData, refreshConnectivity])
+  }, [recoveryMonitor.status, recoveryMonitor.hostId, loadData, refreshConnectivity])
 
   // Dismiss post-apply prompt
   const dismissPostApplyPrompt = useCallback(() => {
