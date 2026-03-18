@@ -210,6 +210,7 @@ function AppInner() {
             loading={hostsHook.loading}
             onScan={(hostId) => hostsHook.hostAction(hostId, 'scan')}
             onScanBulk={(hostId) => hostsHook.hostAction(hostId, 'scan', { skipReload: true })}
+            onRefreshScans={() => hostsHook.loadData({ skipConnectivity: true })}
             onApply={(hostId) => hostsHook.hostAction(hostId, 'apply')}
             onRefreshConnectivity={(hostId) => hostsHook.refreshConnectivity(hostId)}
             onDeleteHost={(host) => hostsHook.deleteHost(host)}

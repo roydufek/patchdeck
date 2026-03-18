@@ -51,16 +51,23 @@ func FriendlySSHError(err error) string {
 // libfoo/jammy-security 1.2.3-1 amd64 [upgradable from: 1.2.2-1]
 var aptLineRe = regexp.MustCompile(`^([^/]+)/(\S+)\s+(\S+)\s+(\S+)\s+\[upgradable from:\s+(\S+?)\]`)
 
+// aptPhasedRe detects Ubuntu phased updates, e.g. "(phased 20%)" at end of line.
+// These packages are shown as upgradable by apt but are intentionally withheld
+// by APT's phased rollout mechanism — dist-upgrade will not install them.
+var aptPhasedRe = regexp.MustCompile(`\(phased \d+%\)`)
+
 // parseAptLine extracts PackageInfo from a single apt upgradable line.
 // Falls back to name-only if parsing fails.
-func parseAptLine(line string) models.PackageInfo {
+// Returns (info, isPhased) — callers may choose to exclude phased packages from counts.
+func parseAptLine(line string) (models.PackageInfo, bool) {
+	isPhased := aptPhasedRe.MatchString(line)
 	m := aptLineRe.FindStringSubmatch(line)
 	if m == nil {
 		// Fallback: try to get at least the package name (before '/')
 		if idx := strings.Index(line, "/"); idx > 0 {
-			return models.PackageInfo{Name: line[:idx]}
+			return models.PackageInfo{Name: line[:idx]}, isPhased
 		}
-		return models.PackageInfo{Name: line}
+		return models.PackageInfo{Name: line}, isPhased
 	}
 	return models.PackageInfo{
 		Name:           m[1],
@@ -68,7 +75,7 @@ func parseAptLine(line string) models.PackageInfo {
 		NewVersion:     m[3],
 		Arch:           m[4],
 		CurrentVersion: m[5],
-	}
+	}, isPhased
 }
 
 // parseSysinfo extracts os name, os version, uptime, and kernel from the __SYSINFO__ block.
@@ -158,7 +165,12 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 			continue
 		}
 		if strings.Contains(line, " / ") || strings.Contains(line, "upgradable from:") {
-			pkgs = append(pkgs, parseAptLine(line))
+			pkg, isPhased := parseAptLine(line)
+			// Skip phased updates — Ubuntu withholds these from dist-upgrade anyway,
+			// so counting them inflates the update count without any actionable result.
+			if !isPhased {
+				pkgs = append(pkgs, pkg)
+			}
 		}
 		if strings.HasPrefix(line, "NEEDRESTART-SVC:") {
 			services = append(services, strings.TrimPrefix(line, "NEEDRESTART-SVC:"))
@@ -228,7 +240,9 @@ func (c *Client) ApplyUpdates(host models.Host, seal *crypto.SealBox) (models.Ap
 	if err != nil {
 		return models.ApplyResult{}, err
 	}
-	changed := strings.Count(raw, "Setting up ") + strings.Count(raw, "Unpacking ")
+	// Count only "Setting up" — each package prints both "Unpacking" and "Setting up",
+	// so counting both doubles the result. "Setting up" is the final installation step.
+	changed := strings.Count(raw, "Setting up ")
 	return models.ApplyResult{ChangedPackages: changed, RawOutput: raw, NeedsReboot: strings.Contains(raw, "__REBOOT__")}, nil
 }
 
@@ -497,9 +511,10 @@ func (c *Client) runPrivilegedStreaming(host models.Host, seal *crypto.SealBox, 
 
 	rootCmd := runAsRootCommand(command)
 
-	// Try passwordless sudo first (non-streaming, quick test)
-	if _, err := c.run(host, seal, "sudo -n "+rootCmd); err == nil {
-		// Passwordless sudo works but we ran it non-streaming. Re-run streaming.
+	// Test passwordless sudo with a no-op command — do NOT run the real command
+	// non-streaming first, as that would execute it twice (wasting time and producing
+	// inconsistent results if apt state changes between runs).
+	if _, err := c.run(host, seal, "sudo -n true"); err == nil {
 		return c.RunStreaming(host, seal, "sudo -n "+rootCmd, onLine)
 	}
 
@@ -537,6 +552,8 @@ func (c *Client) ApplyUpdatesStreaming(host models.Host, seal *crypto.SealBox, o
 	if err != nil {
 		return models.ApplyResult{}, err
 	}
-	changed := strings.Count(raw, "Setting up ") + strings.Count(raw, "Unpacking ")
+	// Count only "Setting up" — each package prints both "Unpacking" and "Setting up",
+	// so counting both doubles the result. "Setting up" is the final installation step.
+	changed := strings.Count(raw, "Setting up ")
 	return models.ApplyResult{ChangedPackages: changed, RawOutput: raw, NeedsReboot: strings.Contains(raw, "__REBOOT__")}, nil
 }

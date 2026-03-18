@@ -70,6 +70,8 @@ export default function Dashboard({
   postApplyPrompt, onDismissPostApplyPrompt,
   // Refresh callback for auto-refresh & keyboard shortcut
   onRefreshAll,
+  // Lightweight scan-only refresh used between bulk scan steps
+  onRefreshScans,
   // Auth token for API calls
   token
 }) {
@@ -316,8 +318,10 @@ export default function Dashboard({
       setBulkProgress({ type, current: i + 1, total })
       try {
         if (type === 'scan') {
-          // Use skipReload variant — do one refresh after all hosts are done
+          // Use skipReload variant — refresh scans after each host so cards update
+          // progressively as results come in, rather than all at once at the end.
           await (onScanBulk || onScan)(hostIds[i])
+          if (onRefreshScans) await onRefreshScans()
         } else if (type === 'apply') {
           await onApply(hostIds[i])
         } else if (type === 'reboot') {
@@ -331,8 +335,7 @@ export default function Dashboard({
 
     setBulkProgress(null)
 
-    // Single reload after all bulk scans complete — avoids race condition
-    // where concurrent loadData() calls from individual scans clobber each other
+    // Final full reload after all bulk scans complete
     if (type === 'scan' && onRefreshAll) onRefreshAll()
 
     const labels = { scan: 'Scanned', apply: 'Applied updates to', reboot: 'Rebooted' }
@@ -340,7 +343,7 @@ export default function Dashboard({
       type: successCount === total ? 'success' : 'info',
       message: `${labels[type]} ${successCount}/${total} host${total !== 1 ? 's' : ''}`
     })
-  }, [onScan, onScanBulk, onApply, onReboot, onRefreshAll, toast])
+  }, [onScan, onScanBulk, onRefreshScans, onApply, onReboot, onRefreshAll, toast])
 
   // Confirmation labels
   function bulkConfirmConfig(type, ids) {
