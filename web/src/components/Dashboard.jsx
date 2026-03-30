@@ -119,8 +119,8 @@ export default function Dashboard({
   const [selectedHostIds, setSelectedHostIds] = useState(new Set())
 
   // Bulk action state
-  const [bulkConfirm, setBulkConfirm] = useState(null) // { type: 'scan'|'apply'|'reboot', hostIds: [...] }
-  const [bulkProgress, setBulkProgress] = useState(null) // { type, current, total }
+  const [bulkConfirm, setBulkConfirm] = useState(null) // { type: 'scan'|'apply'|'reboot', hostIds: [...], requestedCount?: number }
+  const [bulkProgress, setBulkProgress] = useState(null) // { type, current, total, requestedCount }
   const bulkBusy = bulkProgress !== null
 
   const toast = useToastContext()
@@ -306,16 +306,16 @@ export default function Dashboard({
   }, [hosts])
 
   // Bulk action handlers
-  const runBulk = useCallback(async (type, hostIds) => {
+  const runBulk = useCallback(async (type, hostIds, requestedCount = hostIds.length) => {
     setBulkConfirm(null)
     const total = hostIds.length
     if (total === 0) return
 
-    setBulkProgress({ type, current: 0, total })
+    setBulkProgress({ type, current: 0, total, requestedCount })
     let successCount = 0
 
     for (let i = 0; i < hostIds.length; i++) {
-      setBulkProgress({ type, current: i + 1, total })
+      setBulkProgress({ type, current: i + 1, total, requestedCount })
       try {
         if (type === 'scan') {
           // Use skipReload variant — refresh scans after each host so cards update
@@ -324,6 +324,9 @@ export default function Dashboard({
           if (onRefreshScans) await onRefreshScans()
         } else if (type === 'apply') {
           await onApply(hostIds[i])
+          // After apply, immediately scan this host and refresh before moving on.
+          await (onScanBulk || onScan)(hostIds[i])
+          if (onRefreshScans) await onRefreshScans()
         } else if (type === 'reboot') {
           await onReboot(hostIds[i])
         }
@@ -335,45 +338,50 @@ export default function Dashboard({
 
     setBulkProgress(null)
 
-    // Final full reload after all bulk scans complete
-    if (type === 'scan' && onRefreshAll) onRefreshAll()
+    // Final full reload after bulk scans/applies complete
+    if ((type === 'scan' || type === 'apply') && onRefreshAll) onRefreshAll()
 
     const labels = { scan: 'Scanned', apply: 'Applied updates to', reboot: 'Rebooted' }
+    const eligibleSuffix = requestedCount > total ? ` (${total} eligible of ${requestedCount} selected)` : ''
     toast.addToast({
       type: successCount === total ? 'success' : 'info',
-      message: `${labels[type]} ${successCount}/${total} host${total !== 1 ? 's' : ''}`
+      message: `${labels[type]} ${successCount}/${total} host${total !== 1 ? 's' : ''}${eligibleSuffix}`
     })
   }, [onScan, onScanBulk, onRefreshScans, onApply, onReboot, onRefreshAll, toast])
 
   // Confirmation labels
-  function bulkConfirmConfig(type, ids) {
+  function bulkConfirmConfig(type, ids, requestedCount = ids.length) {
     const hostNames = ids.map(id => hostNameById.get(id) || id)
     const listPreview = hostNames.length <= 5
       ? hostNames.join(', ')
       : hostNames.slice(0, 4).join(', ') + ` + ${hostNames.length - 4} more`
 
+    const eligibilityNote = requestedCount > ids.length
+      ? `\n\nNote: ${ids.length} of ${requestedCount} selected host(s) are eligible for this action.`
+      : ''
+
     if (type === 'scan') return {
       title: `Scan ${ids.length} host${ids.length !== 1 ? 's' : ''}`,
-      message: `Scan the following hosts for updates?\n\n${listPreview}`,
+      message: `Scan the following hosts for updates?\n\n${listPreview}${eligibilityNote}`,
       label: 'Scan All',
       color: 'blue'
     }
     if (type === 'apply') return {
       title: `Apply updates to ${ids.length} host${ids.length !== 1 ? 's' : ''}`,
-      message: `Apply pending updates to the following hosts? This will run apt dist-upgrade.\n\n${listPreview}`,
+      message: `Apply pending updates to the following hosts? This will run apt dist-upgrade, then auto-scan each host before moving to the next.\n\n${listPreview}${eligibilityNote}`,
       label: 'Apply All',
       color: 'blue'
     }
     if (type === 'reboot') return {
       title: `Reboot ${ids.length} host${ids.length !== 1 ? 's' : ''}`,
-      message: `Reboot the following hosts? They will be temporarily unavailable.\n\n${listPreview}`,
+      message: `Reboot the following hosts? They will be temporarily unavailable.\n\n${listPreview}${eligibilityNote}`,
       label: 'Reboot All',
       color: 'red'
     }
     return { title: '', message: '', label: 'Confirm', color: 'blue' }
   }
 
-  const confirmCfg = bulkConfirm ? bulkConfirmConfig(bulkConfirm.type, bulkConfirm.hostIds) : null
+  const confirmCfg = bulkConfirm ? bulkConfirmConfig(bulkConfirm.type, bulkConfirm.hostIds, bulkConfirm.requestedCount) : null
 
   return (
     <div>
@@ -384,7 +392,7 @@ export default function Dashboard({
         message={confirmCfg?.message || ''}
         confirmLabel={confirmCfg?.label || 'Confirm'}
         confirmColor={confirmCfg?.color || 'blue'}
-        onConfirm={() => bulkConfirm && runBulk(bulkConfirm.type, bulkConfirm.hostIds)}
+        onConfirm={() => bulkConfirm && runBulk(bulkConfirm.type, bulkConfirm.hostIds, bulkConfirm.requestedCount)}
         onCancel={() => setBulkConfirm(null)}
       />
 
@@ -418,7 +426,7 @@ export default function Dashboard({
         <div className="flex items-center gap-2">
           {bulkBusy && (
             <span className="text-xs text-blue-400 animate-pulse">
-              {bulkProgress.type === 'scan' ? 'Scanning' : bulkProgress.type === 'apply' ? 'Applying' : 'Rebooting'} {bulkProgress.current}/{bulkProgress.total}…
+              {bulkProgress.type === 'scan' ? 'Scanning' : bulkProgress.type === 'apply' ? 'Applying' : 'Rebooting'} {bulkProgress.current}/{bulkProgress.total}{bulkProgress.requestedCount > bulkProgress.total ? ` (eligible of ${bulkProgress.requestedCount} selected)` : ''}…
             </span>
           )}
 
@@ -522,7 +530,7 @@ export default function Dashboard({
             <>
               <span className="text-gray-300 dark:text-zinc-700">|</span>
               <button
-                onClick={() => setBulkConfirm({ type: 'scan', hostIds: bulkEligible.scannable })}
+                onClick={() => setBulkConfirm({ type: 'scan', hostIds: bulkEligible.scannable, requestedCount: visibleSelectedIds.size })}
                 disabled={bulkBusy || bulkEligible.scannable.length === 0}
                 className="rounded-lg border border-gray-300 dark:border-zinc-700 px-3 py-1 text-xs text-gray-700 dark:text-zinc-300 hover:text-gray-900 dark:hover:text-white hover:border-gray-400 dark:hover:border-zinc-500 disabled:opacity-30 transition-colors"
                 title={bulkEligible.scannable.length === 0 ? 'No selected hosts are eligible for scanning' : `Scan ${bulkEligible.scannable.length} host(s)`}
@@ -530,7 +538,7 @@ export default function Dashboard({
                 Scan selected ({bulkEligible.scannable.length})
               </button>
               <button
-                onClick={() => setBulkConfirm({ type: 'apply', hostIds: bulkEligible.applyable })}
+                onClick={() => setBulkConfirm({ type: 'apply', hostIds: bulkEligible.applyable, requestedCount: visibleSelectedIds.size })}
                 disabled={bulkBusy || bulkEligible.applyable.length === 0}
                 className="rounded-lg border border-blue-800/60 px-3 py-1 text-xs text-blue-400 hover:text-blue-300 hover:border-blue-700 disabled:opacity-30 transition-colors"
                 title={bulkEligible.applyable.length === 0 ? 'No selected hosts have pending updates with apply policy' : `Apply updates to ${bulkEligible.applyable.length} host(s)`}
@@ -538,7 +546,7 @@ export default function Dashboard({
                 Apply selected ({bulkEligible.applyable.length})
               </button>
               <button
-                onClick={() => setBulkConfirm({ type: 'reboot', hostIds: bulkEligible.rebootable })}
+                onClick={() => setBulkConfirm({ type: 'reboot', hostIds: bulkEligible.rebootable, requestedCount: visibleSelectedIds.size })}
                 disabled={bulkBusy || bulkEligible.rebootable.length === 0}
                 className="rounded-lg border border-red-800/60 px-3 py-1 text-xs text-red-400 hover:text-red-300 hover:border-red-700 disabled:opacity-30 transition-colors"
                 title={bulkEligible.rebootable.length === 0 ? 'No selected hosts are eligible for reboot' : `Reboot ${bulkEligible.rebootable.length} host(s)`}
