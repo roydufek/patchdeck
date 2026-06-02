@@ -19,6 +19,20 @@ export function formatRelativeTime(ts) {
   return `${Math.round(absMs / (24 * 60 * 60 * 1000))}d ${suffix}`
 }
 
+// formatUptime turns seconds (from a host's /proc/uptime) into a compact human
+// string like "5d 3h", "2h 17m", or "12m". "just booted" for <60s makes a reboot
+// obvious. Used for the live uptime shown on host cards.
+export function formatUptime(seconds) {
+  const s = Math.floor(Number(seconds) || 0)
+  if (s < 60) return 'just booted'
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  if (d > 0) return `${d}d ${h}h`
+  if (h > 0) return `${h}h ${m}m`
+  return `${m}m`
+}
+
 export function staleLabel(ts) {
   if (!ts) return null
   const d = new Date(ts)

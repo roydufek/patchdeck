@@ -13,3 +13,7 @@ out-arrow-light/
 
 # devbox deploy-only overlay (env-specific Traefik labels); canonical composes are docker-compose*.yml
 /compose.yaml
+
+# Claude Code local tooling/runtime state — never commit
+# (.claude/scheduled_tasks.lock was accidentally tracked before v1.7.3)
+.claude/

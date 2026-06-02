@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { connectionIndicator, hostKeyHealth, isConnectionFailureMessage } from '../utils/status.js'
-import { formatRelativeTime, formatTimestamp, truncateText, staleLabel } from '../utils/format.js'
+import { formatRelativeTime, formatTimestamp, truncateText, staleLabel, formatUptime } from '../utils/format.js'
 import { timeAgo, fullDate } from '../utils/timeago.js'
 import HostDetails from './HostDetails.jsx'
 import ConfirmDialog from './ConfirmDialog.jsx'
@@ -368,6 +368,12 @@ export default function HostCard({
   const restartServicesCount = Array.isArray(snap?.needs_restart) ? snap.needs_restart.length : 0
   const restartNeeded = !!(snap?.needs_reboot || restartServicesCount > 0)
 
+  // Uptime: prefer the live connectivity reading (refreshed every poll, reboot-aware)
+  // over the scan snapshot, which stays frozen until the next scan.
+  const liveUptime = connectivity && connectivity.uptime_seconds > 0
+    ? formatUptime(connectivity.uptime_seconds)
+    : (snap?.uptime || '')
+
   // Busy
   const connectivityBusy = !!actionBusy[`${h.id}:connectivity`]
   // A live SSH check is in flight (or hasn't resolved yet) → dot pulses yellow.
@@ -594,8 +600,8 @@ export default function HostCard({
                 {snap.os_name && (
                   <span className="hidden lg:inline"> · <span className="text-gray-500 dark:text-zinc-500">{snap.os_name}</span></span>
                 )}
-                {snap.uptime && (
-                  <span className="hidden lg:inline"> · <span className="text-gray-400 dark:text-zinc-600">up {snap.uptime}</span></span>
+                {liveUptime && (
+                  <span className="hidden lg:inline"> · <span className="text-gray-400 dark:text-zinc-600">up {liveUptime}</span></span>
                 )}
               </>
             ) : 'No scan data'}

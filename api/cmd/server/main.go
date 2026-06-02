@@ -398,6 +398,10 @@ type hostConnectivityStatus struct {
 	Error       string `json:"error,omitempty"`
 	Source      string `json:"source"`
 	TimeoutSecs int    `json:"timeout_seconds"`
+	// UptimeSeconds is the host's uptime as of this check (0 = unknown). Fetched in the
+	// same SSH round-trip so the dashboard can show a live, reboot-aware uptime without
+	// a full scan.
+	UptimeSeconds int64 `json:"uptime_seconds,omitempty"`
 }
 
 func (a *app) hostConnectivity(w http.ResponseWriter, _ *http.Request) {
@@ -435,11 +439,12 @@ func (a *app) hostConnectivity(w http.ResponseWriter, _ *http.Request) {
 				return
 			}
 
-			if err := checker.CheckConnectivity(hostWithSecrets, a.secrets); err != nil {
+			if up, err := checker.CheckConnectivity(hostWithSecrets, a.secrets); err != nil {
 				res.Connected = false
 				res.Error = strings.TrimSpace(err.Error())
 			} else {
 				res.Connected = true
+				res.UptimeSeconds = up
 			}
 			results[i] = res
 		}(i, host)
@@ -2370,7 +2375,7 @@ func (a *app) awaitRecovery(w http.ResponseWriter, r *http.Request) {
 		elapsed := time.Since(start).Seconds()
 
 		connected := false
-		if err := checker.CheckConnectivity(host, a.secrets); err == nil {
+		if _, err := checker.CheckConnectivity(host, a.secrets); err == nil {
 			connected = true
 		}
 

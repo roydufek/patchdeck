@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -293,9 +294,24 @@ func (c *Client) Power(host models.Host, seal *crypto.SealBox, action string) er
 	return nil
 }
 
-func (c *Client) CheckConnectivity(host models.Host, seal *crypto.SealBox) error {
-	_, err := c.run(context.Background(), host, seal, "true")
-	return err
+// CheckConnectivity verifies SSH reachability and, in the same round-trip, returns
+// the host's uptime in seconds (read from /proc/uptime — cheap, locale-proof, and
+// reboot-accurate). A non-nil error means unreachable; the uptime is best-effort
+// (0 if it can't be read/parsed) and never affects the reachability verdict.
+func (c *Client) CheckConnectivity(host models.Host, seal *crypto.SealBox) (int64, error) {
+	out, err := c.run(context.Background(), host, seal, "cat /proc/uptime")
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(out) // "<uptime_seconds> <idle_seconds>"
+	if len(fields) == 0 {
+		return 0, nil
+	}
+	secs, perr := strconv.ParseFloat(fields[0], 64)
+	if perr != nil {
+		return 0, nil
+	}
+	return int64(secs), nil
 }
 
 func shellSingleQuote(s string) string {
