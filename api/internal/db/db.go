@@ -292,6 +292,11 @@ func DeleteHost(db *sql.DB, id string) error {
 	if _, err := tx.Exec(`DELETE FROM scan_history WHERE host_id=?`, id); err != nil {
 		return err
 	}
+	// Drop run history for this host's jobs before the jobs themselves, otherwise
+	// the job_runs rows are orphaned (PruneJobRuns is per-job and the job is gone).
+	if _, err := tx.Exec(`DELETE FROM job_runs WHERE job_id IN (SELECT id FROM jobs WHERE host_id=?)`, id); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM jobs WHERE host_id=?`, id); err != nil {
 		return err
 	}
@@ -409,7 +414,7 @@ func ListJobRuns(db *sql.DB, jobID string, limit int) ([]models.JobRun, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 20
 	}
-	rows, err := db.Query(`SELECT `+jobRunCols+` FROM job_runs WHERE job_id=? ORDER BY started_at DESC LIMIT ?`, jobID, limit)
+	rows, err := db.Query(`SELECT `+jobRunCols+` FROM job_runs WHERE job_id=? ORDER BY started_at DESC, id DESC LIMIT ?`, jobID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -426,7 +431,7 @@ func ListJobRuns(db *sql.DB, jobID string, limit int) ([]models.JobRun, error) {
 }
 
 func GetLastJobRun(db *sql.DB, jobID string) (*models.JobRun, error) {
-	row := db.QueryRow(`SELECT `+jobRunCols+` FROM job_runs WHERE job_id=? ORDER BY started_at DESC LIMIT 1`, jobID)
+	row := db.QueryRow(`SELECT `+jobRunCols+` FROM job_runs WHERE job_id=? ORDER BY started_at DESC, id DESC LIMIT 1`, jobID)
 	jr, err := scanJobRun(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -439,7 +444,7 @@ func GetLastJobRun(db *sql.DB, jobID string) (*models.JobRun, error) {
 
 // PruneJobRuns keeps only the most recent `keep` runs for a job.
 func PruneJobRuns(db *sql.DB, jobID string, keep int) error {
-	_, err := db.Exec(`DELETE FROM job_runs WHERE job_id=? AND id NOT IN (SELECT id FROM job_runs WHERE job_id=? ORDER BY started_at DESC LIMIT ?)`, jobID, jobID, keep)
+	_, err := db.Exec(`DELETE FROM job_runs WHERE job_id=? AND id NOT IN (SELECT id FROM job_runs WHERE job_id=? ORDER BY started_at DESC, id DESC LIMIT ?)`, jobID, jobID, keep)
 	return err
 }
 
@@ -960,7 +965,13 @@ func ValidateAPIToken(db *sql.DB, token string) (bool, string, error) {
 	if err != nil {
 		return false, "", err
 	}
-	_, _ = db.Exec(`UPDATE api_tokens SET last_used_at=? WHERE id=?`, time.Now().UTC(), id)
+	// Throttle the last_used_at write to at most once per minute. Every authenticated
+	// API request hits this path; an unconditional write per request serializes SQLite
+	// writers under concurrent polling (the same contention the session path avoids).
+	// The guard is in the WHERE clause so it stays a single statement with no extra read.
+	now := time.Now().UTC()
+	_, _ = db.Exec(`UPDATE api_tokens SET last_used_at=? WHERE id=? AND (last_used_at IS NULL OR last_used_at < ?)`,
+		now, id, now.Add(-time.Minute))
 	return true, id, nil
 }
 

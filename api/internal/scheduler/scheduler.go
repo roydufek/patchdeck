@@ -229,6 +229,17 @@ func (e *Engine) runJob(ctx context.Context, j models.Job) {
 		runID = ""
 	}
 
+	// Contain panics: a panic in any scan/apply/parse path would otherwise
+	// propagate out of the job goroutine and crash the whole process (taking the
+	// HTTP server down with it), and would leave this run row stuck in "running".
+	// Recover, log, and close the run as failed so the engine keeps serving.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("scheduler: job=%s PANIC recovered: %v", j.ID, r)
+			e.finishRun(runID, "failed", 0, 0, 0, fmt.Sprintf("internal error (panic): %v", r))
+		}
+	}()
+
 	hosts, rerr := e.resolveJobHosts(j)
 	if rerr != nil {
 		log.Printf("scheduler: job=%s resolve hosts failed: %v", j.ID, rerr)
@@ -417,15 +428,41 @@ func cronMatches(expr string, now time.Time) bool {
 	if len(parts) != 5 {
 		return false
 	}
-	vals := []int{now.Minute(), now.Hour(), now.Day(), int(now.Month()), int(now.Weekday())}
-	labels := []string{"minute", "hour", "day", "month", "weekday"}
-	limits := [][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 7}}
-	for i := range parts {
-		if !fieldMatches(parts[i], vals[i], labels[i], limits[i][0], limits[i][1]) {
-			return false
-		}
+	// minute, hour, month are a straightforward AND.
+	if !fieldMatches(parts[0], now.Minute(), "minute", 0, 59) {
+		return false
 	}
-	return true
+	if !fieldMatches(parts[1], now.Hour(), "hour", 0, 23) {
+		return false
+	}
+	if !fieldMatches(parts[3], int(now.Month()), "month", 1, 12) {
+		return false
+	}
+	// Day-of-month (field 2) and day-of-week (field 4) follow standard Vixie-cron
+	// semantics: when BOTH are restricted (neither is "*"), the tick matches if
+	// EITHER matches (OR). Otherwise the restricted field applies (AND with the "*").
+	dom := strings.TrimSpace(parts[2])
+	dow := strings.TrimSpace(parts[4])
+	domMatch := fieldMatches(dom, now.Day(), "day", 1, 31)
+	dowMatch := weekdayFieldMatches(dow, now.Weekday())
+	if dom != "*" && dow != "*" {
+		return domMatch || dowMatch
+	}
+	return domMatch && dowMatch
+}
+
+// weekdayFieldMatches matches a cron weekday field against wd, accepting BOTH 0
+// and 7 for Sunday. Cron allows 7 to mean Sunday, but time.Weekday() only ever
+// yields 0-6, so a field of "7" (or a range like "5-7") would never fire without
+// this normalization.
+func weekdayFieldMatches(field string, wd time.Weekday) bool {
+	if fieldMatches(field, int(wd), "weekday", 0, 7) {
+		return true
+	}
+	if wd == time.Sunday && fieldMatches(field, 7, "weekday", 0, 7) {
+		return true
+	}
+	return false
 }
 
 func isCronMacro(expr string) bool {

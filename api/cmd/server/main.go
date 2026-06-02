@@ -1761,22 +1761,28 @@ func (a *app) scanAllHosts(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, results)
 }
 
-// clientIP extracts the originating client IP, honoring the reverse proxy's
-// X-Forwarded-For / X-Real-IP headers (Traefik sets these), falling back to RemoteAddr.
+// clientIP extracts the originating client IP for rate-limiting. It honors the
+// reverse proxy's X-Forwarded-For / X-Real-IP headers ONLY when the request's
+// direct peer is a trusted local proxy (loopback or a private network — Traefik
+// runs on a private docker network). A client reaching the app directly cannot
+// then spoof those headers to dodge the per-IP login brute-force limiter.
 func clientIP(r *http.Request) string {
-	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return xff
-	}
-	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
-		return xr
-	}
+	peer := r.RemoteAddr
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
+		peer = host
 	}
-	return r.RemoteAddr
+	if ip := net.ParseIP(peer); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+			if i := strings.IndexByte(xff, ','); i >= 0 {
+				return strings.TrimSpace(xff[:i])
+			}
+			return xff
+		}
+		if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
+			return xr
+		}
+	}
+	return peer
 }
 
 const sessionCookieName = "pd_session"

@@ -393,8 +393,11 @@ export default function JobsPage({
             const busy = !!actionBusy[`job:${j.id}`]
             const deleteBusy = !!actionBusy[`job:delete:${j.id}`]
             const targetLabel = jobTargetLabel(j, hosts)
-            const lr = j.last_run
             const runs = jobRunsByJob[j.id] || []
+            // The job list's last_run is a page-load snapshot; once the Runs panel
+            // has been opened we have a live history, so prefer its newest entry
+            // (ListJobRuns returns newest-first) over the stale snapshot.
+            const lr = runs.length > 0 ? runs[0] : j.last_run
             return (
               <div
                 key={j.id}

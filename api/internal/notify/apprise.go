@@ -58,7 +58,9 @@ func (d *Dispatcher) Send(url, body string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), d.timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, d.binPath, "-t", "Patchdeck", "-b", body, url)
+	// "--" terminates option parsing so a target that begins with "-" is always
+	// treated as a positional URL, never as an apprise flag (argument injection).
+	cmd := exec.CommandContext(ctx, d.binPath, "-t", "Patchdeck", "-b", body, "--", url)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		trimmed := strings.TrimSpace(string(bytes.TrimSpace(out)))
