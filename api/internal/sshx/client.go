@@ -3,6 +3,7 @@ package sshx
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -252,7 +253,7 @@ apt-get -y dist-upgrade
 test -f /var/run/reboot-required && echo __REBOOT__ || true`
 
 func (c *Client) ScanHost(host models.Host, seal *crypto.SealBox) (models.ScanResult, error) {
-	raw, err := c.runPrivileged(host, seal, scanCmd)
+	raw, err := c.runPrivileged(context.Background(), host, seal, scanCmd)
 	if err != nil {
 		return models.ScanResult{}, err
 	}
@@ -261,7 +262,7 @@ func (c *Client) ScanHost(host models.Host, seal *crypto.SealBox) (models.ScanRe
 }
 
 func (c *Client) ApplyUpdates(host models.Host, seal *crypto.SealBox) (models.ApplyResult, error) {
-	raw, err := c.runPrivileged(host, seal, applyCmd)
+	raw, err := c.runPrivileged(context.Background(), host, seal, applyCmd)
 	if err != nil {
 		return models.ApplyResult{}, err
 	}
@@ -276,7 +277,7 @@ func (c *Client) RestartServices(host models.Host, seal *crypto.SealBox, service
 		return models.RestartResult{Success: true, Output: "no services selected"}, nil
 	}
 	cmd := "systemctl restart " + strings.Join(services, " ")
-	raw, err := c.runPrivileged(host, seal, cmd)
+	raw, err := c.runPrivileged(context.Background(), host, seal, cmd)
 	return models.RestartResult{Services: services, Success: err == nil, Output: raw}, err
 }
 
@@ -285,7 +286,7 @@ func (c *Client) Power(host models.Host, seal *crypto.SealBox, action string) er
 	// Wrap in nohup + setsid so the command survives SSH session teardown.
 	// We intentionally ignore the EOF error caused by the server closing the connection.
 	cmd := fmt.Sprintf("nohup setsid systemctl %s &>/dev/null & sleep 0.2", action)
-	_, err := c.runPrivileged(host, seal, cmd)
+	_, err := c.runPrivileged(context.Background(), host, seal, cmd)
 	// A non-nil error here is often just the SSH connection dropping (expected on reboot).
 	// Return nil so callers treat the action as successfully initiated.
 	_ = err
@@ -293,7 +294,7 @@ func (c *Client) Power(host models.Host, seal *crypto.SealBox, action string) er
 }
 
 func (c *Client) CheckConnectivity(host models.Host, seal *crypto.SealBox) error {
-	_, err := c.run(host, seal, "true")
+	_, err := c.run(context.Background(), host, seal, "true")
 	return err
 }
 
@@ -308,7 +309,7 @@ func runAsRootCommand(command string) string {
 	return "sh -lc " + shellSingleQuote(command)
 }
 
-func (c *Client) runPrivileged(host models.Host, seal *crypto.SealBox, command string) (string, error) {
+func (c *Client) runPrivileged(ctx context.Context, host models.Host, seal *crypto.SealBox, command string) (string, error) {
 	sec, err := decodeSecrets(host.SecretCipher, seal)
 	if err != nil {
 		return "", err
@@ -316,7 +317,7 @@ func (c *Client) runPrivileged(host models.Host, seal *crypto.SealBox, command s
 
 	rootCmd := runAsRootCommand(command)
 
-	if out, err := c.run(host, seal, "sudo -n "+rootCmd); err == nil {
+	if out, err := c.run(ctx, host, seal, "sudo -n "+rootCmd); err == nil {
 		return out, nil
 	}
 
@@ -327,12 +328,12 @@ func (c *Client) runPrivileged(host models.Host, seal *crypto.SealBox, command s
 
 	// Pass the password via stdin to `sudo -S` rather than embedding it in the command
 	// line (where it'd be visible to ps/auditd on the remote host for the run window).
-	if out, err := c.runWithStdin(host, seal, "sudo -S -p '' "+rootCmd, strings.NewReader(sudoPass+"\n")); err == nil {
+	if out, err := c.runWithStdin(ctx, host, seal, "sudo -S -p '' "+rootCmd, strings.NewReader(sudoPass+"\n")); err == nil {
 		return out, nil
 	}
 
 	suFallback := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote(rootCmd))
-	if out, err := c.run(host, seal, suFallback); err == nil {
+	if out, err := c.run(ctx, host, seal, suFallback); err == nil {
 		return out, nil
 	}
 
@@ -360,13 +361,13 @@ func (c *Client) verifyingHostKeyCallback(host models.Host) ssh.HostKeyCallback 
 	}
 }
 
-func (c *Client) run(host models.Host, seal *crypto.SealBox, command string) (string, error) {
-	return c.runWithStdin(host, seal, command, nil)
+func (c *Client) run(ctx context.Context, host models.Host, seal *crypto.SealBox, command string) (string, error) {
+	return c.runWithStdin(ctx, host, seal, command, nil)
 }
 
 // runWithStdin executes command over SSH, optionally feeding stdin — used to pass a
 // sudo password to `sudo -S` without exposing it on the remote command line (ps/audit).
-func (c *Client) runWithStdin(host models.Host, seal *crypto.SealBox, command string, stdin io.Reader) (string, error) {
+func (c *Client) runWithStdin(ctx context.Context, host models.Host, seal *crypto.SealBox, command string, stdin io.Reader) (string, error) {
 	sec, err := decodeSecrets(host.SecretCipher, seal)
 	if err != nil {
 		return "", err
@@ -408,7 +409,7 @@ func (c *Client) runWithStdin(host models.Host, seal *crypto.SealBox, command st
 	if stdin != nil {
 		sess.Stdin = stdin
 	}
-	runErr := c.runWithDeadline(cli, func() error { return sess.Run(command) })
+	runErr := c.runWithDeadline(ctx, cli, func() error { return sess.Run(command) })
 	out := strings.TrimSpace(outBuf.String())
 	if runErr != nil {
 		// Errors usually land on stderr — prefer it for the human-facing snippet,
@@ -427,16 +428,28 @@ func (c *Client) runWithStdin(host models.Host, seal *crypto.SealBox, command st
 // runWithDeadline runs fn (sess.Run or sess.Wait) but aborts after c.execTimeout
 // by closing the underlying connection — the only reliable way to unblock an SSH
 // command stuck on, e.g., a held apt/dpkg lock. A zero execTimeout disables the cap.
-func (c *Client) runWithDeadline(cli *ssh.Client, fn func() error) error {
-	if c.execTimeout <= 0 {
-		return fn()
-	}
+func (c *Client) runWithDeadline(ctx context.Context, cli *ssh.Client, fn func() error) error {
 	done := make(chan error, 1)
 	go func() { done <- fn() }()
+
+	// execTimeout cap; 0 disables it (a nil channel never fires in the select).
+	var timeout <-chan time.Time
+	if c.execTimeout > 0 {
+		t := time.NewTimer(c.execTimeout)
+		defer t.Stop()
+		timeout = t.C
+	}
+
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(c.execTimeout):
+	case <-ctx.Done():
+		// Caller cancelled (e.g. SSE client disconnected). Close the connection to
+		// unblock the in-flight Run/Wait, then let the goroutine drain.
+		cli.Close()
+		<-done
+		return fmt.Errorf("operation cancelled")
+	case <-timeout:
 		cli.Close() // force-unblock the stuck Run/Wait
 		<-done      // let the goroutine observe the closed conn and exit
 		return fmt.Errorf("command timed out after %s (host may have a held apt/dpkg lock or be unresponsive)", c.execTimeout)
@@ -476,11 +489,11 @@ func decodeSecrets(cipher string, seal *crypto.SealBox) (secretBlob, error) {
 
 // RunStreaming executes a command and calls onLine for each output line.
 // Returns the full output when done.
-func (c *Client) RunStreaming(host models.Host, seal *crypto.SealBox, command string, onLine func(line string)) (string, error) {
-	return c.runStreamingWithStdin(host, seal, command, onLine, nil)
+func (c *Client) RunStreaming(ctx context.Context, host models.Host, seal *crypto.SealBox, command string, onLine func(line string)) (string, error) {
+	return c.runStreamingWithStdin(ctx, host, seal, command, onLine, nil)
 }
 
-func (c *Client) runStreamingWithStdin(host models.Host, seal *crypto.SealBox, command string, onLine func(line string), stdin io.Reader) (string, error) {
+func (c *Client) runStreamingWithStdin(ctx context.Context, host models.Host, seal *crypto.SealBox, command string, onLine func(line string), stdin io.Reader) (string, error) {
 	sec, err := decodeSecrets(host.SecretCipher, seal)
 	if err != nil {
 		return "", err
@@ -567,7 +580,7 @@ func (c *Client) runStreamingWithStdin(host models.Host, seal *crypto.SealBox, c
 		}
 	}()
 
-	waitErr := c.runWithDeadline(cli, func() error { return sess.Wait() })
+	waitErr := c.runWithDeadline(ctx, cli, func() error { return sess.Wait() })
 	outPw.Close()
 	errPw.Close()
 	wg.Wait()
@@ -586,7 +599,7 @@ func (c *Client) runStreamingWithStdin(host models.Host, seal *crypto.SealBox, c
 }
 
 // runPrivilegedStreaming is like runPrivileged but streams output line-by-line.
-func (c *Client) runPrivilegedStreaming(host models.Host, seal *crypto.SealBox, command string, onLine func(line string)) (string, error) {
+func (c *Client) runPrivilegedStreaming(ctx context.Context, host models.Host, seal *crypto.SealBox, command string, onLine func(line string)) (string, error) {
 	sec, err := decodeSecrets(host.SecretCipher, seal)
 	if err != nil {
 		return "", err
@@ -597,8 +610,8 @@ func (c *Client) runPrivilegedStreaming(host models.Host, seal *crypto.SealBox, 
 	// Test passwordless sudo with a no-op command — do NOT run the real command
 	// non-streaming first, as that would execute it twice (wasting time and producing
 	// inconsistent results if apt state changes between runs).
-	if _, err := c.run(host, seal, "sudo -n true"); err == nil {
-		return c.RunStreaming(host, seal, "sudo -n "+rootCmd, onLine)
+	if _, err := c.run(ctx, host, seal, "sudo -n true"); err == nil {
+		return c.RunStreaming(ctx, host, seal, "sudo -n "+rootCmd, onLine)
 	}
 
 	sudoPass := strings.TrimSpace(sec.SudoPassword)
@@ -607,12 +620,12 @@ func (c *Client) runPrivilegedStreaming(host models.Host, seal *crypto.SealBox, 
 	}
 
 	// Password to `sudo -S` via stdin, not the command line (ps/audit exposure).
-	if out, err := c.runStreamingWithStdin(host, seal, "sudo -S -p '' "+rootCmd, onLine, strings.NewReader(sudoPass+"\n")); err == nil {
+	if out, err := c.runStreamingWithStdin(ctx, host, seal, "sudo -S -p '' "+rootCmd, onLine, strings.NewReader(sudoPass+"\n")); err == nil {
 		return out, nil
 	}
 
 	suFallback := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote(rootCmd))
-	if out, err := c.RunStreaming(host, seal, suFallback, onLine); err == nil {
+	if out, err := c.RunStreaming(ctx, host, seal, suFallback, onLine); err == nil {
 		return out, nil
 	}
 
@@ -620,8 +633,8 @@ func (c *Client) runPrivilegedStreaming(host models.Host, seal *crypto.SealBox, 
 }
 
 // ScanHostStreaming runs a scan with streaming output via onLine callback.
-func (c *Client) ScanHostStreaming(host models.Host, seal *crypto.SealBox, onLine func(line string)) (models.ScanResult, error) {
-	raw, err := c.runPrivilegedStreaming(host, seal, scanCmd, onLine)
+func (c *Client) ScanHostStreaming(ctx context.Context, host models.Host, seal *crypto.SealBox, onLine func(line string)) (models.ScanResult, error) {
+	raw, err := c.runPrivilegedStreaming(ctx, host, seal, scanCmd, onLine)
 	if err != nil {
 		return models.ScanResult{}, err
 	}
@@ -630,8 +643,8 @@ func (c *Client) ScanHostStreaming(host models.Host, seal *crypto.SealBox, onLin
 }
 
 // ApplyUpdatesStreaming runs apply with streaming output via onLine callback.
-func (c *Client) ApplyUpdatesStreaming(host models.Host, seal *crypto.SealBox, onLine func(line string)) (models.ApplyResult, error) {
-	raw, err := c.runPrivilegedStreaming(host, seal, applyCmd, onLine)
+func (c *Client) ApplyUpdatesStreaming(ctx context.Context, host models.Host, seal *crypto.SealBox, onLine func(line string)) (models.ApplyResult, error) {
+	raw, err := c.runPrivilegedStreaming(ctx, host, seal, applyCmd, onLine)
 	if err != nil {
 		return models.ApplyResult{}, err
 	}

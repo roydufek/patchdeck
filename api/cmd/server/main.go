@@ -118,6 +118,7 @@ func main() {
 	r.Get("/api/health", a.health)
 
 	r.Get("/api/setup", a.setupStatus)
+	r.Get("/api/version", a.version)
 	r.Post("/api/bootstrap", a.bootstrap)
 	r.Post("/api/login", a.login)
 	r.Post("/api/logout", a.logout)
@@ -239,6 +240,13 @@ func validateBootstrapRole(role string) string {
 		return "bootstrap role must be admin"
 	}
 	return ""
+}
+
+// version reports the running build. Unauthenticated on purpose so "what's deployed?"
+// is a trivial check (the older /healthz also carries it, but /api/version is the
+// discoverable, API-namespaced home for it).
+func (a *app) version(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"name": "patchdeck", "version": a.cfg.AppVersion})
 }
 
 func (a *app) bootstrap(w http.ResponseWriter, r *http.Request) {
@@ -2175,8 +2183,13 @@ func (a *app) scanHostStream(w http.ResponseWriter, r *http.Request) {
 		sseWrite(w, flusher, "line", map[string]any{"text": line, "seq": seq})
 	}
 
-	res, err := a.sshClient.ScanHostStreaming(host, a.secrets, onLine)
+	res, err := a.sshClient.ScanHostStreaming(r.Context(), host, a.secrets, onLine)
 	if err != nil {
+		// Client disconnected (browser closed mid-scan): the scan was aborted on
+		// purpose — don't record a failure or send a failure notification.
+		if r.Context().Err() != nil {
+			return
+		}
 		var hkErr *sshx.HostKeyError
 		if errors.As(err, &hkErr) {
 			if a.notificationEnabledForHostEvent(host.ID, "scan_failure") {
@@ -2261,7 +2274,10 @@ func (a *app) applyStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	res, err := a.sshClient.ApplyUpdatesStreaming(host, a.secrets, onLine)
+	// Apply intentionally runs to completion even if the browser disconnects — aborting
+	// `apt-get dist-upgrade` mid-configure risks leaving dpkg half-configured. Use a
+	// background context (still bounded by the exec timeout) rather than r.Context().
+	res, err := a.sshClient.ApplyUpdatesStreaming(context.Background(), host, a.secrets, onLine)
 	if err != nil {
 		var hkErr *sshx.HostKeyError
 		if errors.As(err, &hkErr) {
