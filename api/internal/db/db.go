@@ -936,8 +936,12 @@ func ValidateSession(db *sql.DB, token string, ttl time.Duration) (string, strin
 		_, _ = db.Exec(`DELETE FROM sessions WHERE token_hash=?`, hash)
 		return "", "", "", false, nil
 	}
-	// Sliding refresh — keep active sessions alive.
-	_, _ = db.Exec(`UPDATE sessions SET last_seen_at=?, expires_at=? WHERE token_hash=?`, now, now.Add(ttl), hash)
+	// Sliding refresh, but only once we're past the halfway point — avoids a DB write
+	// on every single request (which, under the dashboard's concurrent request burst,
+	// caused SQLite lock contention). A fresh session has ~full TTL left and skips this.
+	if expiresAt.Sub(now) < ttl/2 {
+		_, _ = db.Exec(`UPDATE sessions SET last_seen_at=?, expires_at=? WHERE token_hash=?`, now, now.Add(ttl), hash)
+	}
 	return userID, username, role, true, nil
 }
 

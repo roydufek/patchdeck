@@ -62,7 +62,13 @@ func main() {
 		}
 	}
 
-	database, err := sql.Open("sqlite", cfg.DatabasePath)
+	// WAL + a busy timeout are essential for concurrent access: the dashboard fires
+	// ~10 authenticated requests at once, and without these a burst of writes (e.g.
+	// session touch, scan upserts) collides on SQLite's lock and returns SQLITE_BUSY,
+	// which surfaced as spurious 401s during login. WAL lets readers run during a
+	// write; busy_timeout makes a contending writer wait instead of erroring.
+	dsn := cfg.DatabasePath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+	database, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		log.Fatalf("sqlite open: %v", err)
 	}
