@@ -1,18 +1,20 @@
 export const API = import.meta.env.VITE_PATCHDECK_API || '/api'
 
-export function createAuthedFetch(token, onUnauthorized) {
+// createAuthedFetch returns a fetch wrapper that authenticates via the httpOnly
+// session cookie (sent automatically on same-origin requests). The first arg is kept
+// for call-site compatibility (a truthy "logged in" sentinel) but is no longer used to
+// build an Authorization header — auth is cookie-based. API-token (Bearer) clients use
+// the API directly.
+export function createAuthedFetch(_authed, onUnauthorized) {
   return async function authedFetch(path, opts = {}) {
-    const headers = { ...(opts.headers || {}), Authorization: `Bearer ${token}` }
     let resp
     try {
-      resp = await fetch(`${API}${path}`, { ...opts, headers })
+      resp = await fetch(`${API}${path}`, { credentials: 'same-origin', ...opts })
     } catch (err) {
       throw new Error('Unable to reach Patchdeck server')
     }
     if (resp.status === 401) {
       if (onUnauthorized) onUnauthorized()
-      // Don't surface "session expired" if there was never a real token
-      if (!token) throw new Error('Authentication required')
       throw new Error('Session expired. Please log in again.')
     }
     return resp

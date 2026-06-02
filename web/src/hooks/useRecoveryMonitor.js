@@ -25,8 +25,9 @@ export function useRecoveryMonitor() {
     setAttempts(0)
     setElapsed(0)
 
+    // Auth rides on the httpOnly session cookie (sent automatically with credentials);
+    // token kept in the signature for call-site compatibility but no longer placed in the URL.
     const params = new URLSearchParams()
-    if (token) params.set('token', token)
     params.set('timeout', String(timeoutSec))
     const url = `${API}/hosts/${hId}/await-recovery?${params}`
 
@@ -35,7 +36,7 @@ export function useRecoveryMonitor() {
     let retryTimer = null
 
     const connect = () => {
-      const es = new EventSource(url)
+      const es = new EventSource(url, { withCredentials: true })
       eventSourceRef.current = es
 
       es.addEventListener('start', () => {

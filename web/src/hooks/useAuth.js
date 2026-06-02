@@ -2,7 +2,12 @@ import { useState, useEffect, useCallback } from 'react'
 import { API } from '../api.js'
 
 export function useAuth() {
-  const [token, setToken] = useState(localStorage.getItem('token') || '')
+  // `token` is an opaque "logged in" sentinel ('cookie' when authenticated). Auth is
+  // carried by an httpOnly session cookie, so the real credential is never visible to
+  // JS. Kept named `token` so existing call sites (truthiness gates) work unchanged.
+  const [token, setToken] = useState('')
+  const [authChecking, setAuthChecking] = useState(true)
+
   const [setupStatus, setSetupStatus] = useState({
     bootstrap_required: false,
     supported_roles: ['admin'],
@@ -21,14 +26,26 @@ export function useAuth() {
   const [bootstrapBusy, setBootstrapBusy] = useState(false)
   const [bootstrapDone, setBootstrapDone] = useState(false)
 
+  // On mount, probe the session cookie via /api/me.
   useEffect(() => {
-    if (token) {
+    let active = true
+    fetch(`${API}/me`, { credentials: 'same-origin' })
+      .then(resp => { if (active) setToken(resp.ok ? 'cookie' : '') })
+      .catch(() => { if (active) setToken('') })
+      .finally(() => { if (active) setAuthChecking(false) })
+    return () => { active = false }
+  }, [])
+
+  // When not authenticated (after the cookie probe), fetch setup status to choose
+  // between the login form and the first-run bootstrap form.
+  useEffect(() => {
+    if (authChecking || token) {
       setSetupLoading(false)
       return
     }
     let active = true
     setSetupLoading(true)
-    fetch(`${API}/setup`)
+    fetch(`${API}/setup`, { credentials: 'same-origin' })
       .then(resp => resp.json().catch(() => ({})))
       .then(data => {
         if (!active) return
@@ -43,11 +60,10 @@ export function useAuth() {
         setSetupStatus({ bootstrap_required: false, supported_roles: ['admin'], registration_enabled: true })
       })
       .finally(() => {
-        if (!active) return
-        setSetupLoading(false)
+        if (active) setSetupLoading(false)
       })
     return () => { active = false }
-  }, [token])
+  }, [authChecking, token])
 
   const doLogin = useCallback(async (e) => {
     e.preventDefault()
@@ -58,6 +74,7 @@ export function useAuth() {
       try {
         resp = await fetch(`${API}/login`, {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             username: login.username,
@@ -76,11 +93,11 @@ export function useAuth() {
         return
       }
 
-      if (!resp.ok || !data.token) {
+      if (!resp.ok) {
         throw new Error(data.error || 'Login failed')
       }
-      setToken(data.token)
-      localStorage.setItem('token', data.token)
+      // Server set the httpOnly session cookie; mark authenticated.
+      setToken('cookie')
       setError('')  // clear any stale "session expired" message after successful login
       setLogin(s => ({ ...s, password: '', code: '' }))
       setTotpRequired(false)
@@ -113,6 +130,7 @@ export function useAuth() {
       try {
         resp = await fetch(`${API}/bootstrap`, {
           method: 'POST',
+          credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             username: bootstrapForm.username.trim(),
@@ -138,9 +156,11 @@ export function useAuth() {
   }, [bootstrapForm])
 
   const logout = useCallback(() => {
+    // Best-effort server-side session revocation; clear local state regardless.
+    fetch(`${API}/logout`, { method: 'POST', credentials: 'same-origin' }).catch(() => {})
     setToken('')
     setError('')
-    localStorage.removeItem('token')
+    localStorage.removeItem('token') // legacy cleanup (pre-cookie builds)
     localStorage.removeItem('patchdeck.hostActionState.v3')
     localStorage.removeItem('patchdeck.hostActionState.v2')
   }, [])
@@ -148,11 +168,10 @@ export function useAuth() {
   const clearToken = useCallback(() => {
     setToken('')
     setError('Your session expired. Please log in again.')
-    localStorage.removeItem('token')
   }, [])
 
   return {
-    token, setToken,
+    token, authChecking, setToken,
     setupStatus, setupLoading,
     error, setError,
     login, setLogin, loginBusy, doLogin,

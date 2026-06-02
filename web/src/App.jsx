@@ -52,7 +52,7 @@ function AppInner() {
       jobsHook.loadJobs(),
       settingsHook.loadSettings(),
       settingsHook.loadTokens(),
-      fetch(`${API}/tags`, { headers: { Authorization: `Bearer ${auth.token}` } })
+      fetch(`${API}/tags`, { credentials: 'same-origin' })
         .then(r => r.ok ? r.json() : []).catch(() => [])
     ]).then(([hostRows, , , , tagsData]) => {
       setTags(Array.isArray(tagsData) ? tagsData : [])
@@ -161,6 +161,15 @@ function AppInner() {
 
   // Merge errors
   const globalError = hostsHook.error || jobsHook.error || settingsHook.error || auth.error || ''
+
+  // Still checking the session cookie — avoid flashing the login form.
+  if (auth.authChecking) {
+    return (
+      <div className="flex min-h-screen items-center justify-center text-sm text-slate-400">
+        Loading…
+      </div>
+    )
+  }
 
   // Not authenticated
   if (!auth.token) {

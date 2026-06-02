@@ -8,17 +8,15 @@ export function useTOTP(token) {
   const [totpBusy, setTotpBusy] = useState(false)
   const [totpError, setTotpError] = useState('')
 
+  // Auth is via the httpOnly session cookie (sent automatically on same-origin fetches).
   const authHeaders = useCallback(() => ({
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`
-  }), [token])
+    'Content-Type': 'application/json'
+  }), [])
 
   const fetchStatus = useCallback(async () => {
     if (!token) return
     try {
-      const resp = await fetch(`${API}/settings/totp`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      })
+      const resp = await fetch(`${API}/settings/totp`, { credentials: 'same-origin' })
       const data = await resp.json()
       setTotpStatus({ enabled: !!data.enabled })
     } catch {

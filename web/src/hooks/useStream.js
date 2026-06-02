@@ -36,7 +36,7 @@ export function useActionStream() {
     setStreamMeta(null)
   }, [cleanup])
 
-  const startStream = useCallback((hostId, mode, token) => {
+  const startStream = useCallback((hostId, mode) => {
     // Reset state for new stream
     cleanup()
     doneReceivedRef.current = false
@@ -49,12 +49,13 @@ export function useActionStream() {
     setResult(null)
     setStreamMeta(null)
 
+    // Auth rides on the httpOnly session cookie (sent automatically by EventSource
+    // with withCredentials); no token in the URL.
     const params = new URLSearchParams()
-    if (token) params.set('token', token)
     params.set('force', 'true')
 
     const url = `${API}/hosts/${hostId}/${mode}/stream?${params.toString()}`
-    const es = new EventSource(url)
+    const es = new EventSource(url, { withCredentials: true })
     eventSourceRef.current = es
 
     es.addEventListener('start', (e) => {

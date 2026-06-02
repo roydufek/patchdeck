@@ -14,9 +14,7 @@ export default function useActivity(token) {
       if (hostId) params.set('host_id', hostId)
       let res
       try {
-        res = await fetch(`/api/activity?${params}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        })
+        res = await fetch(`/api/activity?${params}`, { credentials: 'same-origin' })
       } catch (err) {
         throw new Error('Unable to reach Patchdeck server')
       }

@@ -87,7 +87,7 @@ export default function Dashboard({
   // Fetch tags from API
   useEffect(() => {
     if (!token) return
-    fetch(`${API}/tags`, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(`${API}/tags`, { credentials: 'same-origin' })
       .then(resp => resp.ok ? resp.json() : [])
       .then(tags => {
         if (Array.isArray(tags)) setAllTags(tags.sort())
