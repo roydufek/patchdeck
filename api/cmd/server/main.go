@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,9 +43,10 @@ type app struct {
 	secrets   *crypto.SealBox
 	sshClient *sshx.Client
 	notifier  *notify.Dispatcher
-	sched     *scheduler.Engine
-	limiter   *ratelimit.HostLimiter
-	startTime time.Time
+	sched        *scheduler.Engine
+	limiter      *ratelimit.HostLimiter
+	loginLimiter *ratelimit.LoginLimiter
+	startTime    time.Time
 }
 
 const totpIssuer = "Patchdeck"
@@ -98,8 +100,9 @@ func main() {
 		secrets:   seal,
 		sshClient: sshClient,
 		notifier:  notifier,
-		limiter:   ratelimit.NewHostLimiter(30 * time.Second),
-		startTime: time.Now(),
+		limiter:      ratelimit.NewHostLimiter(30 * time.Second),
+		loginLimiter: ratelimit.NewLoginLimiter(8, 15*time.Minute),
+		startTime:    time.Now(),
 	}
 	a.sshClient = sshx.NewClient(cfg.SSHTimeout, cfg.ExecTimeout, a.verifyHostKey)
 	a.sched = scheduler.NewEngine(database, a.sshClient, seal, notifier, cfg.AppriseURL)
@@ -277,6 +280,15 @@ func (a *app) bootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) login(w http.ResponseWriter, r *http.Request) {
+	// Brute-force protection: lock out a client IP after repeated failures.
+	ip := clientIP(r)
+	if ok, retry := a.loginLimiter.Allowed(ip); !ok {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", retry))
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{
+			"error": fmt.Sprintf("Too many login attempts. Try again in %d seconds.", retry),
+		})
+		return
+	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -287,10 +299,12 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := db.GetUserByUsername(a.db, req.Username)
 	if err != nil {
+		a.loginLimiter.RecordFailure(ip)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Invalid username or password"})
 		return
 	}
 	if !auth.CheckPassword(user.PasswordHash, req.Password) {
+		a.loginLimiter.RecordFailure(ip)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Invalid username or password"})
 		return
 	}
@@ -325,11 +339,15 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !matched {
+				a.loginLimiter.RecordFailure(ip)
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Invalid two-factor code"})
 				return
 			}
 		}
 	}
+
+	// Successful authentication — clear the failure counter for this IP.
+	a.loginLimiter.Reset(ip)
 
 	// Establish a server-side session (httpOnly cookie) — the primary web auth going
 	// forward. The JWT below is retained for backward compatibility with any client
@@ -780,6 +798,18 @@ func (a *app) restartServices(w http.ResponseWriter, r *http.Request) {
 	}
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+	// Service names are interpolated into `systemctl restart <names>` on the remote
+	// host — validate strictly to prevent shell command injection.
+	if len(req.Services) > 100 {
+		writeJSON(w, 400, map[string]string{"error": "too many services in one request"})
+		return
+	}
+	for _, s := range req.Services {
+		if !validServiceName(s) {
+			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("invalid service name: %q", s)})
+			return
+		}
 	}
 	res, err := a.sshClient.RestartServices(host, a.secrets, req.Services)
 	if err != nil {
@@ -1705,6 +1735,24 @@ func (a *app) scanAllHosts(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, results)
 }
 
+// clientIP extracts the originating client IP, honoring the reverse proxy's
+// X-Forwarded-For / X-Real-IP headers (Traefik sets these), falling back to RemoteAddr.
+func clientIP(r *http.Request) string {
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			return strings.TrimSpace(xff[:i])
+		}
+		return xff
+	}
+	if xr := strings.TrimSpace(r.Header.Get("X-Real-IP")); xr != "" {
+		return xr
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
 const sessionCookieName = "pd_session"
 const sessionTTL = 7 * 24 * time.Hour
 
@@ -1785,6 +1833,25 @@ func (a *app) authMiddleware(next http.Handler) http.Handler {
 		}
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 	})
+}
+
+// validServiceName allows only characters that appear in legitimate systemd unit
+// names (letters, digits, and . _ - @ : \). This blocks shell metacharacters so a
+// service name cannot inject commands into the remote `systemctl restart` invocation.
+func validServiceName(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > 256 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-' || r == '@' || r == ':' || r == '\\':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func validateCronExpression(expr string) string {
