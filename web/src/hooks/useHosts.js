@@ -1,18 +1,30 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { createAuthedFetch, apiErrorMessage } from '../api.js'
-import { isConnectionFailureMessage, connectionIndicator, loadPersistedHostActionState, HOST_ACTION_STATE_STORAGE_KEY } from '../utils/status.js'
+import { loadPersistedHostActionState, HOST_ACTION_STATE_STORAGE_KEY } from '../utils/status.js'
 import { useActionStream } from './useStream.js'
 import { useRecoveryMonitor } from './useRecoveryMonitor.js'
 
+// Build a connectivity map keyed by host id, filling unknown hosts with a neutral
+// "no result yet" entry so the UI can distinguish "not checked" from "failed".
+function buildConnectivityMap(hostRows, connectivityRows) {
+  const byHost = (Array.isArray(connectivityRows) ? connectivityRows : []).reduce((acc, row) => {
+    if (row && row.host_id) acc[row.host_id] = row
+    return acc
+  }, {})
+  return (Array.isArray(hostRows) ? hostRows : []).reduce((acc, host) => {
+    if (!host || !host.id) return acc
+    acc[host.id] = byHost[host.id] || { host_id: host.id, connected: null, checked_at: '', error: '' }
+    return acc
+  }, {})
+}
+
 export function useHosts(token, clearToken) {
-  const [hosts, setHosts] = useState([])
-  const [scans, setScans] = useState([])
-  const [loading, setLoading] = useState(false)
+  const queryClient = useQueryClient()
   const [error, setError] = useState('')
   const [actionBusy, setActionBusy] = useState({})
   const [hostActionError, setHostActionError] = useState({})
   const [hostActionState, setHostActionState] = useState(() => loadPersistedHostActionState())
-  const [connectivityByHost, setConnectivityByHost] = useState({})
   const [hostKeyAuditByHost, setHostKeyAuditByHost] = useState({})
 
   // Streaming support
@@ -25,9 +37,8 @@ export function useHosts(token, clearToken) {
   const recoveryMonitor = useRecoveryMonitor()
 
   // Post-apply prompt
-  const [postApplyPrompt, setPostApplyPrompt] = useState(null) // { hostId, type: 'reboot'|'restart', services?: [] }
+  const [postApplyPrompt, setPostApplyPrompt] = useState(null)
 
-  // Token ref for EventSource-based features
   const tokenRef = useRef(token)
   useEffect(() => { tokenRef.current = token }, [token])
 
@@ -36,19 +47,75 @@ export function useHosts(token, clearToken) {
     return createAuthedFetch(token, clearToken)
   }, [token, clearToken])
 
+  // ── Server state via TanStack Query — single source of truth per resource.
+  // keepPreviousData means a refetch keeps showing the last good data instead of
+  // flashing empty, and the cache dedupes concurrent reads. Connectivity is NOT
+  // polled on an interval (the old per-render live-SSH checks were the main source
+  // of status-color flicker); it refreshes on mount, after actions, and on demand.
+  const enabled = !!authedFetch
+  const hostsQuery = useQuery({
+    queryKey: ['hosts'],
+    enabled,
+    refetchInterval: 30000,
+    placeholderData: keepPreviousData,
+    queryFn: async () => {
+      const r = await authedFetch('/hosts')
+      if (!r.ok) throw new Error('Failed to load hosts')
+      return r.json()
+    },
+  })
+  const scansQuery = useQuery({
+    queryKey: ['scans'],
+    enabled,
+    refetchInterval: 30000,
+    placeholderData: keepPreviousData,
+    queryFn: async () => {
+      const r = await authedFetch('/scans')
+      if (!r.ok) throw new Error('Failed to load scans')
+      return r.json()
+    },
+  })
+  const connectivityQuery = useQuery({
+    queryKey: ['connectivity'],
+    enabled,
+    staleTime: Infinity,
+    placeholderData: keepPreviousData,
+    queryFn: async () => {
+      const r = await authedFetch('/hosts/connectivity')
+      if (!r.ok) throw new Error('Failed to run host connectivity checks')
+      return r.json().catch(() => [])
+    },
+  })
+
+  const hosts = hostsQuery.data ?? []
+  const scans = scansQuery.data ?? []
+  const loading = hostsQuery.isFetching || scansQuery.isFetching
+
   const scanByHost = useMemo(() => {
     const m = new Map()
     scans.forEach(s => m.set(s.host_id, s))
     return m
   }, [scans])
 
-  // Persist action state
+  // Derive the connectivity map from the single connectivity cache entry + current hosts.
+  const connectivityByHost = useMemo(
+    () => buildConnectivityMap(hosts, connectivityQuery.data || []),
+    [hosts, connectivityQuery.data]
+  )
+
+  // Surface query load failures as the banner error.
+  useEffect(() => {
+    if (hostsQuery.isError) setError('Failed to load hosts')
+    else if (scansQuery.isError) setError('Failed to load scans')
+  }, [hostsQuery.isError, scansQuery.isError])
+
+  // Persist optimistic action state.
   useEffect(() => {
     if (typeof window === 'undefined') return
     localStorage.setItem(HOST_ACTION_STATE_STORAGE_KEY, JSON.stringify(hostActionState))
   }, [hostActionState])
 
-  // Clean up stale action state
+  // Drop action state for hosts that no longer exist.
   useEffect(() => {
     if (!token || hosts.length === 0) return
     const validHostIds = new Set(hosts.map(h => h.id))
@@ -56,145 +123,53 @@ export function useHosts(token, clearToken) {
       let changed = false
       const next = {}
       Object.entries(prev).forEach(([hostId, state]) => {
-        if (validHostIds.has(hostId)) {
-          next[hostId] = state
-        } else {
-          changed = true
-        }
+        if (validHostIds.has(hostId)) next[hostId] = state
+        else changed = true
       })
       return changed ? next : prev
     })
   }, [hosts, token])
 
-  function buildConnectivityMap(hostRows, connectivityRows, fallbackError = '') {
-    const byHost = (Array.isArray(connectivityRows) ? connectivityRows : []).reduce((acc, row) => {
-      if (row && row.host_id) acc[row.host_id] = row
-      return acc
-    }, {})
-
-    return (Array.isArray(hostRows) ? hostRows : []).reduce((acc, host) => {
-      if (!host || !host.id) return acc
-      const known = byHost[host.id]
-      if (known) {
-        acc[host.id] = known
-      } else {
-        acc[host.id] = {
-          host_id: host.id,
-          connected: null,
-          checked_at: '',
-          error: fallbackError || ''
-        }
-      }
-      return acc
-    }, {})
-  }
-
-  function setHostConnectivityState(hostId, connected, error = '') {
-    const checkedAt = new Date().toISOString()
-    setConnectivityByHost(prev => ({
-      ...prev,
-      [hostId]: {
+  // Optimistically upsert a single host's connectivity into the connectivity cache.
+  const setHostConnectivityState = useCallback((hostId, connected, errMsg = '') => {
+    queryClient.setQueryData(['connectivity'], (old) => {
+      const rows = (Array.isArray(old) ? old : []).filter(r => r && r.host_id !== hostId)
+      rows.push({
         host_id: hostId,
         connected,
-        checked_at: checkedAt,
-        error: connected ? '' : (error || 'Host action reported a connectivity failure.')
-      }
-    }))
-  }
+        checked_at: new Date().toISOString(),
+        error: connected ? '' : (errMsg || 'Host action reported a connectivity failure.'),
+      })
+      return rows
+    })
+  }, [queryClient])
 
   const refreshConnectivity = useCallback(async (hostId = '') => {
-    if (!authedFetch) return
+    if (!enabled) return
     const busyKey = hostId ? `${hostId}:connectivity` : 'connectivity:all'
     setActionBusy(prev => ({ ...prev, [busyKey]: true }))
     try {
-      const resp = await authedFetch('/hosts/connectivity')
-      if (!resp.ok) throw new Error('Failed to run host connectivity checks')
-      const rows = await resp.json().catch(() => [])
-
-      if (hostId) {
-        setConnectivityByHost(prev => {
-          const next = { ...prev }
-          if (Array.isArray(rows)) {
-            const row = rows.find(item => item && item.host_id === hostId)
-            if (row) {
-              next[hostId] = row
-              return next
-            }
-          }
-          next[hostId] = {
-            host_id: hostId,
-            connected: false,
-            checked_at: new Date().toISOString(),
-            error: 'Quick SSH check did not return data for this host.'
-          }
-          return next
-        })
-        return
-      }
-
-      setConnectivityByHost(prev => {
-        const currentHosts = hosts
-        return buildConnectivityMap(currentHosts, rows, '')
-      })
+      await queryClient.refetchQueries({ queryKey: ['connectivity'] })
     } catch (err) {
       console.warn('Connectivity refresh failed', err)
-      if (hostId) {
-        setConnectivityByHost(prev => ({
-          ...prev,
-          [hostId]: {
-            host_id: hostId,
-            connected: false,
-            checked_at: new Date().toISOString(),
-            error: 'Connectivity refresh failed.'
-          }
-        }))
-      }
     } finally {
       setActionBusy(prev => ({ ...prev, [busyKey]: false }))
     }
-  }, [authedFetch, hosts])
+  }, [enabled, queryClient])
 
+  // loadData = refetch the server-state queries. Returns the latest hosts rows.
   const loadData = useCallback(async (opts = {}) => {
-    if (!authedFetch) return
-    const skipConnectivity = opts.skipConnectivity || false
-    setLoading(true)
-    setError('')
-    try {
-      const [hostsResp, scansResp] = await Promise.all([
-        authedFetch('/hosts'),
-        authedFetch('/scans'),
-      ])
-
-      if (!hostsResp.ok) throw new Error('Failed to load hosts')
-      if (!scansResp.ok) throw new Error('Failed to load scans')
-
-      const hostRows = await hostsResp.json()
-      setHosts(hostRows)
-      setScans(await scansResp.json())
-
-      if (!skipConnectivity) {
-        let connectivityRows = []
-        let connectivityFallbackError = ''
-        try {
-          const connectivityResp = await authedFetch('/hosts/connectivity')
-          if (!connectivityResp.ok) {
-            throw new Error('Failed to run host connectivity checks')
-          }
-          connectivityRows = await connectivityResp.json().catch(() => [])
-        } catch (connectivityErr) {
-          connectivityFallbackError = connectivityErr?.message || 'Connectivity checks unavailable during this refresh.'
-        }
-        setConnectivityByHost(buildConnectivityMap(hostRows, connectivityRows, connectivityFallbackError))
-      }
-
-      return hostRows
-    } catch (e) {
-      setError(e.message || 'Failed to load data')
-      return []
-    } finally {
-      setLoading(false)
+    if (!enabled) return []
+    const tasks = [
+      queryClient.refetchQueries({ queryKey: ['hosts'] }),
+      queryClient.refetchQueries({ queryKey: ['scans'] }),
+    ]
+    if (!opts.skipConnectivity) {
+      tasks.push(queryClient.refetchQueries({ queryKey: ['connectivity'] }))
     }
-  }, [authedFetch])
+    await Promise.all(tasks)
+    return queryClient.getQueryData(['hosts']) ?? []
+  }, [enabled, queryClient])
 
   const hostAction = useCallback(async (hostId, mode, { skipReload = false } = {}) => {
     if (!authedFetch) return
@@ -208,7 +183,6 @@ export function useHosts(token, clearToken) {
       if (!resp.ok) {
         throw new Error(apiErrorMessage(data, `${mode} failed`))
       }
-
       let summary = mode === 'scan' ? 'Scan completed successfully.' : 'Apply completed successfully.'
       if (mode === 'scan') {
         const count = Array.isArray(data.packages) ? data.packages.length : null
@@ -217,15 +191,11 @@ export function useHosts(token, clearToken) {
         const changed = Number.isFinite(data.changed_packages) ? data.changed_packages : null
         summary = `Apply completed${changed === null ? '' : ` • ${changed} package(s) changed`}`
       }
-
       const actionAt = new Date().toISOString()
       setHostActionState(prev => {
         const existing = prev[hostId] || {}
         const nextAction = { mode, ok: true, summary, at: actionAt }
-        return {
-          ...prev,
-          [hostId]: { ...existing, [mode]: nextAction, latest: nextAction }
-        }
+        return { ...prev, [hostId]: { ...existing, [mode]: nextAction, latest: nextAction } }
       })
       setHostConnectivityState(hostId, true)
       if (!skipReload) await loadData({ skipConnectivity: true })
@@ -238,20 +208,16 @@ export function useHosts(token, clearToken) {
       setHostActionState(prev => {
         const existing = prev[hostId] || {}
         const nextAction = { mode, ok: false, summary: msg, at: actionAt }
-        return {
-          ...prev,
-          [hostId]: { ...existing, [mode]: nextAction, latest: nextAction }
-        }
+        return { ...prev, [hostId]: { ...existing, [mode]: nextAction, latest: nextAction } }
       })
     } finally {
       await refreshConnectivity(hostId)
       setActionBusy(prev => ({ ...prev, [key]: false }))
     }
-  }, [authedFetch, loadData, refreshConnectivity])
+  }, [authedFetch, loadData, refreshConnectivity, setHostConnectivityState])
 
   const deleteHost = useCallback(async (host) => {
     if (!authedFetch) return { ok: false }
-
     const key = `host:delete:${host.id}`
     setActionBusy(prev => ({ ...prev, [key]: true }))
     setError('')
@@ -280,7 +246,6 @@ export function useHosts(token, clearToken) {
     if (hostKeyTrustMode === 'pinned' && !hostKeyPinnedFingerprint) {
       throw new Error('Pinned trust mode requires a host key fingerprint')
     }
-
     const payload = {
       ...hostForm,
       name: hostForm.name.trim(),
@@ -289,13 +254,13 @@ export function useHosts(token, clearToken) {
       auth_type: hostForm.auth_type.trim(),
       host_key_trust_mode: hostKeyTrustMode,
       host_key_pinned_fingerprint: hostKeyPinnedFingerprint,
-      port: normalizedPort
+      port: normalizedPort,
     }
     const editing = !!editingHostId
     const resp = await authedFetch(editing ? `/hosts/${editingHostId}` : '/hosts', {
       method: editing ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     })
     const data = await resp.json().catch(() => ({}))
     if (!resp.ok) {
@@ -304,22 +269,16 @@ export function useHosts(token, clearToken) {
     const createdHostId = typeof data.id === 'string' ? data.id.trim() : ''
     const updatedHostId = editing ? editingHostId : createdHostId
     await loadData()
-    if (updatedHostId) {
-      await refreshConnectivity(updatedHostId)
-    }
+    if (updatedHostId) await refreshConnectivity(updatedHostId)
   }, [authedFetch, loadData, refreshConnectivity])
 
   const updateHostOps = useCallback(async (host, patch) => {
     if (!authedFetch) return
-    const next = {
-      checks_enabled: patch.checks_enabled ?? host.checks_enabled,
-    }
+    const next = { checks_enabled: patch.checks_enabled ?? host.checks_enabled }
     setError('')
     try {
       const resp = await authedFetch(`/hosts/${host.id}/operations`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(next)
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next),
       })
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(data.error || 'Failed to update host operational controls')
@@ -335,14 +294,12 @@ export function useHosts(token, clearToken) {
     const next = {
       host_key_required: true,
       host_key_trust_mode: patch.host_key_trust_mode ?? host.host_key_trust_mode ?? 'tofu',
-      host_key_pinned_fingerprint: patch.host_key_pinned_fingerprint ?? host.host_key_pinned_fingerprint ?? ''
+      host_key_pinned_fingerprint: patch.host_key_pinned_fingerprint ?? host.host_key_pinned_fingerprint ?? '',
     }
     setError('')
     try {
       const resp = await authedFetch(`/hosts/${host.id}/host-key-policy`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(next)
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next),
       })
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(apiErrorMessage(data, 'Failed to update host key policy'))
@@ -355,13 +312,11 @@ export function useHosts(token, clearToken) {
 
   const resolveHostKeyMismatch = useCallback(async (host, action, note = '') => {
     if (!authedFetch) return
-
     setError('')
     try {
       const resp = await authedFetch(`/hosts/${host.id}/host-key/${action}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ note: (note || '').trim().slice(0, 240) })
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: (note || '').trim().slice(0, 240) }),
       })
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(apiErrorMessage(data, `Failed to ${action} host key fingerprint`))
@@ -383,23 +338,14 @@ export function useHosts(token, clearToken) {
     setHostActionError(prev => ({ ...prev, [hostId]: '' }))
     try {
       const resp = await authedFetch(`/hosts/${hostId}/restart-services`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ services })
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ services }),
       })
       const data = await resp.json().catch(() => ({}))
-      if (resp.status === 429) {
-        throw new Error(data.error || 'Rate limited — please wait before retrying.')
-      }
-      if (!resp.ok) {
-        throw new Error(apiErrorMessage(data, 'Service restart failed'))
-      }
+      if (resp.status === 429) throw new Error(data.error || 'Rate limited — please wait before retrying.')
+      if (!resp.ok) throw new Error(apiErrorMessage(data, 'Service restart failed'))
       setHostConnectivityState(hostId, true)
       await loadData({ skipConnectivity: true })
-      // Auto-trigger a scan to refresh needs_restart list
-      if (tokenRef.current) {
-        hostActionStream(hostId, 'scan', tokenRef.current)
-      }
+      if (tokenRef.current) hostActionStream(hostId, 'scan')
     } catch (e) {
       const msg = e.message || 'Service restart failed'
       setError(msg)
@@ -408,7 +354,7 @@ export function useHosts(token, clearToken) {
       await refreshConnectivity(hostId)
       setActionBusy(prev => ({ ...prev, [key]: false }))
     }
-  }, [authedFetch, loadData, refreshConnectivity])
+  }, [authedFetch, loadData, refreshConnectivity, setHostConnectivityState])
 
   const rebootHost = useCallback(async (hostId) => {
     if (!authedFetch) return
@@ -418,18 +364,11 @@ export function useHosts(token, clearToken) {
     setHostActionError(prev => ({ ...prev, [hostId]: '' }))
     try {
       const resp = await authedFetch(`/hosts/${hostId}/power`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'reboot' })
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reboot' }),
       })
       const data = await resp.json().catch(() => ({}))
-      if (resp.status === 429) {
-        throw new Error(data.error || 'Rate limited — please wait before retrying.')
-      }
-      if (!resp.ok) {
-        throw new Error(apiErrorMessage(data, 'Reboot failed'))
-      }
-      // Start recovery monitor
+      if (resp.status === 429) throw new Error(data.error || 'Rate limited — please wait before retrying.')
+      if (!resp.ok) throw new Error(apiErrorMessage(data, 'Reboot failed'))
       recoveryMonitor.startMonitor(hostId, tokenRef.current, 180)
       const actionAt = new Date().toISOString()
       setHostActionState(prev => {
@@ -455,17 +394,11 @@ export function useHosts(token, clearToken) {
     setHostActionError(prev => ({ ...prev, [hostId]: '' }))
     try {
       const resp = await authedFetch(`/hosts/${hostId}/power`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'shutdown' })
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'shutdown' }),
       })
       const data = await resp.json().catch(() => ({}))
-      if (resp.status === 429) {
-        throw new Error(data.error || 'Rate limited — please wait before retrying.')
-      }
-      if (!resp.ok) {
-        throw new Error(apiErrorMessage(data, 'Shutdown failed'))
-      }
+      if (resp.status === 429) throw new Error(data.error || 'Rate limited — please wait before retrying.')
+      if (!resp.ok) throw new Error(apiErrorMessage(data, 'Shutdown failed'))
       await loadData({ skipConnectivity: true })
     } catch (e) {
       const msg = e.message || 'Shutdown failed'
@@ -483,9 +416,7 @@ export function useHosts(token, clearToken) {
     setError('')
     try {
       const resp = await authedFetch(`/hosts/${host.id}/notifications`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(next)
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next),
       })
       const data = await resp.json().catch(() => ({}))
       if (!resp.ok) throw new Error(data.error || 'Failed to update host notification preferences')
@@ -508,8 +439,9 @@ export function useHosts(token, clearToken) {
     }
   }, [authedFetch, hostKeyAuditByHost])
 
-  // Start a streaming action (scan or apply) for a host
-  const hostActionStream = useCallback((hostId, mode, tokenValue) => {
+  // Start a streaming action (scan or apply) for a host. Auth is via cookie now,
+  // so no token is passed to the stream.
+  const hostActionStream = useCallback((hostId, mode) => {
     setStreamHostId(hostId)
     setStreamMode(mode)
     streamCompletionHandled.current = false
@@ -517,12 +449,11 @@ export function useHosts(token, clearToken) {
     setActionBusy(prev => ({ ...prev, [key]: true }))
     setHostActionError(prev => ({ ...prev, [hostId]: '' }))
     setError('')
-    stream.startStream(hostId, mode, tokenValue)
+    stream.startStream(hostId, mode)
   }, [stream])
 
-  // Handle stream completion side effects — runs once when streaming stops
+  // Handle stream completion side effects — runs once when streaming stops.
   useEffect(() => {
-    // Only act when streaming just finished and we haven't handled it yet
     if (stream.isStreaming || !streamHostId || !streamMode) return
     if (streamCompletionHandled.current) return
     streamCompletionHandled.current = true
@@ -546,27 +477,18 @@ export function useHosts(token, clearToken) {
         const nextAction = { mode, ok: true, summary, at: actionAt }
         return { ...prev, [hostId]: { ...existing, [mode]: nextAction, latest: nextAction } }
       })
-      setConnectivityByHost(prev => ({
-        ...prev,
-        [hostId]: { host_id: hostId, connected: true, checked_at: actionAt, error: '' }
-      }))
-      // Reload data once (not in a loop) — skip connectivity since we call refreshConnectivity below
+      setHostConnectivityState(hostId, true)
       loadData({ skipConnectivity: true })
 
-      // Post-apply: auto-trigger scan to refresh package counts and reboot status
       if (mode === 'apply' && tokenRef.current) {
-        // Check if the apply result indicates needs_reboot or needs_restart
         const res = stream.result
         if (res.needs_reboot) {
           setPostApplyPrompt({ hostId, type: 'reboot' })
         } else if (Array.isArray(res.needs_restart) && res.needs_restart.length > 0) {
           setPostApplyPrompt({ hostId, type: 'restart', services: res.needs_restart })
         }
-        // Schedule auto-scan after a brief delay to let data settle
         setTimeout(() => {
-          if (tokenRef.current) {
-            hostActionStream(hostId, 'scan', tokenRef.current)
-          }
+          if (tokenRef.current) hostActionStream(hostId, 'scan')
         }, 2000)
       }
     } else if (stream.error) {
@@ -581,7 +503,7 @@ export function useHosts(token, clearToken) {
 
     setActionBusy(prev => ({ ...prev, [key]: false }))
     refreshConnectivity(hostId)
-  }, [stream.isStreaming, stream.result, stream.error, streamHostId, streamMode, loadData, refreshConnectivity])
+  }, [stream.isStreaming, stream.result, stream.error, streamHostId, streamMode, loadData, refreshConnectivity, setHostConnectivityState])
 
   const closeStream = useCallback(() => {
     stream.resetStream()
@@ -589,10 +511,7 @@ export function useHosts(token, clearToken) {
     setStreamMode(null)
   }, [stream])
 
-  // Watch recovery monitor status
-  // NOTE: intentionally excludes recoveryMonitor.elapsed from deps — elapsed ticks on every
-  // ping and would re-fire this effect repeatedly, causing multiple scans and UI flicker.
-  // recoveryActedRef ensures post-recovery actions fire exactly once per reboot event.
+  // React to recovery-monitor outcome (exactly once per reboot event).
   const recoveryActedRef = useRef(false)
   useEffect(() => {
     if (recoveryMonitor.status === 'idle') {
@@ -611,12 +530,8 @@ export function useHosts(token, clearToken) {
         return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
       })
       setHostActionError(prev => ({ ...prev, [hostId]: '' }))
-      // Use hostAction (not hostActionStream) so the scan works regardless of
-      // whether the stream panel is open or the card is collapsed
       refreshConnectivity(hostId)
-      setTimeout(() => {
-        hostAction(hostId, 'scan')
-      }, 2000)
+      setTimeout(() => { hostAction(hostId, 'scan') }, 2000)
     } else if (recoveryMonitor.status === 'timeout' && recoveryMonitor.hostId) {
       recoveryActedRef.current = true
       const hostId = recoveryMonitor.hostId
@@ -637,19 +552,16 @@ export function useHosts(token, clearToken) {
         return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
       })
     }
-  }, [recoveryMonitor.status, recoveryMonitor.hostId, loadData, refreshConnectivity])
+  }, [recoveryMonitor.status, recoveryMonitor.hostId, refreshConnectivity])
 
-  // Dismiss post-apply prompt
-  const dismissPostApplyPrompt = useCallback(() => {
-    setPostApplyPrompt(null)
-  }, [])
+  const dismissPostApplyPrompt = useCallback(() => setPostApplyPrompt(null), [])
 
   const resetState = useCallback(() => {
-    setHosts([])
-    setScans([])
+    queryClient.removeQueries({ queryKey: ['hosts'] })
+    queryClient.removeQueries({ queryKey: ['scans'] })
+    queryClient.removeQueries({ queryKey: ['connectivity'] })
     setHostKeyAuditByHost({})
     setHostActionState({})
-    setConnectivityByHost({})
     setHostActionError({})
     setPostApplyPrompt(null)
     setError('')
@@ -657,7 +569,7 @@ export function useHosts(token, clearToken) {
     stream.resetStream()
     setStreamHostId(null)
     setStreamMode(null)
-  }, [stream, recoveryMonitor])
+  }, [stream, recoveryMonitor, queryClient])
 
   return {
     hosts, scans, scanByHost, loading, error, setError,
@@ -683,6 +595,6 @@ export function useHosts(token, clearToken) {
     recoveryMonitor,
     // Post-apply prompt
     postApplyPrompt,
-    dismissPostApplyPrompt
+    dismissPostApplyPrompt,
   }
 }
