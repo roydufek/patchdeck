@@ -10,3 +10,6 @@ b2c/
 b2d/
 out-arrow-dark/
 out-arrow-light/
+
+# devbox deploy-only overlay (env-specific Traefik labels); canonical composes are docker-compose*.yml
+/compose.yaml

@@ -9,7 +9,7 @@ COPY web .
 RUN npm run build
 
 # --- Build backend ---
-FROM golang:1.22-alpine AS api-build
+FROM golang:1.25-alpine AS api-build
 WORKDIR /src
 RUN apk add --no-cache git
 COPY api/go.mod ./api/go.mod
