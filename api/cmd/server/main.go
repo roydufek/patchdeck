@@ -1840,6 +1840,11 @@ func validateJobModeAgainstHostControls(host models.Host, mode string) string {
 	if !host.ChecksEnabled {
 		return "cannot schedule apply job while host checks are disabled"
 	}
+	// A host set to manual updates must not get automated apply jobs scheduled
+	// against it — that's the whole point of the manual policy.
+	if strings.ToLower(strings.TrimSpace(host.AutoUpdatePolicy)) == "manual" {
+		return "cannot schedule apply job while host auto_update_policy is manual"
+	}
 	return ""
 }
 
