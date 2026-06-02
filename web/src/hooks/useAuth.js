@@ -29,6 +29,10 @@ export function useAuth() {
   })
   const [bootstrapBusy, setBootstrapBusy] = useState(false)
   const [bootstrapDone, setBootstrapDone] = useState(false)
+  // Same double-submit guard as login: a duplicate first-run submit otherwise gets a
+  // 409 ("bootstrap already completed") that reads as a failure even though the first
+  // one succeeded — the exact "worked but looks failed" confusion, at first-run.
+  const bootstrapInFlightRef = useRef(false)
 
   // On mount, probe the session cookie via /api/me.
   useEffect(() => {
@@ -123,6 +127,8 @@ export function useAuth() {
 
   const doBootstrap = useCallback(async (e) => {
     e.preventDefault()
+    if (bootstrapInFlightRef.current) return // ignore overlapping submits
+    bootstrapInFlightRef.current = true
     setBootstrapBusy(true)
     setError('')
     try {
@@ -158,6 +164,7 @@ export function useAuth() {
       setError(err.message || 'Bootstrap failed')
     } finally {
       setBootstrapBusy(false)
+      bootstrapInFlightRef.current = false
     }
   }, [bootstrapForm])
 
