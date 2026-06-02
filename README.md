@@ -278,11 +278,14 @@ npm run build  # Production build
 
 ## Roadmap
 
+- [ ] Apply preview / dry-run (`apt-get -s`) with disk-space and reboot prechecks
+- [ ] Package holds (`apt-mark`) and security-only update mode
+- [ ] Auto-reboot within scheduled maintenance windows
+- [ ] Fleet patch-status report / export
+- [ ] Notification log with delivery status (sending works today; this adds a persisted per-attempt success/failure record)
 - [ ] Webhooks for external integrations
-- [ ] Role-based access control (RBAC)
-- [ ] Multi-user management
+- [ ] Role-based access control (RBAC) and multi-user management
 - [ ] RPM/dnf support (RHEL, Fedora, Rocky)
-- [ ] Notification log with delivery status
 - [ ] Dashboard metrics and charts
 
 ## License
