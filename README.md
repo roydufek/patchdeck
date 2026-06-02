@@ -14,7 +14,7 @@
 
 <p align="center">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue" />
-  <img alt="Go" src="https://img.shields.io/badge/go-1.22-00ADD8?logo=go&logoColor=white" />
+  <img alt="Go" src="https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white" />
   <img alt="React" src="https://img.shields.io/badge/react-18-61DAFB?logo=react&logoColor=white" />
   <img alt="Docker" src="https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white" />
 </p>
@@ -31,7 +31,7 @@ Built for homelabbers, sysadmins, and small teams who want visibility without en
 - **One-click patching** — apply `apt` updates with real-time streaming output
 - **Service restart & reboot** — restart specific services or reboot/shutdown hosts from the UI
 - **Reboot detection** — surfaces `/var/run/reboot-required` with package-level detail
-- **Scheduled maintenance** — cron-based schedules with multi-host and tag-group targeting
+- **Scheduled maintenance** — cron-based schedules with multi-host and tag-group targeting, plus per-job run history (last/next run, per-host outcomes)
 - **Host tagging & grouping** — organize hosts by environment, role, or location
 - **Activity audit log** — full timeline of scans, applies, reboots, and config changes with configurable retention and CSV export
 - **Notifications** — Apprise-powered alerts to Gotify, Telegram, Discord, email, and [80+ services](https://github.com/caronc/apprise)
@@ -99,9 +99,8 @@ mkdir patchdeck && cd patchdeck
 ### 2. Create your `.env` file
 
 ```bash
-# Generate secure keys
+# Generate the one required secret (encrypts SSH credentials at rest)
 echo "PATCHDECK_MASTER_KEY=$(openssl rand -hex 32)" > .env
-echo "PATCHDECK_JWT_SECRET=$(openssl rand -hex 32)" >> .env
 ```
 
 Or copy the example and edit manually:
@@ -112,9 +111,8 @@ cp .env.example .env
 
 `.env.example`:
 ```env
-# Required: 32+ chars each
+# Required: 32+ char random string. Encrypts SSH credentials at rest (AES-GCM).
 PATCHDECK_MASTER_KEY=replace-with-32plus-char-random-string
-PATCHDECK_JWT_SECRET=replace-with-another-32plus-char-random-string
 ```
 
 ### 3. Create your `compose.yaml`
@@ -132,16 +130,16 @@ services:
       PGID: 1000                                         # default, set to match your host group
       PATCHDECK_PORT: 6070
       PATCHDECK_MASTER_KEY: ${PATCHDECK_MASTER_KEY}
-      PATCHDECK_JWT_SECRET: ${PATCHDECK_JWT_SECRET}
-      #PATCHDECK_TLS: true                              # default, set false if behind a reverse proxy
-      #PATCHDECK_TLS_CERT: /data/tls/cert.pem           # default, optional — path to custom TLS certificate
-      #PATCHDECK_TLS_KEY: /data/tls/key.pem             # default, optional — path to custom TLS key
-      #PATCHDECK_DB_PATH: /data/patchdeck.db            # default, optional
-      #PATCHDECK_SSH_TIMEOUT_SECONDS: 20                 # default, optional
-      #REGISTRATION_ENABLED: true                        # default, optional
-      #PATCHDECK_APPRISE_TIMEOUT_SECONDS: 10             # default, optional
-      #PATCHDECK_APPRISE_BIN: /usr/local/bin/apprise     # default, optional — override only if apprise binary is not in bin
-      #PATCHDECK_APPRISE_URL: tgram://bot_token/chat_id  # optional
+      #PATCHDECK_TLS: true                                 # default, set false if behind a reverse proxy
+      #PATCHDECK_TLS_CERT: /data/tls/cert.pem              # default, optional — path to custom TLS certificate
+      #PATCHDECK_TLS_KEY: /data/tls/key.pem               # default, optional — path to custom TLS key
+      #PATCHDECK_DB_PATH: /data/patchdeck.db               # default, optional
+      #PATCHDECK_SSH_TIMEOUT_SECONDS: 20                   # default, optional — SSH dial timeout
+      #PATCHDECK_EXEC_TIMEOUT_SECONDS: 600                 # default, optional — max wall-clock for a remote command
+      #PATCHDECK_CONNECTIVITY_TIMEOUT_SECONDS: 15          # default, optional — live connectivity-check timeout
+      #PATCHDECK_APPRISE_TIMEOUT_SECONDS: 10               # default, optional
+      #PATCHDECK_APPRISE_BIN: /usr/local/bin/apprise       # default, optional — override only if apprise binary is not in bin
+      #PATCHDECK_APPRISE_URL: tgram://bot_token/chat_id    # optional
     volumes:
       - ./data:/data
 ```
@@ -178,27 +176,27 @@ docker compose up -d --build
 
 | Component | Technology |
 |-----------|-----------|
-| Backend | Go (Chi router + SQLite) |
-| Frontend | React 18 + Vite + Tailwind CSS |
+| Backend | Go 1.25 (Chi router + pure-Go SQLite, WAL) |
+| Frontend | React 18 + Vite + Tailwind CSS + TanStack Query |
 | Notifications | Apprise CLI (bundled in image) |
 | Deployment | Docker Compose (single container) |
 
 ## Configuration
 
-All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` and `PATCHDECK_JWT_SECRET` are required — everything else has sensible defaults.
+All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` is required — everything else has sensible defaults.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `PUID` | | `1000` | User ID for the container process (linuxserver.io convention) |
 | `PGID` | | `1000` | Group ID for the container process (linuxserver.io convention) |
-| `PATCHDECK_MASTER_KEY` | ✅ | — | 32+ char string for AES-GCM credential encryption |
-| `PATCHDECK_JWT_SECRET` | ✅ | — | 32+ char string for JWT signing |
+| `PATCHDECK_MASTER_KEY` | ✅ | — | 32+ char secret; an AES-256 key is derived from it (HKDF) to encrypt SSH credentials at rest |
 | `PATCHDECK_DB_PATH` | | `/data/patchdeck.db` | SQLite database path inside the container |
-| `PATCHDECK_SSH_TIMEOUT_SECONDS` | | `20` | SSH connection timeout |
+| `PATCHDECK_SSH_TIMEOUT_SECONDS` | | `20` | SSH dial/handshake timeout |
+| `PATCHDECK_EXEC_TIMEOUT_SECONDS` | | `600` | Max wall-clock for a single remote command (scan/apply) |
+| `PATCHDECK_CONNECTIVITY_TIMEOUT_SECONDS` | | `15` | Timeout for the live dashboard connectivity check |
 | `PATCHDECK_APPRISE_TIMEOUT_SECONDS` | | `10` | Notification delivery timeout |
 | `PATCHDECK_APPRISE_BIN` | | `apprise` | Path to apprise binary (bundled in image) |
 | `PATCHDECK_APPRISE_URL` | | — | Default Apprise destination URL |
-| `REGISTRATION_ENABLED` | | `true` | Set `false` to disable new account registration |
 | `PATCHDECK_TLS` | | `true` | Enable HTTPS with auto-generated self-signed cert; set `false` if behind a reverse proxy |
 | `PATCHDECK_TLS_CERT` | | `/data/tls/cert.pem` | Path to TLS certificate (auto-generated if missing) |
 | `PATCHDECK_TLS_KEY` | | `/data/tls/key.pem` | Path to TLS private key (auto-generated if missing) |
@@ -228,11 +226,13 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` and 
 
 ## Security
 
-- **Credentials encrypted at rest** — AES-GCM with a 32-byte master key
+- **Credentials encrypted at rest** — AES-256-GCM; the key is derived from `PATCHDECK_MASTER_KEY` via HKDF-SHA256
 - **Password hashing** — bcrypt
-- **JWT auth** — HS256 with 12-hour TTL
-- **TOTP two-factor** — optional time-based one-time password on login
-- **SSH host key verification** — TOFU with optional manual pinning; mismatches block operations until resolved
+- **Cookie sessions** — httpOnly, Secure, SameSite=Lax, server-side session store with sliding 7-day expiry (no JWT, no token in URLs)
+- **Login brute-force lockout** — per-IP sliding-window lockout after repeated failures
+- **TOTP two-factor** — optional time-based one-time password on login, with one-time recovery codes
+- **SSH host key verification** — fail-closed; TOFU with optional manual pinning; mismatches block operations until resolved
+- **Command-injection guards** — strict validation of service names and power actions sent over SSH
 - **Parameterized SQL** — no raw string interpolation
 - **Rate limiting** — 30-second per-host cooldown on scan/apply
 - **Audit trail** — all operations logged with retention policy
@@ -240,13 +240,14 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` and 
 
 ## API
 
-Patchdeck exposes a REST API. Authenticate with either a JWT (from login) or an API token (`Bearer pd_...`).
+The web UI authenticates via an httpOnly session cookie (set by `/api/login`). For programmatic access, create an API token in **Settings** and send it as `Authorization: Bearer pd_...`.
 
 Key endpoints:
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/login` | Authenticate (returns JWT) |
+| `POST` | `/api/login` | Authenticate (sets session cookie) |
+| `POST` | `/api/logout` | Revoke the current session |
 | `GET` | `/api/hosts` | List all hosts |
 | `POST` | `/api/hosts` | Add a host |
 | `POST` | `/api/hosts/:id/scan` | Scan a host for updates (SSE stream) |
@@ -254,7 +255,8 @@ Key endpoints:
 | `POST` | `/api/hosts/:id/power` | Reboot or shutdown |
 | `GET` | `/api/activity` | Activity log (paginated) |
 | `GET` | `/api/activity/export` | Export activity as CSV |
-| `GET/POST` | `/api/jobs` | List/create scheduled jobs |
+| `GET/POST` | `/api/jobs` | List/create scheduled jobs (list includes last/next run) |
+| `GET` | `/api/jobs/:id/runs` | Scheduled-job run history |
 | `GET/PUT` | `/api/settings/*` | Notification, audit, and token settings |
 
 Full API documentation is planned for a future release.
