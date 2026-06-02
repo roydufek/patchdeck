@@ -1,0 +1,107 @@
+# Patchdeck CI: builds the prod image, scans it, pushes to the Forgejo registry.
+# Triggered on every push to main; also invokable manually via workflow_dispatch.
+#
+# Runner: instance-level Forgejo runner with the `docker` label resolving to
+# alpine:latest, force_pull: true, host docker socket mounted into the job
+# container. Tools install per-step so we always pull the latest patched versions.
+#
+# Secrets used:
+#   REGISTRY_TOKEN — Forgejo PAT with package R/W, stored at repo level.
+#                    Used by `docker login` to authenticate against the registry.
+#                    (Shared value, reused across repos.)
+# Auto-provided:
+#   actions/checkout uses Forgejo's runtime workflow token; no manual secret needed.
+
+name: build-and-push
+
+on:
+  push:
+    branches: [main]
+    # Skip CI when the only changes don't affect the built image: compose files
+    # (runtime-only, not baked in), env example, docs, gitignore. Image-relevant
+    # paths (Dockerfile, api/**, web/**, entrypoint.sh, .forgejo/**) still build.
+    paths-ignore:
+      - 'docker-compose.yml'
+      - 'docker-compose.ghcr.yml'
+      - '.env.example'
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: docker
+    steps:
+      - name: install tools
+        run: |
+          # nodejs is required by actions/checkout (a JavaScript action) — bare
+          # alpine doesn't ship it. docker-cli-buildx adds the BuildKit plugin so
+          # `docker buildx build` works (legacy `docker build` is deprecated).
+          apk add --no-cache docker-cli docker-cli-buildx git curl jq bash ca-certificates nodejs
+          # Two scanners, different vuln DBs — they catch different things, so we
+          # gate on both. Each install script drops a pinned binary in /usr/local/bin.
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          curl -sfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: login to forgejo registry
+        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login forgejo.devbox.roydufek.com -u roydufek --password-stdin
+
+      - name: extract version
+        id: version
+        run: |
+          # Single source of truth for the version is the AppVersion default in
+          # config.go (envOr("PATCHDECK_VERSION", "X.Y.Z")). Tag the build so the
+          # registry UI shows readable vX.Y.Z entries plus a traceable short SHA.
+          APP_VERSION=$(awk -F'"' '/PATCHDECK_VERSION/{print $4; exit}' api/internal/config/config.go)
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          echo "app_version=${APP_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Building image with tags: v${APP_VERSION}, ${SHORT_SHA}, latest"
+
+      - name: build image
+        run: |
+          # buildx --load uses BuildKit and loads the result into the host docker
+          # image store so the trivy/grype scans + push can reference it by tag.
+          docker buildx build --load \
+            -t forgejo.devbox.roydufek.com/roydufek/patchdeck:v${{ steps.version.outputs.app_version }} \
+            -t forgejo.devbox.roydufek.com/roydufek/patchdeck:${{ steps.version.outputs.short_sha }} \
+            -t forgejo.devbox.roydufek.com/roydufek/patchdeck:latest \
+            .
+
+      # ── Security gates: fail the build only on FIXABLE High/Critical CVEs.
+      # --ignore-unfixed / --only-fixed: don't block on CVEs with no upstream fix
+      # (an OS base can accrete unfixable HIGH/CRITICAL in packages the app never
+      # runs). Anything with a fix still fails the gate — that's the actionable
+      # pressure that keeps the image at zero fixable HIGH/CRITICAL.
+      - name: trivy scan (gate — fixable HIGH/CRITICAL)
+        run: |
+          trivy image \
+            --scanners vuln \
+            --ignore-unfixed \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            forgejo.devbox.roydufek.com/roydufek/patchdeck:v${{ steps.version.outputs.app_version }}
+
+      - name: grype scan (gate — fixable HIGH/CRITICAL)
+        run: |
+          grype \
+            --only-fixed \
+            --fail-on high \
+            forgejo.devbox.roydufek.com/roydufek/patchdeck:v${{ steps.version.outputs.app_version }}
+
+      # Non-gating visibility pass: prints EVERYTHING (incl. unfixable + lower
+      # severities) so any backlog stays visible in the CI log without blocking.
+      - name: trivy scan (report — all findings, non-gating)
+        run: |
+          trivy image \
+            --scanners vuln \
+            --severity LOW,MEDIUM,HIGH,CRITICAL \
+            --exit-code 0 \
+            forgejo.devbox.roydufek.com/roydufek/patchdeck:v${{ steps.version.outputs.app_version }}
+
+      - name: push image
+        run: docker push --all-tags forgejo.devbox.roydufek.com/roydufek/patchdeck
