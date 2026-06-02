@@ -286,6 +286,7 @@ npm run build  # Production build
 - [ ] Webhooks for external integrations
 - [ ] Role-based access control (RBAC) and multi-user management
 - [ ] RPM/dnf support (RHEL, Fedora, Rocky)
+- [ ] Dashboard tag filter / grouped host view (tags already drive job targeting; this adds browsing/filtering hosts by tag on the dashboard)
 - [ ] Dashboard metrics and charts
 
 ## License
