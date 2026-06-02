@@ -50,7 +50,7 @@ function useAutoRefresh(onRefresh) {
 }
 
 export default function Dashboard({
-  hosts, scanByHost, connectivityByHost, hostActionState, hostActionError,
+  hosts, scanByHost, connectivityByHost, connectivityChecking, hostActionState, hostActionError,
   actionBusy, onScan, onScanBulk, onApply, onRefreshConnectivity, onDeleteHost,
   onEditHost, onAddHost, onExpandHost,
   hostDetailsOpen, onToggleDetails,
@@ -140,8 +140,10 @@ export default function Dashboard({
       const applyAllowed = checksEnabled && !h.host_key_pending_fingerprint
 
       state.set(h.id, {
-        connected: connection.ok,
-        needsAttention: !connection.ok,
+        // Tone-aware: only a hard failure ('bad') counts as needs-attention. 'warn'
+        // (reachable but slow) and 'pending' (checking) are advisory, not alarming.
+        connected: connection.tone === 'good',
+        needsAttention: connection.tone === 'bad',
         pendingUpdates: packageCount,
         restartNeeded,
         checksEnabled,
@@ -599,6 +601,7 @@ export default function Dashboard({
               host={h}
               scan={scanByHost.get(h.id)}
               connectivity={connectivityByHost[h.id]}
+              connectivityChecking={connectivityChecking}
               actionState={hostActionState[h.id] || {}}
               actionError={hostActionError?.[h.id] || ''}
               actionBusy={actionBusy}

@@ -325,7 +325,7 @@ function StreamPanel({ host, mode, output, phase, progress, isStreaming, error, 
 }
 
 export default function HostCard({
-  host: h, scan: snap, connectivity, actionState, actionError,
+  host: h, scan: snap, connectivity, connectivityChecking, actionState, actionError,
   actionBusy, expanded, onToggleExpand,
   onScan, onApply, onRefreshConnectivity, onEdit, onDelete,
   onUpdateHostOps, onUpdateHostKeyPolicy, onResolveHostKeyMismatch,
@@ -533,11 +533,25 @@ export default function HostCard({
             </div>
           )}
 
-          {/* Connection dot */}
-          <span
-            className={`flex-shrink-0 h-2.5 w-2.5 rounded-full ${connection.tone === 'pending' ? 'bg-gray-400 dark:bg-zinc-500 animate-pulse' : connected ? 'bg-emerald-500' : hostKeyMismatchPending ? 'bg-red-500' : 'bg-red-500'}`}
-            title={connection.label}
-          />
+          {/* Connection dot — 4 states (green=connected, amber=slow/unverified,
+              red=hard failure, gray=pending) with a glowing ring while a live check
+              is in flight. */}
+          {(() => {
+            const dotColor =
+              connection.tone === 'good' ? 'bg-emerald-500'
+              : connection.tone === 'warn' ? 'bg-amber-500'
+              : connection.tone === 'pending' ? 'bg-gray-400 dark:bg-zinc-500'
+              : 'bg-red-500'
+            const checkingNow = connectivityBusy || connectivityChecking
+            return (
+              <span className="relative flex-shrink-0 h-2.5 w-2.5" title={checkingNow ? 'Checking connectivity…' : connection.label}>
+                {checkingNow && (
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+                )}
+                <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${dotColor} ${connection.tone === 'pending' ? 'animate-pulse' : ''}`} />
+              </span>
+            )
+          })()}
 
           {/* Host name */}
           <span className="font-medium text-sm truncate">{h.name}</span>

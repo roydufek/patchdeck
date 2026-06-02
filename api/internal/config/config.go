@@ -16,6 +16,7 @@ type Config struct {
 	JWTSecret           string
 	SSHTimeout          time.Duration
 	ExecTimeout         time.Duration
+	ConnectivityTimeout time.Duration
 	AppriseURL          string
 	AppriseBinPath      string
 	AppriseTimeout      time.Duration
@@ -47,6 +48,15 @@ func Load() (Config, error) {
 			execTimeout = time.Duration(v) * time.Second
 		}
 	}
+	// ConnectivityTimeout bounds the live "quick" SSH reachability check shown on the
+	// dashboard. The old hard-coded 5s falsely reported slow-but-reachable hosts (e.g.
+	// over a tailnet) as Disconnected even when full scans succeeded; default 15s.
+	connectivityTimeout := 15 * time.Second
+	if raw := os.Getenv("PATCHDECK_CONNECTIVITY_TIMEOUT_SECONDS"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			connectivityTimeout = time.Duration(v) * time.Second
+		}
+	}
 	appriseTimeout := 10 * time.Second
 	if raw := os.Getenv("PATCHDECK_APPRISE_TIMEOUT_SECONDS"); raw != "" {
 		if v, err := strconv.Atoi(raw); err == nil {
@@ -69,6 +79,7 @@ func Load() (Config, error) {
 		JWTSecret:           os.Getenv("PATCHDECK_JWT_SECRET"),
 		SSHTimeout:          t,
 		ExecTimeout:         execTimeout,
+		ConnectivityTimeout: connectivityTimeout,
 		AppriseURL:          os.Getenv("PATCHDECK_APPRISE_URL"),
 		AppriseBinPath:      envOr("PATCHDECK_APPRISE_BIN", "apprise"),
 		AppriseTimeout:      appriseTimeout,

@@ -173,7 +173,7 @@ export default function HostDetails({
       <div className="grid sm:grid-cols-3 gap-3 text-xs">
         <div className="rounded-lg border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900/60 px-3 py-2.5">
           <p className="text-gray-500 dark:text-zinc-500 font-medium uppercase tracking-wider text-[10px] mb-1">Connection</p>
-          <p className={`font-medium ${connection.ok ? 'text-emerald-500 dark:text-emerald-400' : 'text-red-500 dark:text-red-400'}`}>{connection.label}</p>
+          <p className={`font-medium ${connection.tone === 'good' ? 'text-emerald-500 dark:text-emerald-400' : connection.tone === 'warn' ? 'text-amber-500 dark:text-amber-400' : connection.tone === 'pending' ? 'text-gray-500 dark:text-zinc-400' : 'text-red-500 dark:text-red-400'}`}>{connection.label}</p>
           <p className="text-gray-500 dark:text-zinc-500 mt-0.5 leading-snug">{connection.detail}</p>
           {connectivity?.checked_at && (
             <p className="text-gray-400 dark:text-zinc-600 mt-0.5" title={fullDate(connectivity.checked_at)}>{timeAgo(connectivity.checked_at)}</p>

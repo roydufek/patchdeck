@@ -213,6 +213,7 @@ function AppInner() {
             hosts={hostsHook.hosts}
             scanByHost={hostsHook.scanByHost}
             connectivityByHost={hostsHook.connectivityByHost}
+            connectivityChecking={hostsHook.connectivityChecking}
             hostActionState={hostsHook.hostActionState}
             hostActionError={hostsHook.hostActionError}
             actionBusy={hostsHook.actionBusy}

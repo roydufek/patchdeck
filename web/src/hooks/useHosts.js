@@ -575,6 +575,7 @@ export function useHosts(token, clearToken) {
     hosts, scans, scanByHost, loading, error, setError,
     actionBusy, setActionBusy, hostActionError, hostActionState,
     connectivityByHost,
+    connectivityChecking: connectivityQuery.isFetching,
     hostKeyAuditByHost,
     loadData, hostAction, deleteHost, createHost,
     refreshConnectivity, updateHostOps, updateHostKeyPolicy,

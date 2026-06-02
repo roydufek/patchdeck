@@ -31,6 +31,12 @@ export function connectionHealth(host, snap, connectionError) {
   return { ok: true, label: 'Healthy', detail: 'Recent scan completed successfully.' }
 }
 
+export function isTimeoutMessage(message) {
+  if (!message || typeof message !== 'string') return false
+  const v = message.toLowerCase()
+  return v.includes('timed out') || v.includes('timeout') || v.includes('i/o timeout')
+}
+
 export function connectionIndicator(host, connectivity, fallbackError, snap) {
   if (host.host_key_pending_fingerprint) {
     return { ok: false, tone: 'bad', label: 'Disconnected', detail: 'SSH host key mismatch is blocking connectivity.' }
@@ -63,6 +69,17 @@ export function connectionIndicator(host, connectivity, fallbackError, snap) {
   }
 
   const detail = (connectivity && connectivity.error) || fallbackError || 'Quick SSH check failed or did not return data.'
+  // A timeout on a host whose last scan succeeded recently means "reachable but slow
+  // to respond to the quick check", NOT down. Show amber (warn), not alarming red —
+  // reserve red for hard failures (refused, no route, auth, host-key mismatch).
+  if (isTimeoutMessage(detail) && snap?.updated_at && staleLabel(snap.updated_at) !== 'stale') {
+    return {
+      ok: null,
+      tone: 'warn',
+      label: 'Unverified — slow',
+      detail: `${detail} Last scan succeeded recently, so the host is reachable but slow to answer the quick check.`,
+    }
+  }
   return { ok: false, tone: 'bad', label: 'Disconnected', detail }
 }
 

@@ -406,7 +406,7 @@ func (a *app) hostConnectivity(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	quickTimeout := 5 * time.Second
+	quickTimeout := a.cfg.ConnectivityTimeout
 	checker := sshx.NewClient(quickTimeout, quickTimeout, a.verifyHostKey)
 	results := make([]hostConnectivityStatus, len(hosts))
 
@@ -2317,8 +2317,9 @@ func (a *app) awaitRecovery(w http.ResponseWriter, r *http.Request) {
 		"timeout":   timeoutSec,
 	})
 
-	// Use a short SSH timeout (5s) for connectivity checks
-	checker := sshx.NewClient(5*time.Second, 5*time.Second, a.verifyHostKey)
+	// Connectivity-check timeout (configurable; default 15s) — generous enough that
+	// slow-but-reachable hosts aren't falsely reported as down.
+	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
 
 	ctx := r.Context()
 	start := time.Now()
