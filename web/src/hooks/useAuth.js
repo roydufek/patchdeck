@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { API } from '../api.js'
 
 export function useAuth() {
@@ -18,6 +18,11 @@ export function useAuth() {
   const [login, setLogin] = useState({ username: '', password: '', code: '' })
   const [loginBusy, setLoginBusy] = useState(false)
   const [totpRequired, setTotpRequired] = useState(false)
+  // Serializes login submits. Without this, rapid Enter/double-click sends overlapping
+  // requests, and a late 401 from a superseded attempt can paint an error over a
+  // parallel attempt that already succeeded and set the session cookie (looks like a
+  // failed login when you're actually logged in — refresh then "fixes" it).
+  const loginInFlightRef = useRef(false)
 
   const [bootstrapForm, setBootstrapForm] = useState({
     username: '', password: '', confirm_password: ''
@@ -65,6 +70,8 @@ export function useAuth() {
 
   const doLogin = useCallback(async (e) => {
     e.preventDefault()
+    if (loginInFlightRef.current) return // ignore overlapping submits
+    loginInFlightRef.current = true
     setLoginBusy(true)
     setError('')
     try {
@@ -104,6 +111,7 @@ export function useAuth() {
       setError(e.message || 'Login failed')
     } finally {
       setLoginBusy(false)
+      loginInFlightRef.current = false
     }
   }, [login])
 

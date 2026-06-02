@@ -159,8 +159,10 @@ function AppInner() {
     setHostDetailsOpen({})
   }
 
-  // Merge errors
-  const globalError = hostsHook.error || jobsHook.error || settingsHook.error || auth.error || ''
+  // Merge errors for the in-app banner. auth.error is deliberately excluded: it's a
+  // login/bootstrap-screen concern (shown there via LoginPage's error prop), and a
+  // late/superseded login error must never surface on the authenticated dashboard.
+  const globalError = hostsHook.error || jobsHook.error || settingsHook.error || ''
 
   // Still checking the session cookie — avoid flashing the login form.
   if (auth.authChecking) {
