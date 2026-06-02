@@ -138,6 +138,7 @@ func main() {
 		pr.Get("/api/jobs", a.listJobs)
 		pr.Post("/api/jobs", a.createJob)
 		pr.Post("/api/jobs/{id}/enabled", a.setJobEnabled)
+		pr.Get("/api/jobs/{id}/runs", a.listJobRuns)
 		pr.Delete("/api/jobs/{id}", a.deleteJob)
 		pr.Get("/api/settings/notifications", a.getNotificationSettings)
 		pr.Get("/api/settings/notifications/runtime", a.getNotificationRuntime)
@@ -960,7 +961,30 @@ func (a *app) listJobs(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": "Failed to load scheduled jobs"})
 		return
 	}
+	now := time.Now().UTC()
+	for i := range jobs {
+		if lr, e := db.GetLastJobRun(a.db, jobs[i].ID); e == nil {
+			jobs[i].LastRun = lr
+		}
+		jobs[i].NextRun = scheduler.NextRun(jobs[i].CronExpr, now)
+	}
 	writeJSON(w, 200, jobs)
+}
+
+func (a *app) listJobRuns(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			limit = v
+		}
+	}
+	runs, err := db.ListJobRuns(a.db, id, limit)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "Failed to load job run history"})
+		return
+	}
+	writeJSON(w, 200, runs)
 }
 
 func (a *app) createJob(w http.ResponseWriter, r *http.Request) {

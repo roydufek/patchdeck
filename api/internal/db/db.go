@@ -90,6 +90,13 @@ func Migrate(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash)`); err != nil {
 		return err
 	}
+	// job_runs table — execution history for scheduled jobs (observability)
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS job_runs (id TEXT PRIMARY KEY, job_id TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, started_at DATETIME NOT NULL, finished_at DATETIME, hosts_total INTEGER NOT NULL DEFAULT 0, hosts_ok INTEGER NOT NULL DEFAULT 0, hosts_failed INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL DEFAULT '')`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_job_runs_job ON job_runs(job_id, started_at)`); err != nil {
+		return err
+	}
 	// activity_log table
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, host_id TEXT, host_name TEXT, event_type TEXT NOT NULL, summary TEXT, created_at DATETIME NOT NULL)`); err != nil {
 		return err
@@ -364,7 +371,76 @@ func DeleteJob(db *sql.DB, id string) error {
 	if n == 0 {
 		return sql.ErrNoRows
 	}
+	_, _ = db.Exec(`DELETE FROM job_runs WHERE job_id=?`, id)
 	return nil
+}
+
+// --- Scheduled-job run history ---
+
+func CreateJobRun(db *sql.DB, jobID, mode string) (string, error) {
+	id := uuid.NewString()
+	_, err := db.Exec(`INSERT INTO job_runs(id,job_id,mode,status,started_at) VALUES(?,?,?,'running',?)`,
+		id, jobID, mode, time.Now().UTC())
+	return id, err
+}
+
+func FinishJobRun(db *sql.DB, runID, status string, total, ok, failed int, detail string) error {
+	_, err := db.Exec(`UPDATE job_runs SET status=?, finished_at=?, hosts_total=?, hosts_ok=?, hosts_failed=?, detail=? WHERE id=?`,
+		status, time.Now().UTC(), total, ok, failed, detail, runID)
+	return err
+}
+
+func scanJobRun(s interface{ Scan(...any) error }) (models.JobRun, error) {
+	var jr models.JobRun
+	var finished sql.NullTime
+	if err := s.Scan(&jr.ID, &jr.JobID, &jr.Mode, &jr.Status, &jr.StartedAt, &finished, &jr.HostsTotal, &jr.HostsOK, &jr.HostsFailed, &jr.Detail); err != nil {
+		return models.JobRun{}, err
+	}
+	if finished.Valid {
+		t := finished.Time
+		jr.FinishedAt = &t
+	}
+	return jr, nil
+}
+
+const jobRunCols = `id,job_id,mode,status,started_at,finished_at,hosts_total,hosts_ok,hosts_failed,detail`
+
+func ListJobRuns(db *sql.DB, jobID string, limit int) ([]models.JobRun, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 20
+	}
+	rows, err := db.Query(`SELECT `+jobRunCols+` FROM job_runs WHERE job_id=? ORDER BY started_at DESC LIMIT ?`, jobID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []models.JobRun{}
+	for rows.Next() {
+		jr, err := scanJobRun(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, jr)
+	}
+	return out, rows.Err()
+}
+
+func GetLastJobRun(db *sql.DB, jobID string) (*models.JobRun, error) {
+	row := db.QueryRow(`SELECT `+jobRunCols+` FROM job_runs WHERE job_id=? ORDER BY started_at DESC LIMIT 1`, jobID)
+	jr, err := scanJobRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &jr, nil
+}
+
+// PruneJobRuns keeps only the most recent `keep` runs for a job.
+func PruneJobRuns(db *sql.DB, jobID string, keep int) error {
+	_, err := db.Exec(`DELETE FROM job_runs WHERE job_id=? AND id NOT IN (SELECT id FROM job_runs WHERE job_id=? ORDER BY started_at DESC LIMIT ?)`, jobID, jobID, keep)
+	return err
 }
 
 func ListJobs(db *sql.DB) ([]models.Job, error) {

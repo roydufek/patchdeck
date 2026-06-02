@@ -25,13 +25,21 @@ type Engine struct {
 	notifier          *notify.Dispatcher
 	defaultAppriseURL string
 
-	mu              sync.Mutex
-	lastRunKey      map[string]string
-	lastPurgeDate   string // "2006-01-02" — run once per day
+	mu            sync.Mutex
+	lastRunKey    map[string]string // per-job minute-dedup, pruned each tick
+	running       map[string]bool   // jobs currently executing — prevents overlap
+	lastPurgeDate string            // "2006-01-02" — run once per day
+	sem           chan struct{}     // bounds concurrent job execution
 }
 
 func NewEngine(dbConn *sql.DB, ssh *sshx.Client, secrets *crypto.SealBox, notifier *notify.Dispatcher, defaultAppriseURL string) *Engine {
-	return &Engine{db: dbConn, ssh: ssh, secrets: secrets, notifier: notifier, defaultAppriseURL: strings.TrimSpace(defaultAppriseURL), lastRunKey: map[string]string{}}
+	return &Engine{
+		db: dbConn, ssh: ssh, secrets: secrets, notifier: notifier,
+		defaultAppriseURL: strings.TrimSpace(defaultAppriseURL),
+		lastRunKey:        map[string]string{},
+		running:           map[string]bool{},
+		sem:               make(chan struct{}, 4),
+	}
 }
 
 func (e *Engine) Run(ctx context.Context) {
@@ -58,6 +66,7 @@ func (e *Engine) tick(ctx context.Context, now time.Time) {
 		return
 	}
 
+	e.pruneLastRun(now)
 	for _, j := range jobs {
 		if !j.Enabled {
 			continue
@@ -68,7 +77,17 @@ func (e *Engine) tick(ctx context.Context, now time.Time) {
 		if !e.markDue(j.ID, now) {
 			continue
 		}
-		e.runJob(ctx, j)
+		if !e.tryStart(j.ID) {
+			log.Printf("scheduler: job=%s still running from a previous window; skipping this fire", j.ID)
+			continue
+		}
+		// Run each due job concurrently (bounded by sem) so a long apply doesn't
+		// block the ticker or delay other due jobs past their minute window.
+		go func(job models.Job) {
+			e.sem <- struct{}{}
+			defer func() { <-e.sem; e.finishStart(job.ID) }()
+			e.runJob(ctx, job)
+		}(j)
 	}
 }
 
@@ -81,6 +100,35 @@ func (e *Engine) markDue(jobID string, now time.Time) bool {
 	}
 	e.lastRunKey[jobID] = key
 	return true
+}
+
+// pruneLastRun drops dedup entries from past minutes so the map stays bounded.
+func (e *Engine) pruneLastRun(now time.Time) {
+	key := now.UTC().Format("2006-01-02T15:04")
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for id, v := range e.lastRunKey {
+		if v != key {
+			delete(e.lastRunKey, id)
+		}
+	}
+}
+
+// tryStart marks a job as running; returns false if it's already executing.
+func (e *Engine) tryStart(jobID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.running[jobID] {
+		return false
+	}
+	e.running[jobID] = true
+	return true
+}
+
+func (e *Engine) finishStart(jobID string) {
+	e.mu.Lock()
+	delete(e.running, jobID)
+	e.mu.Unlock()
 }
 
 func (e *Engine) maybePurgeActivity(now time.Time) {
@@ -148,6 +196,8 @@ func globalEventEnabled(settings models.NotificationSettings, eventKey string) b
 		return settings.AutoApplySuccess
 	case "auto_apply_failure":
 		return settings.AutoApplyFailure
+	case "scan_failure":
+		return settings.ScanFailure
 	default:
 		return true
 	}
@@ -161,46 +211,84 @@ func hostEventEnabled(prefs models.HostNotificationPrefs, eventKey string) bool 
 		return prefs.AutoApplySuccess
 	case "auto_apply_failure":
 		return prefs.AutoApplyFailure
+	case "scan_failure":
+		return prefs.ScanFailure
 	default:
 		return true
 	}
 }
 
 func (e *Engine) runJob(ctx context.Context, j models.Job) {
-	// Resolve target hosts
-	hosts, err := e.resolveJobHosts(j)
-	if err != nil {
-		log.Printf("scheduler: job=%s resolve hosts failed: %v", j.ID, err)
-		return
-	}
-	if len(hosts) == 0 {
-		log.Printf("scheduler: job=%s no hosts resolved (tag=%q host_ids=%v host_id=%s)", j.ID, j.TagFilter, j.HostIDs, j.HostID)
-		return
-	}
-
 	mode := strings.ToLower(strings.TrimSpace(j.Mode))
 	if mode == "" {
 		mode = "scan"
 	}
+	runID, cerr := db.CreateJobRun(e.db, j.ID, mode)
+	if cerr != nil {
+		log.Printf("scheduler: job=%s create run record failed: %v", j.ID, cerr)
+		runID = ""
+	}
 
+	hosts, rerr := e.resolveJobHosts(j)
+	if rerr != nil {
+		log.Printf("scheduler: job=%s resolve hosts failed: %v", j.ID, rerr)
+		e.finishRun(runID, "failed", 0, 0, 0, fmt.Sprintf("resolve hosts failed: %v", rerr))
+		return
+	}
+	if len(hosts) == 0 {
+		log.Printf("scheduler: job=%s no hosts resolved (tag=%q host_ids=%v host_id=%s)", j.ID, j.TagFilter, j.HostIDs, j.HostID)
+		e.finishRun(runID, "failed", 0, 0, 0, "no hosts resolved (check tag / host selection)")
+		return
+	}
+
+	total, ok, failed := 0, 0, 0
+	var details []string
 	for _, host := range hosts {
 		if !host.ChecksEnabled {
 			log.Printf("scheduler: job=%s skipped host=%s checks disabled", j.ID, host.Name)
+			details = append(details, host.Name+": skipped (checks disabled)")
 			continue
 		}
-
+		var hostOK bool
 		switch mode {
 		case "scan":
-			e.runScan(j, host)
+			hostOK = e.runScan(j, host)
 		case "apply":
-			e.runApply(j, host)
+			hostOK = e.runApply(j, host)
 		case "scan_apply":
-			e.runScanApply(j, host)
+			hostOK = e.runScanApply(j, host)
 		default:
 			log.Printf("scheduler: job=%s unknown mode=%q", j.ID, j.Mode)
+			details = append(details, host.Name+": unknown mode")
+			continue
+		}
+		total++
+		if hostOK {
+			ok++
+		} else {
+			failed++
+			details = append(details, host.Name+": failed (see activity log)")
 		}
 	}
+
+	status := "success"
+	if ok > 0 && failed > 0 {
+		status = "partial"
+	} else if failed > 0 {
+		status = "failed"
+	}
+	e.finishRun(runID, status, total, ok, failed, strings.Join(details, "; "))
+	_ = db.PruneJobRuns(e.db, j.ID, 50)
 	_ = ctx
+}
+
+func (e *Engine) finishRun(runID, status string, total, ok, failed int, detail string) {
+	if runID == "" {
+		return
+	}
+	if err := db.FinishJobRun(e.db, runID, status, total, ok, failed, detail); err != nil {
+		log.Printf("scheduler: finish run %s failed: %v", runID, err)
+	}
 }
 
 func (e *Engine) resolveJobHosts(j models.Job) ([]models.Host, error) {
@@ -223,73 +311,98 @@ func (e *Engine) resolveJobHosts(j models.Job) ([]models.Host, error) {
 	return nil, nil
 }
 
-func (e *Engine) runScan(j models.Job, host models.Host) {
+func (e *Engine) runScan(j models.Job, host models.Host) bool {
 	res, err := e.ssh.ScanHost(host, e.secrets)
 	if err != nil {
 		var hkErr *sshx.HostKeyError
 		if errors.As(err, &hkErr) {
 			log.Printf("scheduler: job=%s scan blocked host=%s host key mismatch expected=%s presented=%s", j.ID, host.Name, hkErr.ExpectedFingerprint, hkErr.PresentedFingerprint)
-			return
+			_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_fail", "Scheduled scan blocked: SSH host key mismatch")
+			return false
 		}
 		log.Printf("scheduler: job=%s scan host=%s failed: %v", j.ID, host.Name, err)
-		return
+		e.sendNotification(host.ID, "scan_failure", fmt.Sprintf("Patchdeck scheduled scan FAILED: %s (%v)", host.Name, err))
+		_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_fail", fmt.Sprintf("Scheduled scan failed: %v", err))
+		return false
 	}
 	if err := db.UpsertScanResult(e.db, host.ID, res); err != nil {
 		log.Printf("scheduler: job=%s save scan host=%s failed: %v", j.ID, host.Name, err)
-		return
+		return false
 	}
 	if len(res.Packages) > 0 {
 		e.sendNotification(host.ID, "updates_available", fmt.Sprintf("Patchdeck: updates available on %s (%d packages)", host.Name, len(res.Packages)))
 	}
 	_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scheduled scan completed: %d packages available", len(res.Packages)))
 	log.Printf("scheduler: job=%s scan complete host=%s packages=%d reboot=%v", j.ID, host.Name, len(res.Packages), res.NeedsReboot)
+	return true
 }
 
-func (e *Engine) runApply(j models.Job, host models.Host) {
+func (e *Engine) runApply(j models.Job, host models.Host) bool {
 	res, err := e.ssh.ApplyUpdates(host, e.secrets)
 	if err != nil {
 		var hkErr *sshx.HostKeyError
 		if errors.As(err, &hkErr) {
 			log.Printf("scheduler: job=%s apply blocked host=%s host key mismatch expected=%s presented=%s", j.ID, host.Name, hkErr.ExpectedFingerprint, hkErr.PresentedFingerprint)
-			return
+			_ = db.RecordActivity(e.db, host.ID, host.Name, "apply_fail", "Scheduled apply blocked: SSH host key mismatch")
+			return false
 		}
 		e.sendNotification(host.ID, "auto_apply_failure", fmt.Sprintf("Patchdeck scheduled apply FAILED: %s (%v)", host.Name, err))
 		_ = db.RecordActivity(e.db, host.ID, host.Name, "apply_fail", fmt.Sprintf("Scheduled apply failed: %v", err))
 		log.Printf("scheduler: job=%s apply host=%s failed: %v", j.ID, host.Name, err)
-		return
+		return false
 	}
 	e.sendNotification(host.ID, "auto_apply_success", fmt.Sprintf("Patchdeck scheduled apply success: %s (%d package changes)", host.Name, res.ChangedPackages))
 	_ = db.RecordActivity(e.db, host.ID, host.Name, "apply_ok", fmt.Sprintf("Scheduled apply completed: %d packages changed", res.ChangedPackages))
 	log.Printf("scheduler: job=%s apply complete host=%s changed=%d reboot=%v", j.ID, host.Name, res.ChangedPackages, res.NeedsReboot)
+	return true
 }
 
-func (e *Engine) runScanApply(j models.Job, host models.Host) {
-	// First scan
+func (e *Engine) runScanApply(j models.Job, host models.Host) bool {
 	scanRes, err := e.ssh.ScanHost(host, e.secrets)
 	if err != nil {
 		var hkErr *sshx.HostKeyError
 		if errors.As(err, &hkErr) {
 			log.Printf("scheduler: job=%s scan_apply scan blocked host=%s host key mismatch", j.ID, host.Name)
-			return
+			_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_fail", "Scheduled scan_apply blocked: SSH host key mismatch")
+			return false
 		}
 		log.Printf("scheduler: job=%s scan_apply scan host=%s failed: %v", j.ID, host.Name, err)
-		return
+		e.sendNotification(host.ID, "scan_failure", fmt.Sprintf("Patchdeck scheduled scan FAILED: %s (%v)", host.Name, err))
+		_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_fail", fmt.Sprintf("Scheduled scan failed: %v", err))
+		return false
 	}
 	if err := db.UpsertScanResult(e.db, host.ID, scanRes); err != nil {
 		log.Printf("scheduler: job=%s scan_apply save scan host=%s failed: %v", j.ID, host.Name, err)
-		return
+		return false
 	}
 	_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scheduled scan completed: %d packages available", len(scanRes.Packages)))
 	log.Printf("scheduler: job=%s scan_apply scan complete host=%s packages=%d", j.ID, host.Name, len(scanRes.Packages))
 
 	if len(scanRes.Packages) == 0 {
 		log.Printf("scheduler: job=%s scan_apply no packages to apply host=%s", j.ID, host.Name)
-		return
+		return true // nothing to apply = success
 	}
 
-	// Then apply
 	e.sendNotification(host.ID, "updates_available", fmt.Sprintf("Patchdeck: updates available on %s (%d packages), applying...", host.Name, len(scanRes.Packages)))
-	e.runApply(j, host)
+	return e.runApply(j, host)
+}
+
+// NextRun returns the next time the cron expression fires at or after `from`
+// (minute resolution), scanning up to ~366 days ahead. Returns nil if the expression
+// is invalid or never matches within that window.
+func NextRun(expr string, from time.Time) *time.Time {
+	if strings.TrimSpace(expr) == "" {
+		return nil
+	}
+	t := from.UTC().Truncate(time.Minute).Add(time.Minute)
+	for i := 0; i < 366*24*60; i++ {
+		if cronMatches(expr, t) {
+			next := t
+			return &next
+		}
+		t = t.Add(time.Minute)
+	}
+	return nil
 }
 
 func cronMatches(expr string, now time.Time) bool {

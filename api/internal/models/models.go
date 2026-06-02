@@ -106,6 +106,24 @@ type Job struct {
 	CronExpr  string   `json:"cron_expr"`
 	Mode      string   `json:"mode"` // scan|apply|scan_apply
 	Enabled   bool     `json:"enabled"`
+
+	// Computed (not persisted on the jobs row): populated when listing jobs.
+	LastRun *JobRun    `json:"last_run,omitempty"`
+	NextRun *time.Time `json:"next_run,omitempty"`
+}
+
+// JobRun is one execution of a scheduled job (persisted for history/observability).
+type JobRun struct {
+	ID          string     `json:"id"`
+	JobID       string     `json:"job_id"`
+	Mode        string     `json:"mode"`
+	Status      string     `json:"status"` // running|success|partial|failed
+	StartedAt   time.Time  `json:"started_at"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+	HostsTotal  int        `json:"hosts_total"`
+	HostsOK     int        `json:"hosts_ok"`
+	HostsFailed int        `json:"hosts_failed"`
+	Detail      string     `json:"detail,omitempty"`
 }
 
 type NotificationSettings struct {
