@@ -98,6 +98,9 @@ func main() {
 	a.sshClient = sshx.NewClient(cfg.SSHTimeout, cfg.ExecTimeout, a.verifyHostKey)
 	a.sched = scheduler.NewEngine(database, a.sshClient, seal, notifier, cfg.AppriseURL)
 
+	// Best-effort purge of expired web sessions on startup.
+	_ = db.DeleteExpiredSessions(database)
+
 	r := chi.NewRouter()
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -108,6 +111,7 @@ func main() {
 	r.Get("/api/setup", a.setupStatus)
 	r.Post("/api/bootstrap", a.bootstrap)
 	r.Post("/api/login", a.login)
+	r.Post("/api/logout", a.logout)
 
 	r.Group(func(pr chi.Router) {
 		pr.Use(a.authMiddleware)
@@ -321,12 +325,31 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Establish a server-side session (httpOnly cookie) — the primary web auth going
+	// forward. The JWT below is retained for backward compatibility with any client
+	// still sending a Bearer token; both are accepted by the auth middleware.
+	if sessTok, serr := db.CreateSession(a.db, user.ID, user.Username, user.Role, sessionTTL); serr == nil {
+		setSessionCookie(w, sessTok)
+	}
 	token, err := auth.SignJWT(a.cfg.JWTSecret, user.ID, user.Username, user.Role, 7*24*time.Hour)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to generate session token"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"token": token})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token": token,
+		"user":  map[string]string{"username": user.Username, "role": user.Role},
+	})
+}
+
+// logout deletes the current server-side session and clears the cookie. Safe to call
+// without prior auth (it simply clears whatever cookie is present).
+func (a *app) logout(w http.ResponseWriter, r *http.Request) {
+	if c, err := r.Cookie(sessionCookieName); err == nil {
+		_ = db.DeleteSession(a.db, c.Value)
+	}
+	clearSessionCookie(w)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (a *app) me(w http.ResponseWriter, r *http.Request) {
@@ -1676,8 +1699,56 @@ func (a *app) scanAllHosts(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, results)
 }
 
+const sessionCookieName = "pd_session"
+const sessionTTL = 7 * 24 * time.Hour
+
+// setSessionCookie issues the httpOnly session cookie. Secure + SameSite=Lax: the
+// browser reaches Patchdeck over HTTPS (self-signed or via the reverse proxy), and
+// EventSource/SSE sends this cookie automatically (no token in the URL needed).
+func setSessionCookie(w http.ResponseWriter, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int(sessionTTL.Seconds()),
+	})
+}
+
+func clearSessionCookie(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+// sessionClaims resolves a valid session cookie into auth claims, or nil.
+func (a *app) sessionClaims(r *http.Request) *auth.Claims {
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil || c.Value == "" {
+		return nil
+	}
+	uid, username, role, ok, _ := db.ValidateSession(a.db, c.Value, sessionTTL)
+	if !ok {
+		return nil
+	}
+	return &auth.Claims{UserID: uid, Username: username, Role: role}
+}
+
 func (a *app) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Cookie session (web UI) takes precedence.
+		if claims := a.sessionClaims(r); claims != nil {
+			next.ServeHTTP(w, r.WithContext(auth.WithClaims(r.Context(), claims)))
+			return
+		}
 		authz := strings.TrimSpace(r.Header.Get("Authorization"))
 		if authz == "" || !strings.HasPrefix(authz, "Bearer ") {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
@@ -1948,10 +2019,18 @@ func friendlyError(err error, context string) string {
 	}
 }
 
-// authMiddlewareFlexible checks Authorization header first, then falls back to ?token= query param.
-// This allows EventSource (SSE) which cannot set custom headers.
+// authMiddlewareFlexible authenticates SSE/EventSource requests. It prefers the
+// session cookie (sent automatically by EventSource), then an Authorization header,
+// then a ?token= query param. The query-param path is a legacy fallback retained for
+// backward compatibility until the frontend is fully cookie-based; it leaks the token
+// into access logs and should be removed once no client relies on it.
 func (a *app) authMiddlewareFlexible(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Cookie session (web UI) takes precedence — no token in the URL.
+		if claims := a.sessionClaims(r); claims != nil {
+			next.ServeHTTP(w, r.WithContext(auth.WithClaims(r.Context(), claims)))
+			return
+		}
 		token := ""
 		authz := strings.TrimSpace(r.Header.Get("Authorization"))
 		if strings.HasPrefix(authz, "Bearer ") {

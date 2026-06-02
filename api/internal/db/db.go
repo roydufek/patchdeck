@@ -2,7 +2,9 @@ package db
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,6 +33,10 @@ func Migrate(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS host_key_audit (id TEXT PRIMARY KEY, host_id TEXT NOT NULL, event TEXT NOT NULL, previous_fingerprint TEXT NOT NULL DEFAULT '', new_fingerprint TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL);`,
 		`CREATE TABLE IF NOT EXISTS recovery_codes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, code_hash TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, created_at DATETIME NOT NULL);`,
 		`CREATE INDEX IF NOT EXISTS idx_recovery_codes_user ON recovery_codes(user_id);`,
+		// Server-side web sessions (httpOnly cookie). token_hash = sha256(raw token);
+		// username/role denormalized so validation is a single indexed row read.
+		`CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, username TEXT NOT NULL, role TEXT NOT NULL, created_at DATETIME NOT NULL, expires_at DATETIME NOT NULL, last_seen_at DATETIME NOT NULL);`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -881,6 +887,71 @@ func ValidateAPIToken(db *sql.DB, token string) (bool, string, error) {
 		}
 	}
 	return false, "", rows.Err()
+}
+
+// --- Web session functions (httpOnly cookie auth) ---
+
+func hashSessionToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// CreateSession mints a high-entropy opaque session token, stores its sha256 hash
+// (with denormalized username/role for fast validation), and returns the RAW token
+// to be placed in the cookie.
+func CreateSession(db *sql.DB, userID, username, role string, ttl time.Duration) (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	now := time.Now().UTC()
+	_, err := db.Exec(`INSERT INTO sessions(token_hash,user_id,username,role,created_at,expires_at,last_seen_at) VALUES(?,?,?,?,?,?,?)`,
+		hashSessionToken(token), userID, username, role, now, now.Add(ttl), now)
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// ValidateSession looks up a session by token, rejects/cleans up expired ones, and
+// slides the expiry forward on success. Returns (userID, username, role, ok).
+func ValidateSession(db *sql.DB, token string, ttl time.Duration) (string, string, string, bool, error) {
+	if token == "" {
+		return "", "", "", false, nil
+	}
+	hash := hashSessionToken(token)
+	var userID, username, role string
+	var expiresAt time.Time
+	err := db.QueryRow(`SELECT user_id, username, role, expires_at FROM sessions WHERE token_hash=?`, hash).
+		Scan(&userID, &username, &role, &expiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", "", false, nil
+	}
+	if err != nil {
+		return "", "", "", false, err
+	}
+	now := time.Now().UTC()
+	if now.After(expiresAt) {
+		_, _ = db.Exec(`DELETE FROM sessions WHERE token_hash=?`, hash)
+		return "", "", "", false, nil
+	}
+	// Sliding refresh — keep active sessions alive.
+	_, _ = db.Exec(`UPDATE sessions SET last_seen_at=?, expires_at=? WHERE token_hash=?`, now, now.Add(ttl), hash)
+	return userID, username, role, true, nil
+}
+
+func DeleteSession(db *sql.DB, token string) error {
+	if token == "" {
+		return nil
+	}
+	_, err := db.Exec(`DELETE FROM sessions WHERE token_hash=?`, hashSessionToken(token))
+	return err
+}
+
+func DeleteExpiredSessions(db *sql.DB) error {
+	_, err := db.Exec(`DELETE FROM sessions WHERE expires_at < ?`, time.Now().UTC())
+	return err
 }
 
 // --- Activity Log functions ---
