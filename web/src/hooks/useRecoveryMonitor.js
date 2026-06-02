@@ -8,8 +8,13 @@ export function useRecoveryMonitor() {
   const [attempts, setAttempts] = useState(0)
   const [elapsed, setElapsed] = useState(0)
   const eventSourceRef = useRef(null)
+  const retryTimerRef = useRef(null)
 
   const cleanup = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current)
+      retryTimerRef.current = null
+    }
     if (eventSourceRef.current) {
       eventSourceRef.current.close()
       eventSourceRef.current = null
@@ -33,7 +38,6 @@ export function useRecoveryMonitor() {
 
     let gotStart = false
     let gotResult = false
-    let retryTimer = null
 
     const connect = () => {
       const es = new EventSource(url, { withCredentials: true })
@@ -70,8 +74,10 @@ export function useRecoveryMonitor() {
         if (gotResult) return // already handled via result event
         if (!gotStart) {
           // Connection dropped before server sent 'start' — host is mid-shutdown,
-          // retry after a short delay (the server's 10s initial wait may not have fired yet)
-          retryTimer = setTimeout(() => {
+          // retry after a short delay (the server's 10s initial wait may not have fired yet).
+          // Tracked in retryTimerRef so cleanup()/reset()/unmount cancels it.
+          retryTimerRef.current = setTimeout(() => {
+            retryTimerRef.current = null
             if (eventSourceRef.current === null) connect()
           }, 3000)
           return
@@ -82,13 +88,6 @@ export function useRecoveryMonitor() {
     }
 
     connect()
-
-    // Store cleanup for retryTimer too
-    const originalCleanup = cleanup
-    eventSourceRef._retryCleanup = () => {
-      if (retryTimer) clearTimeout(retryTimer)
-      retryTimer = null
-    }
   }, [cleanup])
 
   const reset = useCallback(() => {

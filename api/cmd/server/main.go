@@ -223,9 +223,8 @@ func main() {
 
 func (a *app) setupStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"bootstrap_required":   !db.HasUsers(a.db),
-		"supported_roles":      rbac.SupportedRoles(),
-		"registration_enabled": a.cfg.RegistrationEnabled,
+		"bootstrap_required": !db.HasUsers(a.db),
+		"supported_roles":    rbac.SupportedRoles(),
 	})
 }
 
@@ -242,10 +241,7 @@ func validateBootstrapRole(role string) string {
 }
 
 func (a *app) bootstrap(w http.ResponseWriter, r *http.Request) {
-	if !a.cfg.RegistrationEnabled {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Registration is disabled"})
-		return
-	}
+	// First-run only: once any user exists, bootstrap is closed.
 	if db.HasUsers(a.db) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "bootstrap already completed"})
 		return
@@ -765,6 +761,7 @@ func (a *app) applyUpdates(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 409, map[string]any{"error": hkErr.Message, "code": "host_key_mismatch", "operator_action_required": true, "expected_fingerprint": hkErr.ExpectedFingerprint, "presented_fingerprint": hkErr.PresentedFingerprint, "actions": []string{"accept_new_fingerprint", "deny_new_fingerprint"}})
 			return
 		}
+		_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_fail", fmt.Sprintf("Apply failed: %v", err))
 		if a.notificationEnabledForHostEvent(host.ID, "auto_apply_failure") {
 			_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: apply FAILED on %s (%v)", host.Name, err))
 		}
@@ -899,18 +896,27 @@ func (a *app) exportActivity(w http.ResponseWriter, r *http.Request) {
 	// CSV header
 	fmt.Fprintf(w, "id,timestamp,host_id,host_name,event_type,summary\n")
 	for _, e := range entries {
-		// Escape CSV fields
-		summary := strings.ReplaceAll(e.Summary, "\"", "\"\"")
-		hostName := strings.ReplaceAll(e.HostName, "\"", "\"\"")
 		fmt.Fprintf(w, "%d,%s,%s,\"%s\",%s,\"%s\"\n",
 			e.ID,
 			e.CreatedAt.UTC().Format(time.RFC3339),
 			e.HostID,
-			hostName,
+			csvField(e.HostName),
 			e.EventType,
-			summary,
+			csvField(e.Summary),
 		)
 	}
+}
+
+// csvField escapes a free-text value for CSV: doubles quotes AND neutralizes
+// spreadsheet formula injection by prefixing a leading =,+,-,@,tab,CR with a quote.
+func csvField(s string) string {
+	if s != "" {
+		switch s[0] {
+		case '=', '+', '-', '@', '\t', '\r':
+			s = "'" + s
+		}
+	}
+	return strings.ReplaceAll(s, "\"", "\"\"")
 }
 
 func (a *app) powerAction(w http.ResponseWriter, r *http.Request) {
@@ -1821,7 +1827,7 @@ func (a *app) authMiddleware(next http.Handler) http.Handler {
 }
 
 // validServiceName allows only characters that appear in legitimate systemd unit
-// names (letters, digits, and . _ - @ : \). This blocks shell metacharacters so a
+// names (letters, digits, and . _ - @ :). This blocks shell metacharacters so a
 // service name cannot inject commands into the remote `systemctl restart` invocation.
 func validServiceName(s string) bool {
 	s = strings.TrimSpace(s)
@@ -1831,7 +1837,7 @@ func validServiceName(s string) bool {
 	for _, r := range s {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == '.' || r == '_' || r == '-' || r == '@' || r == ':' || r == '\\':
+		case r == '.' || r == '_' || r == '-' || r == '@' || r == ':':
 		default:
 			return false
 		}

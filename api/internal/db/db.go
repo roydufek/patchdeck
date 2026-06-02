@@ -286,6 +286,12 @@ func DeleteHost(db *sql.DB, id string) error {
 	if _, err := tx.Exec(`DELETE FROM jobs WHERE host_id=?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM host_notification_prefs WHERE host_id=?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM host_key_audit WHERE host_id=?`, id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

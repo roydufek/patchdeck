@@ -238,8 +238,8 @@ function AppInner() {
             onReboot={(hostId) => hostsHook.rebootHost(hostId)}
             onShutdown={(hostId) => hostsHook.shutdownHost(hostId)}
             error=""
-            onScanStream={(hostId) => hostsHook.hostActionStream(hostId, 'scan', auth.token)}
-            onApplyStream={(hostId) => hostsHook.hostActionStream(hostId, 'apply', auth.token)}
+            onScanStream={(hostId) => hostsHook.hostActionStream(hostId, 'scan')}
+            onApplyStream={(hostId) => hostsHook.hostActionStream(hostId, 'apply')}
             onCloseStream={hostsHook.closeStream}
             streamHostId={hostsHook.streamHostId}
             streamMode={hostsHook.streamMode}
@@ -253,7 +253,6 @@ function AppInner() {
             postApplyPrompt={hostsHook.postApplyPrompt}
             onDismissPostApplyPrompt={hostsHook.dismissPostApplyPrompt}
             onRefreshAll={handleRefreshAll}
-            token={auth.token}
           />
         )}
 

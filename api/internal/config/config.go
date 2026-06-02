@@ -19,7 +19,6 @@ type Config struct {
 	AppriseURL          string
 	AppriseBinPath      string
 	AppriseTimeout      time.Duration
-	RegistrationEnabled bool // REGISTRATION_ENABLED env var; default true. Set to "false" to block bootstrap/register.
 	TLSEnabled          bool
 	TLSCertPath         string
 	TLSKeyPath          string
@@ -62,10 +61,6 @@ func Load() (Config, error) {
 			appriseTimeout = time.Duration(v) * time.Second
 		}
 	}
-	registrationEnabled := true
-	if v := strings.ToLower(strings.TrimSpace(os.Getenv("REGISTRATION_ENABLED"))); v == "false" || v == "0" {
-		registrationEnabled = false
-	}
 	tlsEnabled := true
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("PATCHDECK_TLS"))); v == "false" || v == "0" {
 		tlsEnabled = false
@@ -81,7 +76,6 @@ func Load() (Config, error) {
 		AppriseURL:          os.Getenv("PATCHDECK_APPRISE_URL"),
 		AppriseBinPath:      envOr("PATCHDECK_APPRISE_BIN", "apprise"),
 		AppriseTimeout:      appriseTimeout,
-		RegistrationEnabled: registrationEnabled,
 		TLSEnabled:          tlsEnabled,
 		TLSCertPath:         envOr("PATCHDECK_TLS_CERT", "/data/tls/cert.pem"),
 		TLSKeyPath:          envOr("PATCHDECK_TLS_KEY", "/data/tls/key.pem"),

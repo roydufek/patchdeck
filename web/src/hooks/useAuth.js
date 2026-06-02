@@ -10,8 +10,7 @@ export function useAuth() {
 
   const [setupStatus, setSetupStatus] = useState({
     bootstrap_required: false,
-    supported_roles: ['admin'],
-    registration_enabled: true
+    supported_roles: ['admin']
   })
   const [setupLoading, setSetupLoading] = useState(true)
   const [error, setError] = useState('')
@@ -51,13 +50,12 @@ export function useAuth() {
         if (!active) return
         setSetupStatus({
           bootstrap_required: !!data.bootstrap_required,
-          supported_roles: Array.isArray(data.supported_roles) && data.supported_roles.length ? data.supported_roles : ['admin'],
-          registration_enabled: data.registration_enabled !== false
+          supported_roles: Array.isArray(data.supported_roles) && data.supported_roles.length ? data.supported_roles : ['admin']
         })
       })
       .catch(() => {
         if (!active) return
-        setSetupStatus({ bootstrap_required: false, supported_roles: ['admin'], registration_enabled: true })
+        setSetupStatus({ bootstrap_required: false, supported_roles: ['admin'] })
       })
       .finally(() => {
         if (active) setSetupLoading(false)

@@ -278,7 +278,7 @@ function StreamPanel({ host, mode, output, phase, progress, isStreaming, error, 
         className="px-3 py-2 max-h-48 overflow-y-auto font-mono text-xs leading-relaxed text-gray-600 dark:text-zinc-400 scrollbar-thin"
       >
         {output.map((line, i) => (
-          <div key={i} className="whitespace-pre-wrap break-all">
+          <div key={line.seq ?? i} className="whitespace-pre-wrap break-all">
             {line.text}
           </div>
         ))}

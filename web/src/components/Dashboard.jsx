@@ -4,7 +4,6 @@ import ConfirmDialog from './ConfirmDialog.jsx'
 import Spinner from './Spinner.jsx'
 import { connectionIndicator, isConnectionFailureMessage } from '../utils/status.js'
 import { useToastContext } from './Toast.jsx'
-import { API } from '../api.js'
 
 function useAutoRefresh(onRefresh) {
   const [enabled, setEnabled] = useState(() => {
@@ -72,27 +71,10 @@ export default function Dashboard({
   onRefreshAll,
   // Lightweight scan-only refresh used between bulk scan steps
   onRefreshScans,
-  // Auth token for API calls
-  token
 }) {
   const [hostFilter, setHostFilter] = useState('')
   const [hostStatusFilter, setHostStatusFilter] = useState('all')
   const [filtersOpen, setFiltersOpen] = useState(false)
-
-  // Tag state
-  const [allTags, setAllTags] = useState([])
-  const [selectedTags, setSelectedTags] = useState([]) // OR filter
-  const [groupByTag, setGroupByTag] = useState(false)
-
-  // Fetch tags from API
-  useEffect(() => {
-    if (!token) return
-    fetch(`${API}/tags`, { credentials: 'same-origin' })
-      .then(resp => resp.ok ? resp.json() : [])
-      .then(tags => {
-        if (Array.isArray(tags)) setAllTags(tags.sort())
-      }).catch(() => {})
-  }, [token, hosts])
 
   // Auto-refresh & manual refresh
   const doRefresh = useCallback(() => {
@@ -175,14 +157,7 @@ export default function Dashboard({
     })
   }, [textFilteredHosts, hostStatusFilter, hostOperationalStateById])
 
-  // Tag filter (OR logic)
-  const filteredHosts = useMemo(() => {
-    if (selectedTags.length === 0) return statusFilteredHosts
-    return statusFilteredHosts.filter(h => {
-      const hostTags = Array.isArray(h.tags) ? h.tags : []
-      return selectedTags.some(t => hostTags.includes(t))
-    })
-  }, [statusFilteredHosts, selectedTags])
+  const filteredHosts = statusFilteredHosts
 
   // Summary
   const summary = useMemo(() => {
@@ -217,28 +192,7 @@ export default function Dashboard({
     ]
   }, [textFilteredHosts, hostOperationalStateById])
 
-  const filtersActive = hostFilter.trim().length > 0 || hostStatusFilter !== 'all' || selectedTags.length > 0
-
-  // Grouped hosts for group-by-tag view
-  const groupedHosts = useMemo(() => {
-    if (!groupByTag) return null
-    const groups = new Map()
-    filteredHosts.forEach(h => {
-      const hostTags = Array.isArray(h.tags) && h.tags.length > 0 ? h.tags : [null]
-      hostTags.forEach(tag => {
-        const key = tag || '__untagged__'
-        if (!groups.has(key)) groups.set(key, [])
-        groups.get(key).push(h)
-      })
-    })
-    // Sort group keys alphabetically, untagged at the end
-    const sorted = [...groups.entries()].sort((a, b) => {
-      if (a[0] === '__untagged__') return 1
-      if (b[0] === '__untagged__') return -1
-      return a[0].localeCompare(b[0])
-    })
-    return sorted
-  }, [groupByTag, filteredHosts])
+  const filtersActive = hostFilter.trim().length > 0 || hostStatusFilter !== 'all'
 
   // Selection helpers
   const filteredHostIds = useMemo(() => new Set(filteredHosts.map(h => h.id)), [filteredHosts])

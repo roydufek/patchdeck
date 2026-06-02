@@ -35,12 +35,6 @@ export default function LoginPage({
 
           {/* Bootstrap / First-run setup */}
           {!setupLoading && setupStatus.bootstrap_required ? (
-            setupStatus.registration_enabled === false ? (
-              <>
-                <h2 className="font-medium text-lg mb-1">Registration disabled</h2>
-                <p className="text-sm text-gray-600 dark:text-zinc-400 mt-2">Registration is disabled. Contact your administrator.</p>
-              </>
-            ) : (
             <>
               <h2 className="font-medium text-lg mb-1">First-run setup</h2>
               <p className="text-sm text-gray-500 dark:text-zinc-500 mb-5">Create the initial administrator account.</p>
@@ -77,7 +71,6 @@ export default function LoginPage({
                 </button>
               </form>
             </>
-            )
           ) : null}
 
           {/* Login form */}

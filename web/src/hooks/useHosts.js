@@ -32,6 +32,17 @@ export function useHosts(token, clearToken) {
   const [streamHostId, setStreamHostId] = useState(null)
   const [streamMode, setStreamMode] = useState(null)
   const streamCompletionHandled = useRef(false)
+  // Tracks deferred follow-up scans (post-apply / post-recovery) so they can be
+  // cancelled on logout/reset — otherwise they fire against a torn-down session
+  // and surface a spurious "session expired".
+  const followupTimers = useRef([])
+  const scheduleFollowup = useCallback((fn, ms) => {
+    const id = setTimeout(() => {
+      followupTimers.current = followupTimers.current.filter(t => t !== id)
+      fn()
+    }, ms)
+    followupTimers.current.push(id)
+  }, [])
 
   // Recovery monitor
   const recoveryMonitor = useRecoveryMonitor()
@@ -103,10 +114,12 @@ export function useHosts(token, clearToken) {
     [hosts, connectivityQuery.data]
   )
 
-  // Surface query load failures as the banner error.
+  // Surface query load failures as the banner error, and clear that banner once the
+  // queries recover — but only the query-error messages, so action errors are preserved.
   useEffect(() => {
     if (hostsQuery.isError) setError('Failed to load hosts')
     else if (scansQuery.isError) setError('Failed to load scans')
+    else setError(prev => (prev === 'Failed to load hosts' || prev === 'Failed to load scans') ? '' : prev)
   }, [hostsQuery.isError, scansQuery.isError])
 
   // Persist optimistic action state.
@@ -487,7 +500,7 @@ export function useHosts(token, clearToken) {
         } else if (Array.isArray(res.needs_restart) && res.needs_restart.length > 0) {
           setPostApplyPrompt({ hostId, type: 'restart', services: res.needs_restart })
         }
-        setTimeout(() => {
+        scheduleFollowup(() => {
           if (tokenRef.current) hostActionStream(hostId, 'scan')
         }, 2000)
       }
@@ -503,7 +516,7 @@ export function useHosts(token, clearToken) {
 
     setActionBusy(prev => ({ ...prev, [key]: false }))
     refreshConnectivity(hostId)
-  }, [stream.isStreaming, stream.result, stream.error, streamHostId, streamMode, loadData, refreshConnectivity, setHostConnectivityState])
+  }, [stream.isStreaming, stream.result, stream.error, streamHostId, streamMode, loadData, refreshConnectivity, setHostConnectivityState, hostActionStream, scheduleFollowup])
 
   const closeStream = useCallback(() => {
     stream.resetStream()
@@ -531,7 +544,7 @@ export function useHosts(token, clearToken) {
       })
       setHostActionError(prev => ({ ...prev, [hostId]: '' }))
       refreshConnectivity(hostId)
-      setTimeout(() => { hostAction(hostId, 'scan') }, 2000)
+      scheduleFollowup(() => { hostAction(hostId, 'scan') }, 2000)
     } else if (recoveryMonitor.status === 'timeout' && recoveryMonitor.hostId) {
       recoveryActedRef.current = true
       const hostId = recoveryMonitor.hostId
@@ -552,7 +565,7 @@ export function useHosts(token, clearToken) {
         return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
       })
     }
-  }, [recoveryMonitor.status, recoveryMonitor.hostId, refreshConnectivity])
+  }, [recoveryMonitor.status, recoveryMonitor.hostId, refreshConnectivity, hostAction, scheduleFollowup])
 
   const dismissPostApplyPrompt = useCallback(() => setPostApplyPrompt(null), [])
 
@@ -560,6 +573,8 @@ export function useHosts(token, clearToken) {
     queryClient.removeQueries({ queryKey: ['hosts'] })
     queryClient.removeQueries({ queryKey: ['scans'] })
     queryClient.removeQueries({ queryKey: ['connectivity'] })
+    followupTimers.current.forEach(clearTimeout)
+    followupTimers.current = []
     setHostKeyAuditByHost({})
     setHostActionState({})
     setHostActionError({})
@@ -570,6 +585,9 @@ export function useHosts(token, clearToken) {
     setStreamHostId(null)
     setStreamMode(null)
   }, [stream, recoveryMonitor, queryClient])
+
+  // Cancel any pending follow-up scans on unmount.
+  useEffect(() => () => followupTimers.current.forEach(clearTimeout), [])
 
   return {
     hosts, scans, scanByHost, loading, error, setError,
