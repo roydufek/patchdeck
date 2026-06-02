@@ -4,20 +4,31 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
+
+	"golang.org/x/crypto/hkdf"
 )
 
-type SealBox struct { key []byte }
+type SealBox struct{ key []byte }
 
 func NewSealBox(masterKey string) (*SealBox, error) {
 	if len(masterKey) < 32 {
 		return nil, fmt.Errorf("master key too short")
 	}
-	k := []byte(masterKey)
-	if len(k) > 32 { k = k[:32] }
-	return &SealBox{key: k}, nil
+	// Derive the AES-256 key from the full master key via HKDF-SHA256 rather than
+	// using the raw ASCII bytes truncated to 32 (which both ignored any material
+	// beyond 32 chars and used low-entropy ASCII directly as key bytes). HKDF spreads
+	// the entire key over a uniform 32-byte key. Fixed salt/info → deterministic, so
+	// existing ciphertexts decrypt across restarts (the key itself is the secret).
+	key := make([]byte, 32)
+	r := hkdf.New(sha256.New, []byte(masterKey), []byte("patchdeck.sealbox.v1"), []byte("aes-256-gcm host secrets"))
+	if _, err := io.ReadFull(r, key); err != nil {
+		return nil, fmt.Errorf("derive key: %w", err)
+	}
+	return &SealBox{key: key}, nil
 }
 
 func (s *SealBox) Encrypt(plain []byte) (string, error) {

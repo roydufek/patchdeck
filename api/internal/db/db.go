@@ -16,7 +16,6 @@ import (
 	"patchdeck/api/internal/models"
 
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
 )
 
 var ErrHostExists = errors.New("host already exists")
@@ -84,8 +83,11 @@ func Migrate(db *sql.DB) error {
 	if err := ensureHostColumn(db, "tags_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
-	// api_tokens table
+	// api_tokens table (token_hash = sha256 of the token; indexed for O(1) lookup)
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS api_tokens (id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL, created_at DATETIME NOT NULL, last_used_at DATETIME, revoked INTEGER NOT NULL DEFAULT 0)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_api_tokens_hash ON api_tokens(token_hash)`); err != nil {
 		return err
 	}
 	// activity_log table
@@ -807,12 +809,10 @@ func CreateAPIToken(db *sql.DB, name string) (plaintext string, id string, err e
 		return "", "", fmt.Errorf("generate token: %w", err)
 	}
 	plaintext = "pd_" + hex.EncodeToString(b)
-	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcrypt.DefaultCost)
-	if err != nil {
-		return "", "", fmt.Errorf("hash token: %w", err)
-	}
+	// API tokens are high-entropy random values, so an indexed SHA-256 lookup is
+	// sufficient — and avoids the previous O(n) bcrypt scan over every token per request.
 	id = uuid.NewString()
-	_, err = db.Exec(`INSERT INTO api_tokens(id,name,token_hash,created_at,revoked) VALUES(?,?,?,?,0)`, id, strings.TrimSpace(name), string(hash), time.Now().UTC())
+	_, err = db.Exec(`INSERT INTO api_tokens(id,name,token_hash,created_at,revoked) VALUES(?,?,?,?,0)`, id, strings.TrimSpace(name), hashSessionToken(plaintext), time.Now().UTC())
 	if err != nil {
 		return "", "", err
 	}
@@ -876,23 +876,16 @@ func DeleteAPIToken(db *sql.DB, id string) error {
 // ValidateAPIToken checks a bearer token against stored hashes (non-revoked).
 // Returns true and the token ID if valid.
 func ValidateAPIToken(db *sql.DB, token string) (bool, string, error) {
-	rows, err := db.Query(`SELECT id, token_hash FROM api_tokens WHERE revoked=0`)
+	var id string
+	err := db.QueryRow(`SELECT id FROM api_tokens WHERE token_hash=? AND revoked=0`, hashSessionToken(token)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, "", nil
+	}
 	if err != nil {
 		return false, "", err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id, hash string
-		if err := rows.Scan(&id, &hash); err != nil {
-			return false, "", err
-		}
-		if bcrypt.CompareHashAndPassword([]byte(hash), []byte(token)) == nil {
-			// Update last_used_at
-			_, _ = db.Exec(`UPDATE api_tokens SET last_used_at=? WHERE id=?`, time.Now().UTC(), id)
-			return true, id, nil
-		}
-	}
-	return false, "", rows.Err()
+	_, _ = db.Exec(`UPDATE api_tokens SET last_used_at=? WHERE id=?`, time.Now().UTC(), id)
+	return true, id, nil
 }
 
 // --- Web session functions (httpOnly cookie auth) ---

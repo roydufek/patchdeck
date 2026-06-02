@@ -325,8 +325,9 @@ func (c *Client) runPrivileged(host models.Host, seal *crypto.SealBox, command s
 		return "", fmt.Errorf("privilege escalation required: passwordless sudo unavailable and sudo/root password not provided")
 	}
 
-	sudoWithPassword := fmt.Sprintf("printf '%%s\\n' %s | sudo -S -p '' %s", shellSingleQuote(sudoPass), rootCmd)
-	if out, err := c.run(host, seal, sudoWithPassword); err == nil {
+	// Pass the password via stdin to `sudo -S` rather than embedding it in the command
+	// line (where it'd be visible to ps/auditd on the remote host for the run window).
+	if out, err := c.runWithStdin(host, seal, "sudo -S -p '' "+rootCmd, strings.NewReader(sudoPass+"\n")); err == nil {
 		return out, nil
 	}
 
@@ -338,32 +339,40 @@ func (c *Client) runPrivileged(host models.Host, seal *crypto.SealBox, command s
 	return "", fmt.Errorf("privilege escalation failed: sudo -n, sudo -S, and su fallback all failed (verify sudo/root password and host policy)")
 }
 
+// verifyingHostKeyCallback always verifies the presented host key via the configured
+// verifier (TOFU/pinning policy lives there). It fails CLOSED: if no verifier is set,
+// the connection is refused rather than silently trusting any key — defense-in-depth
+// so a future code path can't accidentally disable host-key checking.
+func (c *Client) verifyingHostKeyCallback(host models.Host) ssh.HostKeyCallback {
+	return func(_ string, _ net.Addr, key ssh.PublicKey) error {
+		if c.hostVerifier == nil {
+			return fmt.Errorf("host key verification is required but no verifier is configured")
+		}
+		decision := c.hostVerifier(host, ssh.FingerprintSHA256(key))
+		if decision.Allow {
+			return nil
+		}
+		message := strings.TrimSpace(decision.Reason)
+		if message == "" {
+			message = "host key verification failed"
+		}
+		return &HostKeyError{HostID: host.ID, HostName: host.Name, Message: message, ExpectedFingerprint: decision.ExpectedFingerprint, PresentedFingerprint: decision.PresentedFingerprint}
+	}
+}
+
 func (c *Client) run(host models.Host, seal *crypto.SealBox, command string) (string, error) {
+	return c.runWithStdin(host, seal, command, nil)
+}
+
+// runWithStdin executes command over SSH, optionally feeding stdin — used to pass a
+// sudo password to `sudo -S` without exposing it on the remote command line (ps/audit).
+func (c *Client) runWithStdin(host models.Host, seal *crypto.SealBox, command string, stdin io.Reader) (string, error) {
 	sec, err := decodeSecrets(host.SecretCipher, seal)
 	if err != nil {
 		return "", err
 	}
 
-	hostKeyCallback := ssh.InsecureIgnoreHostKey()
-	if host.HostKeyRequired {
-		hostKeyCallback = func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-			fingerprint := ssh.FingerprintSHA256(key)
-			if c.hostVerifier == nil {
-				return fmt.Errorf("host key verification required but verifier not configured")
-			}
-			decision := c.hostVerifier(host, fingerprint)
-			if decision.Allow {
-				return nil
-			}
-			message := strings.TrimSpace(decision.Reason)
-			if message == "" {
-				message = "host key verification failed"
-			}
-			return &HostKeyError{HostID: host.ID, HostName: host.Name, Message: message, ExpectedFingerprint: decision.ExpectedFingerprint, PresentedFingerprint: decision.PresentedFingerprint}
-		}
-	}
-
-	cfg := &ssh.ClientConfig{User: host.SSHUser, HostKeyCallback: hostKeyCallback, Timeout: c.timeout}
+	cfg := &ssh.ClientConfig{User: host.SSHUser, HostKeyCallback: c.verifyingHostKeyCallback(host), Timeout: c.timeout}
 	if host.AuthType == "password" {
 		cfg.Auth = []ssh.AuthMethod{ssh.Password(sec.Password)}
 	} else {
@@ -396,6 +405,9 @@ func (c *Client) run(host models.Host, seal *crypto.SealBox, command string) (st
 	var outBuf, errBuf bytes.Buffer
 	sess.Stdout = &outBuf
 	sess.Stderr = &errBuf
+	if stdin != nil {
+		sess.Stdin = stdin
+	}
 	runErr := c.runWithDeadline(cli, func() error { return sess.Run(command) })
 	out := strings.TrimSpace(outBuf.String())
 	if runErr != nil {
@@ -465,31 +477,16 @@ func decodeSecrets(cipher string, seal *crypto.SealBox) (secretBlob, error) {
 // RunStreaming executes a command and calls onLine for each output line.
 // Returns the full output when done.
 func (c *Client) RunStreaming(host models.Host, seal *crypto.SealBox, command string, onLine func(line string)) (string, error) {
+	return c.runStreamingWithStdin(host, seal, command, onLine, nil)
+}
+
+func (c *Client) runStreamingWithStdin(host models.Host, seal *crypto.SealBox, command string, onLine func(line string), stdin io.Reader) (string, error) {
 	sec, err := decodeSecrets(host.SecretCipher, seal)
 	if err != nil {
 		return "", err
 	}
 
-	hostKeyCallback := ssh.InsecureIgnoreHostKey()
-	if host.HostKeyRequired {
-		hostKeyCallback = func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-			fingerprint := ssh.FingerprintSHA256(key)
-			if c.hostVerifier == nil {
-				return fmt.Errorf("host key verification required but verifier not configured")
-			}
-			decision := c.hostVerifier(host, fingerprint)
-			if decision.Allow {
-				return nil
-			}
-			message := strings.TrimSpace(decision.Reason)
-			if message == "" {
-				message = "host key verification failed"
-			}
-			return &HostKeyError{HostID: host.ID, HostName: host.Name, Message: message, ExpectedFingerprint: decision.ExpectedFingerprint, PresentedFingerprint: decision.PresentedFingerprint}
-		}
-	}
-
-	cfg := &ssh.ClientConfig{User: host.SSHUser, HostKeyCallback: hostKeyCallback, Timeout: c.timeout}
+	cfg := &ssh.ClientConfig{User: host.SSHUser, HostKeyCallback: c.verifyingHostKeyCallback(host), Timeout: c.timeout}
 	if host.AuthType == "password" {
 		cfg.Auth = []ssh.AuthMethod{ssh.Password(sec.Password)}
 	} else {
@@ -522,6 +519,9 @@ func (c *Client) RunStreaming(host models.Host, seal *crypto.SealBox, command st
 	errPr, errPw := io.Pipe()
 	sess.Stdout = outPw
 	sess.Stderr = errPw
+	if stdin != nil {
+		sess.Stdin = stdin
+	}
 
 	if err := sess.Start(command); err != nil {
 		outPw.Close()
@@ -606,8 +606,8 @@ func (c *Client) runPrivilegedStreaming(host models.Host, seal *crypto.SealBox, 
 		return "", fmt.Errorf("privilege escalation required: passwordless sudo unavailable and sudo/root password not provided")
 	}
 
-	sudoWithPassword := fmt.Sprintf("printf '%%s\\n' %s | sudo -S -p '' %s", shellSingleQuote(sudoPass), rootCmd)
-	if out, err := c.RunStreaming(host, seal, sudoWithPassword, onLine); err == nil {
+	// Password to `sudo -S` via stdin, not the command line (ps/audit exposure).
+	if out, err := c.runStreamingWithStdin(host, seal, "sudo -S -p '' "+rootCmd, onLine, strings.NewReader(sudoPass+"\n")); err == nil {
 		return out, nil
 	}
 
