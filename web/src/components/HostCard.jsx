@@ -370,6 +370,8 @@ export default function HostCard({
 
   // Busy
   const connectivityBusy = !!actionBusy[`${h.id}:connectivity`]
+  // A live SSH check is in flight (or hasn't resolved yet) → dot pulses yellow.
+  const connectivityCheckingNow = connectivityBusy || connectivityChecking || connection.tone === 'pending'
   const scanBusy = !!actionBusy[`${h.id}:scan`]
   const applyBusy = !!actionBusy[`${h.id}:apply`]
   const deleteBusy = !!actionBusy[`host:delete:${h.id}`]
@@ -533,25 +535,16 @@ export default function HostCard({
             </div>
           )}
 
-          {/* Connection dot — 4 states (green=connected, amber=slow/unverified,
-              red=hard failure, gray=pending) with a glowing ring while a live check
-              is in flight. */}
-          {(() => {
-            const dotColor =
-              connection.tone === 'good' ? 'bg-emerald-500'
-              : connection.tone === 'warn' ? 'bg-amber-500'
-              : connection.tone === 'pending' ? 'bg-gray-400 dark:bg-zinc-500'
+          {/* Connection dot: pulses yellow while the SSH check runs, then solid green
+              (connected) or solid red (unreachable / timed out / auth rejected). */}
+          <span
+            className={`flex-shrink-0 h-2.5 w-2.5 rounded-full ${
+              connectivityCheckingNow ? 'bg-amber-400 animate-pulse'
+              : connection.tone === 'good' ? 'bg-emerald-500'
               : 'bg-red-500'
-            const checkingNow = connectivityBusy || connectivityChecking
-            return (
-              <span className="relative flex-shrink-0 h-2.5 w-2.5" title={checkingNow ? 'Checking connectivity…' : connection.label}>
-                {checkingNow && (
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
-                )}
-                <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${dotColor} ${connection.tone === 'pending' ? 'animate-pulse' : ''}`} />
-              </span>
-            )
-          })()}
+            }`}
+            title={connectivityCheckingNow ? 'Checking SSH connectivity…' : connection.reason ? `${connection.label} — ${connection.reason}` : connection.label}
+          />
 
           {/* Host name */}
           <span className="font-medium text-sm truncate">{h.name}</span>
@@ -574,6 +567,15 @@ export default function HostCard({
 
         {/* Status line */}
         <div className="flex items-center gap-2 mt-1.5 ml-0 sm:ml-[calc(0.625rem+0.75rem)]">
+          {/* Connectivity subtext: which problem is the culprit, or that a check is running. */}
+          {connectivityCheckingNow ? (
+            <span className="text-xs text-amber-500 dark:text-amber-400 flex-shrink-0">Checking connectivity…</span>
+          ) : connection.tone === 'bad' ? (
+            <span className="text-xs text-red-500 dark:text-red-400 font-medium flex-shrink-0" title={connection.detail}>
+              {connection.reason}
+              <span className="hidden sm:inline text-gray-300 dark:text-zinc-700 font-normal"> · </span>
+            </span>
+          ) : null}
           <span className="text-xs text-gray-500 dark:text-zinc-500">
             {snap ? (
               <>

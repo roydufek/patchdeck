@@ -37,50 +37,43 @@ export function isTimeoutMessage(message) {
   return v.includes('timed out') || v.includes('timeout') || v.includes('i/o timeout')
 }
 
+// classifyConnError maps a raw connectivity error into a short, human cause shown as
+// subtext under a red dot, so the operator knows WHICH problem it is.
+export function classifyConnError(detail) {
+  const v = (detail || '').toLowerCase()
+  if (v.includes('host key') || v.includes('fingerprint') || v.includes('mitm')) return 'SSH host key mismatch'
+  if (v.includes('authentication failed') || v.includes('permission denied') ||
+      v.includes('no supported methods') || v.includes('unable to authenticate') ||
+      v.includes('handshake')) return 'SSH key / auth rejected'
+  if (isTimeoutMessage(detail)) return 'Connection timed out'
+  if (v.includes('refused') || v.includes('no route') || v.includes('unreachable') ||
+      v.includes('not found') || v.includes('lookup') || v.includes('reset')) return 'Host unreachable'
+  return 'Connection failed'
+}
+
+// connectionIndicator drives the per-host status dot. Three states only:
+//   pending — a live SSH check is in flight / not yet run (dot pulses yellow)
+//   good    — the SSH check connected (solid green)
+//   bad     — the SSH check failed: unreachable, timed out, or auth/key rejected
+//             (solid red, with `reason` as subtext). Connectivity is its own signal
+//             and is NOT inferred from scan freshness.
 export function connectionIndicator(host, connectivity, fallbackError, snap) {
   if (host.host_key_pending_fingerprint) {
-    return { ok: false, tone: 'bad', label: 'Disconnected', detail: 'SSH host key mismatch is blocking connectivity.' }
+    return { ok: false, tone: 'bad', label: 'Disconnected', reason: 'SSH host key mismatch', detail: 'SSH host key changed and needs operator review — operations are blocked until you Accept or Deny the new fingerprint.' }
   }
   if (connectivity && connectivity.connected === true) {
     return {
-      ok: true, tone: 'good', label: 'Connected',
-      detail: connectivity.checked_at ? `Last check ${formatTimestamp(connectivity.checked_at)}` : 'Quick SSH check passed.'
+      ok: true, tone: 'good', label: 'Connected', reason: '',
+      detail: connectivity.checked_at ? `SSH check passed · ${formatTimestamp(connectivity.checked_at)}` : 'SSH connectivity check passed.',
     }
   }
-
-  const hasConnectivityResult = !!(connectivity && (connectivity.checked_at || connectivity.error || connectivity.connected === false))
-  if (!hasConnectivityResult && !fallbackError) {
-    // No connectivity data and no snap yet — data is still loading on first page load.
-    // Show a neutral pending state instead of red to avoid false alarms.
-    if (!snap?.updated_at) {
-      return { ok: null, tone: 'pending', label: 'Checking…', detail: 'Connectivity check in progress.' }
-    }
-    const fallbackHealth = connectionHealth(host, snap, '')
-    if (fallbackHealth.ok) {
-      return {
-        ok: true, tone: 'good', label: 'Connected',
-        detail: 'Quick SSH check pending. Showing healthy status from latest successful scan.'
-      }
-    }
-    return {
-      ok: false, tone: 'bad', label: 'Disconnected',
-      detail: fallbackHealth.detail || 'Quick SSH health check is still running. If this persists, run Refresh to force a new check.'
-    }
+  const hasResult = !!(connectivity && (connectivity.checked_at || connectivity.error || connectivity.connected === false))
+  if (!hasResult && !fallbackError) {
+    // No result yet (initial load or a check currently running) — neutral pending.
+    return { ok: null, tone: 'pending', label: 'Checking…', reason: '', detail: 'SSH connectivity check in progress…' }
   }
-
-  const detail = (connectivity && connectivity.error) || fallbackError || 'Quick SSH check failed or did not return data.'
-  // A timeout on a host whose last scan succeeded recently means "reachable but slow
-  // to respond to the quick check", NOT down. Show amber (warn), not alarming red —
-  // reserve red for hard failures (refused, no route, auth, host-key mismatch).
-  if (isTimeoutMessage(detail) && snap?.updated_at && staleLabel(snap.updated_at) !== 'stale') {
-    return {
-      ok: null,
-      tone: 'warn',
-      label: 'Unverified — slow',
-      detail: `${detail} Last scan succeeded recently, so the host is reachable but slow to answer the quick check.`,
-    }
-  }
-  return { ok: false, tone: 'bad', label: 'Disconnected', detail }
+  const detail = (connectivity && connectivity.error) || fallbackError || 'SSH connectivity check failed.'
+  return { ok: false, tone: 'bad', label: 'Disconnected', reason: classifyConnError(detail), detail }
 }
 
 export function hostKeyHealth(host) {
