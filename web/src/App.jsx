@@ -270,6 +270,8 @@ function AppInner() {
             onCreateJob={jobsHook.createJob}
             onToggleJob={jobsHook.toggleJob}
             onDeleteJob={jobsHook.deleteJob}
+            jobRunsByJob={jobsHook.jobRunsByJob}
+            onLoadJobRuns={jobsHook.loadJobRuns}
             error=""
           />
         )}

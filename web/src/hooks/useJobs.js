@@ -6,6 +6,7 @@ export function useJobs(token, clearToken, hosts) {
   const [jobs, setJobs] = useState([])
   const [error, setError] = useState('')
   const [actionBusy, setActionBusy] = useState({})
+  const [jobRunsByJob, setJobRunsByJob] = useState({}) // jobId -> recent run history
 
   const [jobForm, setJobForm] = useState({
     host_ids: [],
@@ -32,6 +33,18 @@ export function useJobs(token, clearToken, hosts) {
       setJobs(data)
     } catch (e) {
       setError(e.message || 'Failed to load jobs')
+    }
+  }, [authedFetch])
+
+  const loadJobRuns = useCallback(async (jobId) => {
+    if (!authedFetch || !jobId) return
+    try {
+      const resp = await authedFetch(`/jobs/${jobId}/runs?limit=10`)
+      if (!resp.ok) throw new Error('Failed to load run history')
+      const data = await resp.json()
+      setJobRunsByJob(prev => ({ ...prev, [jobId]: Array.isArray(data) ? data : [] }))
+    } catch (e) {
+      setError(e.message || 'Failed to load run history')
     }
   }, [authedFetch])
 
@@ -151,6 +164,7 @@ export function useJobs(token, clearToken, hosts) {
   return {
     jobs, setJobs, error, setError, actionBusy,
     jobForm, setJobForm, jobBusy, jobComposerOpen, setJobComposerOpen,
-    loadJobs, createJob, toggleJob, deleteJob, resetState
+    loadJobs, createJob, toggleJob, deleteJob, resetState,
+    jobRunsByJob, loadJobRuns
   }
 }

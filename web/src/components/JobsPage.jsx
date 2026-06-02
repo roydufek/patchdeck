@@ -2,12 +2,23 @@ import React, { useState, useEffect, useMemo, useRef } from 'react'
 import ConfirmDialog from './ConfirmDialog.jsx'
 import { useToastContext } from './Toast.jsx'
 import { validateCronExpression } from '../utils/format.js'
+import { timeAgo, fullDate } from '../utils/timeago.js'
 
 function jobModeLabel(mode) {
   if (mode === 'scan') return 'Scan'
   if (mode === 'apply') return 'Apply'
   if (mode === 'scan_apply') return 'Scan + Apply'
   return mode || 'Unknown'
+}
+
+function runStatusStyle(status) {
+  switch (status) {
+    case 'success': return { cls: 'text-emerald-500 dark:text-emerald-400', label: 'Success' }
+    case 'partial': return { cls: 'text-amber-500 dark:text-amber-400', label: 'Partial' }
+    case 'failed': return { cls: 'text-red-500 dark:text-red-400', label: 'Failed' }
+    case 'running': return { cls: 'text-blue-500 dark:text-blue-400', label: 'Running' }
+    default: return { cls: 'text-gray-500 dark:text-zinc-500', label: status || 'Unknown' }
+  }
 }
 
 function jobTargetLabel(job, hosts) {
@@ -41,12 +52,26 @@ function cronSummary(cronExpr) {
 export default function JobsPage({
   jobs, hosts, tags, actionBusy,
   jobForm, setJobForm, jobBusy, jobComposerOpen, setJobComposerOpen,
-  onCreateJob, onToggleJob, onDeleteJob, error
+  onCreateJob, onToggleJob, onDeleteJob, jobRunsByJob = {}, onLoadJobRuns, error
 }) {
   const [confirmDialog, setConfirmDialog] = useState(null)
   const [showCronHelp, setShowCronHelp] = useState(false)
+  const [openRuns, setOpenRuns] = useState(() => new Set())
   const cronHelpRef = useRef(null)
   const toast = useToastContext()
+
+  const toggleRuns = (jobId) => {
+    setOpenRuns(prev => {
+      const next = new Set(prev)
+      if (next.has(jobId)) {
+        next.delete(jobId)
+      } else {
+        next.add(jobId)
+        if (onLoadJobRuns) onLoadJobRuns(jobId)
+      }
+      return next
+    })
+  }
 
   // Close popover on outside click
   useEffect(() => {
@@ -368,44 +393,91 @@ export default function JobsPage({
             const busy = !!actionBusy[`job:${j.id}`]
             const deleteBusy = !!actionBusy[`job:delete:${j.id}`]
             const targetLabel = jobTargetLabel(j, hosts)
+            const lr = j.last_run
+            const runs = jobRunsByJob[j.id] || []
             return (
               <div
                 key={j.id}
-                className="rounded-xl border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 px-5 py-3 flex items-center justify-between gap-4 flex-wrap"
+                className="rounded-xl border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/40 px-5 py-3"
               >
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium truncate">{j.name || `${jobModeLabel(j.mode)} on ${targetLabel}`}</p>
-                  <p className="text-xs text-gray-500 dark:text-zinc-500 mt-0.5">
-                    {targetLabel} · <span className="font-mono">{j.cron_expr}</span> · {jobModeLabel(j.mode)}
-                  </p>
+                <div className="flex items-center justify-between gap-4 flex-wrap">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">{j.name || `${jobModeLabel(j.mode)} on ${targetLabel}`}</p>
+                    <p className="text-xs text-gray-500 dark:text-zinc-500 mt-0.5">
+                      {targetLabel} · <span className="font-mono">{j.cron_expr}</span> · {jobModeLabel(j.mode)}
+                    </p>
+                    <p className="text-xs text-gray-500 dark:text-zinc-500 mt-1 flex items-center gap-1.5 flex-wrap">
+                      {lr ? (
+                        <span title={fullDate(lr.started_at)}>
+                          Last run: <span className={runStatusStyle(lr.status).cls}>● {runStatusStyle(lr.status).label}</span>
+                          {' '}{timeAgo(lr.finished_at || lr.started_at)}
+                          {lr.hosts_total > 0 ? ` · ${lr.hosts_ok}/${lr.hosts_total} ok${lr.hosts_failed > 0 ? `, ${lr.hosts_failed} failed` : ''}` : ''}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 dark:text-zinc-600">Never run</span>
+                      )}
+                      {j.enabled && j.next_run ? (
+                        <span className="text-gray-400 dark:text-zinc-600" title={fullDate(j.next_run)}>· Next: {timeAgo(j.next_run)}</span>
+                      ) : null}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${j.enabled ? 'text-emerald-400' : 'text-gray-500 dark:text-zinc-500'}`}>
+                      {j.enabled ? '● Enabled' : '○ Disabled'}
+                    </span>
+                    <button
+                      onClick={() => toggleRuns(j.id)}
+                      className="rounded-lg px-3 py-1.5 text-xs border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 hover:text-gray-900 dark:hover:text-white hover:border-gray-400 dark:hover:border-zinc-500 transition-colors"
+                    >
+                      {openRuns.has(j.id) ? 'Hide runs' : 'Runs'}
+                    </button>
+                    <button
+                      onClick={() => onToggleJob(j, !j.enabled)}
+                      disabled={busy || deleteBusy}
+                      className="rounded-lg px-3 py-1.5 text-xs border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 hover:text-gray-900 dark:hover:text-white hover:border-gray-400 dark:hover:border-zinc-500 disabled:opacity-30 transition-colors"
+                    >
+                      {busy ? 'Updating…' : j.enabled ? 'Disable' : 'Enable'}
+                    </button>
+                    <button
+                      onClick={() => {
+                        const jobLabel = j.name || `${jobModeLabel(j.mode)} on ${targetLabel}`
+                        setConfirmDialog({
+                          title: 'Delete scheduled job',
+                          message: `Delete job "${jobLabel}"? This cannot be undone.`,
+                          color: 'red',
+                          payload: j
+                        })
+                      }}
+                      disabled={busy || deleteBusy}
+                      className="rounded-lg px-3 py-1.5 text-xs border border-red-800/60 text-red-400 hover:text-red-300 hover:border-red-700 disabled:opacity-30 transition-colors"
+                    >
+                      {deleteBusy ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${j.enabled ? 'text-emerald-400' : 'text-gray-500 dark:text-zinc-500'}`}>
-                    {j.enabled ? '● Enabled' : '○ Disabled'}
-                  </span>
-                  <button
-                    onClick={() => onToggleJob(j, !j.enabled)}
-                    disabled={busy || deleteBusy}
-                    className="rounded-lg px-3 py-1.5 text-xs border border-gray-300 dark:border-zinc-700 text-gray-700 dark:text-zinc-300 hover:text-gray-900 dark:hover:text-white hover:border-gray-400 dark:hover:border-zinc-500 disabled:opacity-30 transition-colors"
-                  >
-                    {busy ? 'Updating…' : j.enabled ? 'Disable' : 'Enable'}
-                  </button>
-                  <button
-                    onClick={() => {
-                      const jobLabel = j.name || `${jobModeLabel(j.mode)} on ${targetLabel}`
-                      setConfirmDialog({
-                        title: 'Delete scheduled job',
-                        message: `Delete job "${jobLabel}"? This cannot be undone.`,
-                        color: 'red',
-                        payload: j
-                      })
-                    }}
-                    disabled={busy || deleteBusy}
-                    className="rounded-lg px-3 py-1.5 text-xs border border-red-800/60 text-red-400 hover:text-red-300 hover:border-red-700 disabled:opacity-30 transition-colors"
-                  >
-                    {deleteBusy ? 'Deleting…' : 'Delete'}
-                  </button>
-                </div>
+                {openRuns.has(j.id) && (
+                  <div className="mt-3 border-t border-gray-200 dark:border-zinc-800 pt-3">
+                    {runs.length === 0 ? (
+                      <p className="text-xs text-gray-400 dark:text-zinc-600">No runs recorded yet.</p>
+                    ) : (
+                      <ul className="space-y-1">
+                        {runs.map(run => {
+                          const st = runStatusStyle(run.status)
+                          return (
+                            <li key={run.id} className="text-xs text-gray-500 dark:text-zinc-500 flex items-center gap-2 flex-wrap" title={fullDate(run.started_at)}>
+                              <span className={`${st.cls} font-medium`}>● {st.label}</span>
+                              <span>{timeAgo(run.finished_at || run.started_at)}</span>
+                              {run.hosts_total > 0 && (
+                                <span>· {run.hosts_ok}/{run.hosts_total} ok{run.hosts_failed > 0 ? `, ${run.hosts_failed} failed` : ''}</span>
+                              )}
+                              {run.detail && <span className="truncate text-gray-400 dark:text-zinc-600 max-w-[40ch]">· {run.detail}</span>}
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                )}
               </div>
             )
           })}
