@@ -13,7 +13,6 @@ type Config struct {
 	Port                int
 	DatabasePath        string
 	MasterKey           string
-	JWTSecret           string
 	SSHTimeout          time.Duration
 	ExecTimeout         time.Duration
 	ConnectivityTimeout time.Duration
@@ -76,7 +75,6 @@ func Load() (Config, error) {
 		Port:                port,
 		DatabasePath:        envOr("PATCHDECK_DB_PATH", "/data/patchdeck.db"),
 		MasterKey:           os.Getenv("PATCHDECK_MASTER_KEY"),
-		JWTSecret:           os.Getenv("PATCHDECK_JWT_SECRET"),
 		SSHTimeout:          t,
 		ExecTimeout:         execTimeout,
 		ConnectivityTimeout: connectivityTimeout,
@@ -88,8 +86,8 @@ func Load() (Config, error) {
 		TLSCertPath:         envOr("PATCHDECK_TLS_CERT", "/data/tls/cert.pem"),
 		TLSKeyPath:          envOr("PATCHDECK_TLS_KEY", "/data/tls/key.pem"),
 	}
-	if len(cfg.MasterKey) < 32 || len(cfg.JWTSecret) < 32 {
-		return Config{}, errors.New("PATCHDECK_MASTER_KEY and PATCHDECK_JWT_SECRET must be set to 32+ characters")
+	if len(cfg.MasterKey) < 32 {
+		return Config{}, errors.New("PATCHDECK_MASTER_KEY must be set to 32+ characters")
 	}
 	return cfg, nil
 }

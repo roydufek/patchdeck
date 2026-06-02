@@ -1,0 +1,2 @@
+# Trivy ignore list. Add a CVE ID (one per line) ONLY with a documented justification
+# and ideally an expiry. Empty by design — CI gates on all fixable HIGH/CRITICAL.

@@ -349,20 +349,16 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	// Successful authentication — clear the failure counter for this IP.
 	a.loginLimiter.Reset(ip)
 
-	// Establish a server-side session (httpOnly cookie) — the primary web auth going
-	// forward. The JWT below is retained for backward compatibility with any client
-	// still sending a Bearer token; both are accepted by the auth middleware.
-	if sessTok, serr := db.CreateSession(a.db, user.ID, user.Username, user.Role, sessionTTL); serr == nil {
-		setSessionCookie(w, sessTok)
-	}
-	token, err := auth.SignJWT(a.cfg.JWTSecret, user.ID, user.Username, user.Role, 7*24*time.Hour)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to generate session token"})
+	// Establish a server-side session (httpOnly cookie) — the sole web auth mechanism.
+	sessTok, serr := db.CreateSession(a.db, user.ID, user.Username, user.Role, sessionTTL)
+	if serr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create session"})
 		return
 	}
+	setSessionCookie(w, sessTok)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"token": token,
-		"user":  map[string]string{"username": user.Username, "role": user.Role},
+		"ok":   true,
+		"user": map[string]string{"username": user.Username, "role": user.Role},
 	})
 }
 
@@ -1809,24 +1805,13 @@ func (a *app) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		token := strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
-		if token == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-			return
-		}
-		// Try JWT first
-		claims, err := auth.ParseJWT(a.cfg.JWTSecret, token)
-		if err == nil {
-			next.ServeHTTP(w, r.WithContext(auth.WithClaims(r.Context(), claims)))
-			return
-		}
-		// Try API token (pd_ prefix)
+		// Programmatic access via API token (pd_ prefix). Web UI uses the cookie above.
 		if strings.HasPrefix(token, "pd_") {
 			valid, _, dbErr := db.ValidateAPIToken(a.db, token)
 			if dbErr != nil || !valid {
 				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 				return
 			}
-			// API token auth — use a synthetic claims with role=admin
 			apiClaims := &auth.Claims{Username: "api-token", Role: "admin"}
 			next.ServeHTTP(w, r.WithContext(auth.WithClaims(r.Context(), apiClaims)))
 			return
@@ -2092,36 +2077,25 @@ func friendlyError(err error, context string) string {
 	}
 }
 
-// authMiddlewareFlexible authenticates SSE/EventSource requests. It prefers the
-// session cookie (sent automatically by EventSource), then an Authorization header,
-// then a ?token= query param. The query-param path is a legacy fallback retained for
-// backward compatibility until the frontend is fully cookie-based; it leaks the token
-// into access logs and should be removed once no client relies on it.
+// authMiddlewareFlexible authenticates SSE/EventSource requests via the session
+// cookie (sent automatically by EventSource with credentials), or a Bearer API token
+// for programmatic clients. No token is accepted in the URL.
 func (a *app) authMiddlewareFlexible(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Cookie session (web UI) takes precedence — no token in the URL.
 		if claims := a.sessionClaims(r); claims != nil {
 			next.ServeHTTP(w, r.WithContext(auth.WithClaims(r.Context(), claims)))
 			return
 		}
-		token := ""
 		authz := strings.TrimSpace(r.Header.Get("Authorization"))
-		if strings.HasPrefix(authz, "Bearer ") {
-			token = strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
+		token := strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
+		if strings.HasPrefix(token, "pd_") {
+			if valid, _, dbErr := db.ValidateAPIToken(a.db, token); dbErr == nil && valid {
+				apiClaims := &auth.Claims{Username: "api-token", Role: "admin"}
+				next.ServeHTTP(w, r.WithContext(auth.WithClaims(r.Context(), apiClaims)))
+				return
+			}
 		}
-		if token == "" {
-			token = strings.TrimSpace(r.URL.Query().Get("token"))
-		}
-		if token == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-			return
-		}
-		claims, err := auth.ParseJWT(a.cfg.JWTSecret, token)
-		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-			return
-		}
-		next.ServeHTTP(w, r.WithContext(auth.WithClaims(r.Context(), claims)))
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 	})
 }
 

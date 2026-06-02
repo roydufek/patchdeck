@@ -1,0 +1,9 @@
+# Force LF for files executed or parsed on Linux, regardless of the committer's OS.
+# Prevents CRLF sneaking into shell scripts (bad-interpreter errors) or YAML on a
+# Windows checkout.
+*.sh        text eol=lf
+entrypoint.sh text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Dockerfile  text eol=lf
+*.go        text eol=lf
