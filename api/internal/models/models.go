@@ -61,6 +61,7 @@ type ScanResult struct {
 	RebootReason     string        `json:"reboot_reason,omitempty"`
 	NeedsRestart     []string      `json:"needs_restart"`
 	NeedrestartFound bool          `json:"needrestart_found"`
+	AptUpdateFailed  bool          `json:"apt_update_failed,omitempty"`
 	RawOutput        string        `json:"raw_output"`
 	OsName           string        `json:"os_name,omitempty"`
 	OsVersion        string        `json:"os_version,omitempty"`

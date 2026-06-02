@@ -15,6 +15,7 @@ type Config struct {
 	MasterKey           string
 	JWTSecret           string
 	SSHTimeout          time.Duration
+	ExecTimeout         time.Duration
 	AppriseURL          string
 	AppriseBinPath      string
 	AppriseTimeout      time.Duration
@@ -35,6 +36,15 @@ func Load() (Config, error) {
 	if raw := os.Getenv("PATCHDECK_SSH_TIMEOUT_SECONDS"); raw != "" {
 		if v, err := strconv.Atoi(raw); err == nil {
 			t = time.Duration(v) * time.Second
+		}
+	}
+	// ExecTimeout caps how long a single remote command may run (scan/apply/etc.),
+	// separate from SSHTimeout which only covers the TCP/handshake dial. Without it a
+	// host with a held apt/dpkg lock would hang an operation indefinitely.
+	execTimeout := 600 * time.Second
+	if raw := os.Getenv("PATCHDECK_EXEC_TIMEOUT_SECONDS"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			execTimeout = time.Duration(v) * time.Second
 		}
 	}
 	appriseTimeout := 10 * time.Second
@@ -58,6 +68,7 @@ func Load() (Config, error) {
 		MasterKey:           os.Getenv("PATCHDECK_MASTER_KEY"),
 		JWTSecret:           os.Getenv("PATCHDECK_JWT_SECRET"),
 		SSHTimeout:          t,
+		ExecTimeout:         execTimeout,
 		AppriseURL:          os.Getenv("PATCHDECK_APPRISE_URL"),
 		AppriseBinPath:      envOr("PATCHDECK_APPRISE_BIN", "apprise"),
 		AppriseTimeout:      appriseTimeout,

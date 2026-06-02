@@ -10,6 +10,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"patchdeck/api/internal/crypto"
@@ -158,6 +159,7 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 	pkgs := []models.PackageInfo{}
 	needsReboot := strings.Contains(cleanRaw, "__REBOOT__")
 	needrestartFound := !strings.Contains(cleanRaw, "__NEEDRESTART_MISSING__")
+	aptUpdateFailed := strings.Contains(cleanRaw, "__APT_UPDATE_FAILED__")
 	services := []string{}
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -173,7 +175,9 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 			}
 		}
 		if strings.HasPrefix(line, "NEEDRESTART-SVC:") {
-			services = append(services, strings.TrimPrefix(line, "NEEDRESTART-SVC:"))
+			if svc := strings.TrimSpace(strings.TrimPrefix(line, "NEEDRESTART-SVC:")); svc != "" {
+				services = append(services, svc)
+			}
 		}
 	}
 	return models.ScanResult{
@@ -183,6 +187,7 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 		RebootReason:     rebootReason,
 		NeedsRestart:     services,
 		NeedrestartFound: needrestartFound,
+		AptUpdateFailed:  aptUpdateFailed,
 		RawOutput:        raw,
 		OsName:           osName,
 		OsVersion:        osVersion,
@@ -211,12 +216,13 @@ type HostKeyError struct {
 func (e *HostKeyError) Error() string { return e.Message }
 
 type Client struct {
-	timeout      time.Duration
+	timeout      time.Duration // TCP/SSH handshake dial timeout
+	execTimeout  time.Duration // max wall-clock for a single remote command (0 = no cap)
 	hostVerifier HostKeyVerifier
 }
 
-func NewClient(timeout time.Duration, verifier HostKeyVerifier) *Client {
-	return &Client{timeout: timeout, hostVerifier: verifier}
+func NewClient(dialTimeout, execTimeout time.Duration, verifier HostKeyVerifier) *Client {
+	return &Client{timeout: dialTimeout, execTimeout: execTimeout, hostVerifier: verifier}
 }
 
 type secretBlob struct {
@@ -226,8 +232,27 @@ type secretBlob struct {
 	SudoPassword  string `json:"sudo_password"`
 }
 
+// scanCmd gathers upgradable packages + sysinfo + reboot/needrestart state.
+// LANG=C/LC_ALL=C force stable English apt output so the parser is locale-proof.
+// `apt-get update 1>&2` sends update progress to STDERR (streamed for visibility but
+// kept out of the STDOUT we parse), and its failure is reported via __APT_UPDATE_FAILED__
+// WITHOUT aborting the listing — a transient mirror hiccup no longer zeroes the scan.
+const scanCmd = `export LANG=C LC_ALL=C DEBIAN_FRONTEND=noninteractive
+if ! apt-get update 1>&2; then echo __APT_UPDATE_FAILED__; fi
+apt list --upgradable 2>/dev/null | tail -n +2
+test -f /var/run/reboot-required && echo __REBOOT__ || true
+test -f /var/run/reboot-required.pkgs && { echo "__REBOOT_PKGS_START__"; cat /var/run/reboot-required.pkgs 2>/dev/null; echo "__REBOOT_PKGS_END__"; } || true
+if command -v needrestart >/dev/null 2>&1; then needrestart -b 2>/dev/null || true; else echo __NEEDRESTART_MISSING__; fi
+echo "__SYSINFO_START__"; cat /etc/os-release 2>/dev/null || true; echo "__SYSINFO_SEP__"; uptime -p 2>/dev/null || uptime 2>/dev/null || true; echo "__SYSINFO_SEP__"; uname -r 2>/dev/null || true; echo "__SYSINFO_END__"`
+
+// applyCmd installs all available upgrades. LANG=C keeps the "Setting up " markers
+// (used to count changed packages) stable across locales.
+const applyCmd = `export LANG=C LC_ALL=C DEBIAN_FRONTEND=noninteractive
+apt-get -y dist-upgrade
+test -f /var/run/reboot-required && echo __REBOOT__ || true`
+
 func (c *Client) ScanHost(host models.Host, seal *crypto.SealBox) (models.ScanResult, error) {
-	raw, err := c.runPrivileged(host, seal, `apt-get update && apt list --upgradable 2>/dev/null | tail -n +2; test -f /var/run/reboot-required && echo __REBOOT__ || true; test -f /var/run/reboot-required.pkgs && { echo "__REBOOT_PKGS_START__"; cat /var/run/reboot-required.pkgs 2>/dev/null; echo "__REBOOT_PKGS_END__"; } || true; if command -v needrestart >/dev/null 2>&1; then needrestart -b 2>/dev/null || true; else echo __NEEDRESTART_MISSING__; fi; echo "__SYSINFO_START__"; cat /etc/os-release 2>/dev/null || true; echo "__SYSINFO_SEP__"; uptime -p 2>/dev/null || uptime 2>/dev/null || true; echo "__SYSINFO_SEP__"; uname -r 2>/dev/null || true; echo "__SYSINFO_END__"`)
+	raw, err := c.runPrivileged(host, seal, scanCmd)
 	if err != nil {
 		return models.ScanResult{}, err
 	}
@@ -236,7 +261,7 @@ func (c *Client) ScanHost(host models.Host, seal *crypto.SealBox) (models.ScanRe
 }
 
 func (c *Client) ApplyUpdates(host models.Host, seal *crypto.SealBox) (models.ApplyResult, error) {
-	raw, err := c.runPrivileged(host, seal, `DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade; test -f /var/run/reboot-required && echo __REBOOT__ || true`)
+	raw, err := c.runPrivileged(host, seal, applyCmd)
 	if err != nil {
 		return models.ApplyResult{}, err
 	}
@@ -365,26 +390,60 @@ func (c *Client) run(host models.Host, seal *crypto.SealBox, command string) (st
 		return "", fmt.Errorf("SSH session error: %s", FriendlySSHError(err))
 	}
 	defer sess.Close()
-	var b bytes.Buffer
-	sess.Stdout = &b
-	sess.Stderr = &b
-	err = sess.Run(command)
-	out := strings.TrimSpace(b.String())
-	if err != nil {
-		if out != "" {
-			lines := strings.Split(out, "\n")
-			start := 0
-			if len(lines) > 3 {
-				start = len(lines) - 3
-			}
-			snippet := strings.TrimSpace(strings.Join(lines[start:], " | "))
-			if snippet != "" {
-				return out, fmt.Errorf("%s", snippet)
-			}
+	// Capture stdout and stderr separately so diagnostic noise (e.g. apt-get
+	// update progress, apt's "unstable CLI" warning) never pollutes the stdout
+	// we parse.
+	var outBuf, errBuf bytes.Buffer
+	sess.Stdout = &outBuf
+	sess.Stderr = &errBuf
+	runErr := c.runWithDeadline(cli, func() error { return sess.Run(command) })
+	out := strings.TrimSpace(outBuf.String())
+	if runErr != nil {
+		// Errors usually land on stderr — prefer it for the human-facing snippet,
+		// then fall back to stdout, then the raw error.
+		if snippet := lastLines(errBuf.String(), 3); snippet != "" {
+			return out, fmt.Errorf("%s", snippet)
 		}
-		return out, err
+		if snippet := lastLines(out, 3); snippet != "" {
+			return out, fmt.Errorf("%s", snippet)
+		}
+		return out, runErr
 	}
 	return out, nil
+}
+
+// runWithDeadline runs fn (sess.Run or sess.Wait) but aborts after c.execTimeout
+// by closing the underlying connection — the only reliable way to unblock an SSH
+// command stuck on, e.g., a held apt/dpkg lock. A zero execTimeout disables the cap.
+func (c *Client) runWithDeadline(cli *ssh.Client, fn func() error) error {
+	if c.execTimeout <= 0 {
+		return fn()
+	}
+	done := make(chan error, 1)
+	go func() { done <- fn() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(c.execTimeout):
+		cli.Close() // force-unblock the stuck Run/Wait
+		<-done      // let the goroutine observe the closed conn and exit
+		return fmt.Errorf("command timed out after %s (host may have a held apt/dpkg lock or be unresponsive)", c.execTimeout)
+	}
+}
+
+// lastLines returns the final n non-empty-trimmed lines of s joined by " | ",
+// used to build a compact human-facing error snippet.
+func lastLines(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	lines := strings.Split(s, "\n")
+	start := 0
+	if len(lines) > n {
+		start = len(lines) - n
+	}
+	return strings.TrimSpace(strings.Join(lines[start:], " | "))
 }
 
 func parseSigner(key []byte, passphrase string) (ssh.Signer, error) {
@@ -456,46 +515,70 @@ func (c *Client) RunStreaming(host models.Host, seal *crypto.SealBox, command st
 	}
 	defer sess.Close()
 
-	pr, pw := io.Pipe()
-	sess.Stdout = pw
-	sess.Stderr = pw
+	// Separate pipes for stdout and stderr. Both are streamed live to the UI (so the
+	// operator sees apt-get update progress etc.), but ONLY stdout is accumulated for
+	// parsing — keeping diagnostic noise out of the parsed result.
+	outPr, outPw := io.Pipe()
+	errPr, errPw := io.Pipe()
+	sess.Stdout = outPw
+	sess.Stderr = errPw
 
 	if err := sess.Start(command); err != nil {
-		pw.Close()
+		outPw.Close()
+		errPw.Close()
 		return "", err
 	}
 
-	var accumulated bytes.Buffer
-	scanner := bufio.NewScanner(pr)
-	scanDone := make(chan struct{})
+	var accumulated bytes.Buffer // stdout only — this is what gets parsed
+	var stderrTail bytes.Buffer
+	// onLine writes to a single SSE response; serialize calls from both readers.
+	var emitMu sync.Mutex
+	emit := func(line string) {
+		if onLine == nil {
+			return
+		}
+		emitMu.Lock()
+		onLine(line)
+		emitMu.Unlock()
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
 	go func() {
-		defer close(scanDone)
-		for scanner.Scan() {
-			line := scanner.Text()
+		defer wg.Done()
+		sc := bufio.NewScanner(outPr)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := sc.Text()
 			accumulated.WriteString(line)
 			accumulated.WriteString("\n")
-			if onLine != nil {
-				onLine(line)
-			}
+			emit(line)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		sc := bufio.NewScanner(errPr)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := sc.Text()
+			stderrTail.WriteString(line)
+			stderrTail.WriteString("\n")
+			emit(line)
 		}
 	}()
 
-	waitErr := sess.Wait()
-	pw.Close()
-	<-scanDone
+	waitErr := c.runWithDeadline(cli, func() error { return sess.Wait() })
+	outPw.Close()
+	errPw.Close()
+	wg.Wait()
 
 	out := strings.TrimSpace(accumulated.String())
 	if waitErr != nil {
-		if out != "" {
-			lines := strings.Split(out, "\n")
-			start := 0
-			if len(lines) > 3 {
-				start = len(lines) - 3
-			}
-			snippet := strings.TrimSpace(strings.Join(lines[start:], " | "))
-			if snippet != "" {
-				return out, fmt.Errorf("%s", snippet)
-			}
+		if snippet := lastLines(stderrTail.String(), 3); snippet != "" {
+			return out, fmt.Errorf("%s", snippet)
+		}
+		if snippet := lastLines(out, 3); snippet != "" {
+			return out, fmt.Errorf("%s", snippet)
 		}
 		return out, waitErr
 	}
@@ -538,7 +621,7 @@ func (c *Client) runPrivilegedStreaming(host models.Host, seal *crypto.SealBox, 
 
 // ScanHostStreaming runs a scan with streaming output via onLine callback.
 func (c *Client) ScanHostStreaming(host models.Host, seal *crypto.SealBox, onLine func(line string)) (models.ScanResult, error) {
-	raw, err := c.runPrivilegedStreaming(host, seal, `apt-get update && apt list --upgradable 2>/dev/null | tail -n +2; test -f /var/run/reboot-required && echo __REBOOT__ || true; test -f /var/run/reboot-required.pkgs && { echo "__REBOOT_PKGS_START__"; cat /var/run/reboot-required.pkgs 2>/dev/null; echo "__REBOOT_PKGS_END__"; } || true; if command -v needrestart >/dev/null 2>&1; then needrestart -b 2>/dev/null || true; else echo __NEEDRESTART_MISSING__; fi; echo "__SYSINFO_START__"; cat /etc/os-release 2>/dev/null || true; echo "__SYSINFO_SEP__"; uptime -p 2>/dev/null || uptime 2>/dev/null || true; echo "__SYSINFO_SEP__"; uname -r 2>/dev/null || true; echo "__SYSINFO_END__"`, onLine)
+	raw, err := c.runPrivilegedStreaming(host, seal, scanCmd, onLine)
 	if err != nil {
 		return models.ScanResult{}, err
 	}
@@ -548,7 +631,7 @@ func (c *Client) ScanHostStreaming(host models.Host, seal *crypto.SealBox, onLin
 
 // ApplyUpdatesStreaming runs apply with streaming output via onLine callback.
 func (c *Client) ApplyUpdatesStreaming(host models.Host, seal *crypto.SealBox, onLine func(line string)) (models.ApplyResult, error) {
-	raw, err := c.runPrivilegedStreaming(host, seal, `DEBIAN_FRONTEND=noninteractive apt-get -y dist-upgrade; test -f /var/run/reboot-required && echo __REBOOT__ || true`, onLine)
+	raw, err := c.runPrivilegedStreaming(host, seal, applyCmd, onLine)
 	if err != nil {
 		return models.ApplyResult{}, err
 	}

@@ -77,7 +77,7 @@ func main() {
 		log.Fatalf("master key: %v", err)
 	}
 
-	sshClient := sshx.NewClient(cfg.SSHTimeout, nil)
+	sshClient := sshx.NewClient(cfg.SSHTimeout, cfg.ExecTimeout, nil)
 	notifier := notify.NewDispatcher(cfg.AppriseBinPath, cfg.AppriseTimeout)
 	notifierRuntime := notifier.RuntimeInfo()
 	if notifierRuntime.Available {
@@ -95,7 +95,7 @@ func main() {
 		limiter:   ratelimit.NewHostLimiter(30 * time.Second),
 		startTime: time.Now(),
 	}
-	a.sshClient = sshx.NewClient(cfg.SSHTimeout, a.verifyHostKey)
+	a.sshClient = sshx.NewClient(cfg.SSHTimeout, cfg.ExecTimeout, a.verifyHostKey)
 	a.sched = scheduler.NewEngine(database, a.sshClient, seal, notifier, cfg.AppriseURL)
 
 	r := chi.NewRouter()
@@ -216,6 +216,18 @@ func (a *app) setupStatus(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// validateBootstrapRole enforces that the very first (bootstrap) user is an admin.
+// Returns "" when valid, or a human-facing reason otherwise.
+func validateBootstrapRole(role string) string {
+	if !rbac.IsSupportedRole(role) {
+		return "unsupported role"
+	}
+	if role != "admin" {
+		return "bootstrap role must be admin"
+	}
+	return ""
+}
+
 func (a *app) bootstrap(w http.ResponseWriter, r *http.Request) {
 	if !a.cfg.RegistrationEnabled {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Registration is disabled"})
@@ -243,6 +255,10 @@ func (a *app) bootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	role := "admin"
+	if msg := validateBootstrapRole(role); msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": msg})
+		return
+	}
 	if err := db.CreateInitialUser(a.db, req.Username, role, hash, ""); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to create admin account"})
 		return
@@ -344,7 +360,7 @@ func (a *app) hostConnectivity(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	quickTimeout := 5 * time.Second
-	checker := sshx.NewClient(quickTimeout, a.verifyHostKey)
+	checker := sshx.NewClient(quickTimeout, quickTimeout, a.verifyHostKey)
 	results := make([]hostConnectivityStatus, len(hosts))
 
 	var wg sync.WaitGroup
@@ -2145,7 +2161,7 @@ func (a *app) awaitRecovery(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Use a short SSH timeout (5s) for connectivity checks
-	checker := sshx.NewClient(5*time.Second, a.verifyHostKey)
+	checker := sshx.NewClient(5*time.Second, 5*time.Second, a.verifyHostKey)
 
 	ctx := r.Context()
 	start := time.Now()
