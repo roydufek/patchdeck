@@ -292,12 +292,10 @@ func DeleteHost(db *sql.DB, id string) error {
 	if _, err := tx.Exec(`DELETE FROM scan_history WHERE host_id=?`, id); err != nil {
 		return err
 	}
-	// Drop run history for this host's jobs before the jobs themselves, otherwise
-	// the job_runs rows are orphaned (PruneJobRuns is per-job and the job is gone).
-	if _, err := tx.Exec(`DELETE FROM job_runs WHERE job_id IN (SELECT id FROM jobs WHERE host_id=?)`, id); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`DELETE FROM jobs WHERE host_id=?`, id); err != nil {
+	// Reconcile jobs that target this host: remove the host from each job's target
+	// list, and delete a job (plus its orphaned run history) only if it has no
+	// targets left. Tag-filter jobs resolve hosts dynamically, so they're untouched.
+	if err := reconcileJobsAfterHostDelete(tx, id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM host_notification_prefs WHERE host_id=?`, id); err != nil {
@@ -307,6 +305,88 @@ func DeleteHost(db *sql.DB, id string) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// reconcileJobsAfterHostDelete removes hostID from every host-targeted job's
+// target list (the legacy host_id pointer and the host_ids_json array), deleting a
+// job and its run history only when no target host remains. Tag-filter jobs are
+// left alone — they resolve their hosts at run time. Must run inside the same tx as
+// the host delete; it buffers all job rows before issuing writes (SQLite can't write
+// on a connection with an open read cursor).
+func reconcileJobsAfterHostDelete(tx *sql.Tx, hostID string) error {
+	rows, err := tx.Query(`SELECT id, host_id, host_ids_json, tag_filter FROM jobs`)
+	if err != nil {
+		return err
+	}
+	type jobRow struct{ id, hostID, hostIDsJSON, tagFilter string }
+	var jobs []jobRow
+	for rows.Next() {
+		var jr jobRow
+		if err := rows.Scan(&jr.id, &jr.hostID, &jr.hostIDsJSON, &jr.tagFilter); err != nil {
+			rows.Close()
+			return err
+		}
+		jobs = append(jobs, jr)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, jr := range jobs {
+		// Tag jobs resolve hosts dynamically — never modify or delete them here.
+		if strings.TrimSpace(jr.tagFilter) != "" {
+			continue
+		}
+
+		var ids []string
+		if s := strings.TrimSpace(jr.hostIDsJSON); s != "" && s != "[]" {
+			_ = json.Unmarshal([]byte(s), &ids)
+		}
+		var remaining []string
+		for _, x := range ids {
+			if x != hostID {
+				remaining = append(remaining, x)
+			}
+		}
+		referencedInList := len(remaining) != len(ids)
+		referencedAsPrimary := jr.hostID == hostID
+		if !referencedInList && !referencedAsPrimary {
+			continue // job doesn't target the deleted host
+		}
+
+		// Recompute the legacy primary host pointer if it pointed at the deleted host.
+		newPrimary := jr.hostID
+		if referencedAsPrimary {
+			newPrimary = ""
+			if len(remaining) > 0 {
+				newPrimary = remaining[0]
+			}
+		}
+
+		// No targets left → delete the job and its run history.
+		if len(remaining) == 0 && newPrimary == "" {
+			if _, err := tx.Exec(`DELETE FROM job_runs WHERE job_id=?`, jr.id); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`DELETE FROM jobs WHERE id=?`, jr.id); err != nil {
+				return err
+			}
+			continue
+		}
+
+		// Otherwise keep the job with the deleted host removed from its target list.
+		newJSON := "[]"
+		if len(remaining) > 0 {
+			b, _ := json.Marshal(remaining)
+			newJSON = string(b)
+		}
+		if _, err := tx.Exec(`UPDATE jobs SET host_id=?, host_ids_json=? WHERE id=?`, newPrimary, newJSON, jr.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func UpsertScanResult(db *sql.DB, hostID string, sr models.ScanResult) error {
