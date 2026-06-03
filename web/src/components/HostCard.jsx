@@ -361,8 +361,13 @@ export default function HostCard({
   const connection = connectionIndicator(h, connectivity, connectionError || actionError, snap)
   const connected = connection.ok
 
-  // Package count
+  // Package count (actionable only — deferred/phased updates are tracked separately)
   const packageCount = Array.isArray(snap?.packages) ? snap.packages.length : 0
+  const deferredPkgs = Array.isArray(snap?.deferred_packages) ? snap.deferred_packages : []
+  const deferredCount = deferredPkgs.length
+  const deferredLabel = deferredCount > 0
+    ? `${deferredCount} deferred${deferredPkgs.every(p => p.defer_reason === 'phased') ? ' (phased)' : ''}`
+    : ''
 
   // Restart
   const restartServicesCount = Array.isArray(snap?.needs_restart) ? snap.needs_restart.length : 0
@@ -602,6 +607,12 @@ export default function HostCard({
                 )}
                 {liveUptime && (
                   <span className="hidden lg:inline"> · <span className="text-gray-400 dark:text-zinc-600">up {liveUptime}</span></span>
+                )}
+                {deferredCount > 0 && (
+                  <span className="hidden sm:inline"> · <span
+                    className="text-gray-400 dark:text-zinc-600 cursor-help"
+                    title={`Won't install yet — Ubuntu is phasing these in; they'll apply automatically later:\n${deferredPkgs.map(p => p.name).join(', ')}`}
+                  >{deferredLabel}</span></span>
                 )}
               </>
             ) : 'No scan data'}

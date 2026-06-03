@@ -121,6 +121,11 @@ func Migrate(db *sql.DB) error {
 	if err := ensureTableColumn(db, "scan_history", "reboot_reason", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+	// deferred (phased/held) upgrades — kept separate from packages_json so they don't
+	// count toward the actionable update total.
+	if err := ensureTableColumn(db, "scans", "deferred_packages_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -391,11 +396,12 @@ func reconcileJobsAfterHostDelete(tx *sql.Tx, hostID string) error {
 
 func UpsertScanResult(db *sql.DB, hostID string, sr models.ScanResult) error {
 	pkg, _ := json.Marshal(sr.Packages)
+	deferredPkg, _ := json.Marshal(sr.DeferredPackages)
 	svc, _ := json.Marshal(sr.NeedsRestart)
 	now := time.Now().UTC()
-	_, err := db.Exec(`INSERT INTO scans(host_id,packages_json,needs_reboot,reboot_reason,needs_restart_json,needrestart_found,raw_output,os_name,os_version,uptime,kernel,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-	ON CONFLICT(host_id) DO UPDATE SET packages_json=excluded.packages_json,needs_reboot=excluded.needs_reboot,reboot_reason=excluded.reboot_reason,needs_restart_json=excluded.needs_restart_json,needrestart_found=excluded.needrestart_found,raw_output=excluded.raw_output,os_name=excluded.os_name,os_version=excluded.os_version,uptime=excluded.uptime,kernel=excluded.kernel,updated_at=excluded.updated_at`,
-		hostID, string(pkg), boolToInt(sr.NeedsReboot), sr.RebootReason, string(svc), boolToInt(sr.NeedrestartFound), sr.RawOutput, sr.OsName, sr.OsVersion, sr.Uptime, sr.Kernel, now)
+	_, err := db.Exec(`INSERT INTO scans(host_id,packages_json,deferred_packages_json,needs_reboot,reboot_reason,needs_restart_json,needrestart_found,raw_output,os_name,os_version,uptime,kernel,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+	ON CONFLICT(host_id) DO UPDATE SET packages_json=excluded.packages_json,deferred_packages_json=excluded.deferred_packages_json,needs_reboot=excluded.needs_reboot,reboot_reason=excluded.reboot_reason,needs_restart_json=excluded.needs_restart_json,needrestart_found=excluded.needrestart_found,raw_output=excluded.raw_output,os_name=excluded.os_name,os_version=excluded.os_version,uptime=excluded.uptime,kernel=excluded.kernel,updated_at=excluded.updated_at`,
+		hostID, string(pkg), string(deferredPkg), boolToInt(sr.NeedsReboot), sr.RebootReason, string(svc), boolToInt(sr.NeedrestartFound), sr.RawOutput, sr.OsName, sr.OsVersion, sr.Uptime, sr.Kernel, now)
 	if err != nil {
 		return err
 	}
@@ -770,7 +776,7 @@ func unmarshalPackages(raw string) []models.PackageInfo {
 
 func ListScanSnapshots(db *sql.DB) ([]models.ScanSnapshot, error) {
 	rows, err := db.Query(`
-		SELECT s.host_id, h.name, s.packages_json, s.needs_reboot, s.reboot_reason, s.needs_restart_json, s.needrestart_found, s.os_name, s.os_version, s.uptime, s.kernel, s.updated_at
+		SELECT s.host_id, h.name, s.packages_json, s.deferred_packages_json, s.needs_reboot, s.reboot_reason, s.needs_restart_json, s.needrestart_found, s.os_name, s.os_version, s.uptime, s.kernel, s.updated_at
 		FROM scans s
 		JOIN hosts h ON h.id = s.host_id
 		ORDER BY s.updated_at DESC, h.name ASC`)
@@ -783,15 +789,17 @@ func ListScanSnapshots(db *sql.DB) ([]models.ScanSnapshot, error) {
 	for rows.Next() {
 		var snap models.ScanSnapshot
 		var pkgJSON string
+		var deferredJSON string
 		var needsRestartJSON string
 		var needsReboot int
 		var needrestartFound int
-		if err := rows.Scan(&snap.HostID, &snap.HostName, &pkgJSON, &needsReboot, &snap.RebootReason, &needsRestartJSON, &needrestartFound, &snap.OsName, &snap.OsVersion, &snap.Uptime, &snap.Kernel, &snap.UpdatedAt); err != nil {
+		if err := rows.Scan(&snap.HostID, &snap.HostName, &pkgJSON, &deferredJSON, &needsReboot, &snap.RebootReason, &needsRestartJSON, &needrestartFound, &snap.OsName, &snap.OsVersion, &snap.Uptime, &snap.Kernel, &snap.UpdatedAt); err != nil {
 			return nil, err
 		}
 		snap.NeedsReboot = needsReboot == 1
 		snap.NeedrestartFound = needrestartFound == 1
 		snap.Packages = unmarshalPackages(pkgJSON)
+		snap.DeferredPackages = unmarshalPackages(deferredJSON)
 		if strings.TrimSpace(needsRestartJSON) != "" {
 			if err := json.Unmarshal([]byte(needsRestartJSON), &snap.NeedsRestart); err != nil {
 				return nil, err

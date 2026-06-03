@@ -40,6 +40,9 @@ type PackageInfo struct {
 	NewVersion     string `json:"new_version,omitempty"`
 	Arch           string `json:"arch,omitempty"`
 	Source         string `json:"source,omitempty"`
+	// DeferReason is set only on deferred packages: "phased" (Ubuntu phased rollout) or
+	// "held" (kept back). Empty for normal/actionable packages.
+	DeferReason string `json:"defer_reason,omitempty"`
 }
 
 type ScanHistoryEntry struct {
@@ -57,6 +60,10 @@ type ScanHistoryEntry struct {
 type ScanResult struct {
 	HostID           string        `json:"host_id"`
 	Packages         []PackageInfo `json:"packages"`
+	// DeferredPackages are upgradable but won't be installed by Apply (apt-get
+	// dist-upgrade) right now — e.g. Ubuntu phased rollout. Kept out of Packages so
+	// they don't inflate the "needs action" count; surfaced separately in the UI.
+	DeferredPackages []PackageInfo `json:"deferred_packages,omitempty"`
 	NeedsReboot      bool          `json:"needs_reboot"`
 	RebootReason     string        `json:"reboot_reason,omitempty"`
 	NeedsRestart     []string      `json:"needs_restart"`
@@ -73,6 +80,7 @@ type ScanSnapshot struct {
 	HostID           string        `json:"host_id"`
 	HostName         string        `json:"host_name"`
 	Packages         []PackageInfo `json:"packages"`
+	DeferredPackages []PackageInfo `json:"deferred_packages,omitempty"`
 	NeedsReboot      bool          `json:"needs_reboot"`
 	RebootReason     string        `json:"reboot_reason,omitempty"`
 	NeedsRestart     []string      `json:"needs_restart"`

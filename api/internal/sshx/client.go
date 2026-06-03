@@ -138,6 +138,17 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 		}
 	}
 
+	// Extract & strip the dist-upgrade simulation block. apt states deferred upgrades
+	// explicitly there ("deferred due to phasing:" / "kept back:") — the only reliable
+	// signal, since `apt list --upgradable` doesn't annotate phasing on Ubuntu.
+	deferredReasons := map[string]string{}
+	if s := strings.Index(cleanRaw, "__DISTUPGRADE_SIM_START__"); s >= 0 {
+		if e := strings.Index(cleanRaw, "__DISTUPGRADE_SIM_END__"); e >= 0 && e > s {
+			deferredReasons = parseDeferredFromSim(cleanRaw[s+len("__DISTUPGRADE_SIM_START__") : e])
+			cleanRaw = cleanRaw[:s] + cleanRaw[e+len("__DISTUPGRADE_SIM_END__"):]
+		}
+	}
+
 	// Extract reboot reason packages
 	rebootReason := ""
 	if startIdx := strings.Index(cleanRaw, "__REBOOT_PKGS_START__"); startIdx >= 0 {
@@ -159,6 +170,7 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 
 	lines := strings.Split(cleanRaw, "\n")
 	pkgs := []models.PackageInfo{}
+	deferredPkgs := []models.PackageInfo{}
 	needsReboot := strings.Contains(cleanRaw, "__REBOOT__")
 	needrestartFound := !strings.Contains(cleanRaw, "__NEEDRESTART_MISSING__")
 	aptUpdateFailed := strings.Contains(cleanRaw, "__APT_UPDATE_FAILED__")
@@ -170,9 +182,17 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 		}
 		if strings.Contains(line, " / ") || strings.Contains(line, "upgradable from:") {
 			pkg, isPhased := parseAptLine(line)
-			// Skip phased updates — Ubuntu withholds these from dist-upgrade anyway,
-			// so counting them inflates the update count without any actionable result.
-			if !isPhased {
+			// Deferred (phased rollout / held back) upgrades won't be installed by Apply
+			// right now, so they go in a separate list and don't inflate the count. The
+			// dist-upgrade simulation is authoritative; the inline "(phased %)" tag is a
+			// fallback for apt versions that annotate it.
+			if reason, ok := deferredReasons[pkg.Name]; ok {
+				pkg.DeferReason = reason
+				deferredPkgs = append(deferredPkgs, pkg)
+			} else if isPhased {
+				pkg.DeferReason = "phased"
+				deferredPkgs = append(deferredPkgs, pkg)
+			} else {
 				pkgs = append(pkgs, pkg)
 			}
 		}
@@ -185,6 +205,7 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 	return models.ScanResult{
 		HostID:           hostID,
 		Packages:         pkgs,
+		DeferredPackages: deferredPkgs,
 		NeedsReboot:      needsReboot,
 		RebootReason:     rebootReason,
 		NeedsRestart:     services,
@@ -196,6 +217,44 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 		Uptime:           uptime,
 		Kernel:           kernel,
 	}
+}
+
+// parseDeferredFromSim reads an `apt-get -s dist-upgrade` block and returns the
+// packages apt reports as deferred → reason. apt prints a header line followed by
+// indented, space-separated package names:
+//
+//	The following upgrades have been deferred due to phasing:
+//	  apparmor cloud-init libapparmor1
+//
+// "deferred due to phasing" → "phased"; "kept back"/"held back" → "held". Names are
+// collected from indented continuation lines until the next non-indented line.
+func parseDeferredFromSim(sim string) map[string]string {
+	out := map[string]string{}
+	reason := ""
+	for _, ln := range strings.Split(sim, "\n") {
+		if strings.HasPrefix(ln, "The following") {
+			lower := strings.ToLower(ln)
+			switch {
+			case strings.Contains(lower, "deferred due to phasing"):
+				reason = "phased"
+			case strings.Contains(lower, "kept back"), strings.Contains(lower, "held back"):
+				reason = "held"
+			default:
+				reason = "" // some other "The following ..." section — not a deferral
+			}
+			continue
+		}
+		if reason != "" && len(ln) > 0 && (ln[0] == ' ' || ln[0] == '\t') {
+			for _, name := range strings.Fields(ln) {
+				out[name] = reason
+			}
+			continue
+		}
+		if strings.TrimSpace(ln) != "" {
+			reason = "" // a non-indented, non-header line ends the current block
+		}
+	}
+	return out
 }
 
 type HostKeyDecision struct {
@@ -242,6 +301,7 @@ type secretBlob struct {
 const scanCmd = `export LANG=C LC_ALL=C DEBIAN_FRONTEND=noninteractive
 if ! apt-get update 1>&2; then echo __APT_UPDATE_FAILED__; fi
 apt list --upgradable 2>/dev/null | tail -n +2
+echo "__DISTUPGRADE_SIM_START__"; apt-get -s dist-upgrade 2>/dev/null || true; echo "__DISTUPGRADE_SIM_END__"
 test -f /var/run/reboot-required && echo __REBOOT__ || true
 test -f /var/run/reboot-required.pkgs && { echo "__REBOOT_PKGS_START__"; cat /var/run/reboot-required.pkgs 2>/dev/null; echo "__REBOOT_PKGS_END__"; } || true
 if command -v needrestart >/dev/null 2>&1; then needrestart -b 2>/dev/null || true; else echo __NEEDRESTART_MISSING__; fi
