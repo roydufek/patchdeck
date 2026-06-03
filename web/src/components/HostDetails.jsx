@@ -155,6 +155,7 @@ export default function HostDetails({
   const applyBusy = !!actionBusy[`${h.id}:apply`]
 
   const packageCount = Array.isArray(snap?.packages) ? snap.packages.length : 0
+  const deferredPackages = Array.isArray(snap?.deferred_packages) ? snap.deferred_packages : []
   const restartServicesCount = Array.isArray(snap?.needs_restart) ? snap.needs_restart.length : 0
   const restartServices = Array.isArray(snap?.needs_restart) ? snap.needs_restart : []
   const restartNeeded = !!(snap?.needs_reboot || restartServicesCount > 0)
@@ -224,6 +225,22 @@ export default function HostDetails({
           {snap && !snap.packages?.length && (
             <p className="text-xs text-emerald-500/70">✓ All packages up to date</p>
           )}
+        </div>
+      )}
+
+      {/* Deferred (phased) updates — upgradable but won't be installed by Apply yet */}
+      {snap && deferredPackages.length > 0 && (
+        <div className="rounded-lg border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900/60 px-4 py-3 space-y-2">
+          <div>
+            <p className="text-xs font-medium text-gray-600 dark:text-zinc-400">
+              {deferredPackages.length} deferred update{deferredPackages.length !== 1 ? 's' : ''}
+              {deferredPackages.every(p => p.defer_reason === 'phased') ? ' (phased)' : ''}
+            </p>
+            <p className="text-[11px] text-gray-400 dark:text-zinc-500 mt-0.5">
+              Upgradable, but held back for now — Ubuntu rolls these out gradually (phased). They'll install automatically once the rollout reaches this host; they're not counted as pending and "Apply" won't force them.
+            </p>
+          </div>
+          <PackageTable packages={deferredPackages} />
         </div>
       )}
 
