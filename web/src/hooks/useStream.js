@@ -8,10 +8,12 @@ export function useActionStream() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null)
+  const [interrupted, setInterrupted] = useState(null)
   const [streamMeta, setStreamMeta] = useState(null)
   const eventSourceRef = useRef(null)
   const doneReceivedRef = useRef(false)
   const resultReceivedRef = useRef(false)
+  const interruptedReceivedRef = useRef(false)
 
   const cleanup = useCallback(() => {
     if (eventSourceRef.current) {
@@ -27,12 +29,14 @@ export function useActionStream() {
     cleanup()
     doneReceivedRef.current = false
     resultReceivedRef.current = false
+    interruptedReceivedRef.current = false
     setOutput([])
     setPhase(null)
     setProgress(null)
     setIsStreaming(false)
     setError(null)
     setResult(null)
+    setInterrupted(null)
     setStreamMeta(null)
   }, [cleanup])
 
@@ -41,12 +45,14 @@ export function useActionStream() {
     cleanup()
     doneReceivedRef.current = false
     resultReceivedRef.current = false
+    interruptedReceivedRef.current = false
     setOutput([])
     setPhase(null)
     setProgress(null)
     setIsStreaming(true)
     setError(null)
     setResult(null)
+    setInterrupted(null)
     setStreamMeta(null)
 
     // Auth rides on the httpOnly session cookie (sent automatically by EventSource
@@ -88,6 +94,19 @@ export function useActionStream() {
       } catch {}
     })
 
+    es.addEventListener('interrupted', (e) => {
+      // Apply-only: the SSH connection dropped mid-apply (service restart or reboot).
+      // Not a failure — the caller verifies via the recovery monitor + a re-scan.
+      try {
+        const data = JSON.parse(e.data)
+        interruptedReceivedRef.current = true
+        setInterrupted(data)
+      } catch {
+        interruptedReceivedRef.current = true
+        setInterrupted({ message: 'Connection lost during apply — verifying…' })
+      }
+    })
+
     es.addEventListener('error', (e) => {
       // SSE spec "error" event from server (has e.data)
       if (e.data) {
@@ -120,11 +139,16 @@ export function useActionStream() {
         setIsStreaming(false)
         return
       }
+      // If we got an 'interrupted' event, the verify-after flow owns it — not an error.
+      if (interruptedReceivedRef.current) {
+        setIsStreaming(false)
+        return
+      }
       // Genuine connection failure
       setIsStreaming(false)
       setError(prevErr => prevErr || 'Connection to server lost')
     }
   }, [cleanup])
 
-  return { startStream, resetStream, output, phase, progress, isStreaming, error, result, streamMeta }
+  return { startStream, resetStream, output, phase, progress, isStreaming, error, result, interrupted, streamMeta }
 }

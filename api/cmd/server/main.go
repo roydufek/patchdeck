@@ -128,6 +128,7 @@ func main() {
 		pr.Get("/api/me", a.me)
 		pr.Get("/api/hosts", a.listHosts)
 		pr.Get("/api/hosts/connectivity", a.hostConnectivity)
+		pr.Get("/api/hosts/{id}/connectivity", a.hostConnectivityOne)
 		pr.Post("/api/hosts", a.createHost)
 		pr.Put("/api/hosts/{id}", a.updateHost)
 		pr.Delete("/api/hosts/{id}", a.deleteHost)
@@ -404,6 +405,31 @@ type hostConnectivityStatus struct {
 	UptimeSeconds int64 `json:"uptime_seconds,omitempty"`
 }
 
+// probeConnectivity runs one host's quick SSH reachability + uptime check and returns a
+// status row. Shared by the bulk and per-host endpoints.
+func (a *app) probeConnectivity(checker *sshx.Client, hostID string) hostConnectivityStatus {
+	res := hostConnectivityStatus{
+		HostID:      hostID,
+		CheckedAt:   time.Now().UTC().Format(time.RFC3339),
+		Source:      "ssh_quick_check",
+		TimeoutSecs: int(a.cfg.ConnectivityTimeout.Seconds()),
+	}
+	hostWithSecrets, err := db.GetHost(a.db, hostID)
+	if err != nil {
+		res.Connected = false
+		res.Error = "unable to load host secrets"
+		return res
+	}
+	if up, err := checker.CheckConnectivity(hostWithSecrets, a.secrets); err != nil {
+		res.Connected = false
+		res.Error = strings.TrimSpace(err.Error())
+	} else {
+		res.Connected = true
+		res.UptimeSeconds = up
+	}
+	return res
+}
+
 func (a *app) hostConnectivity(w http.ResponseWriter, _ *http.Request) {
 	hosts, err := db.ListHosts(a.db)
 	if err != nil {
@@ -419,39 +445,25 @@ func (a *app) hostConnectivity(w http.ResponseWriter, _ *http.Request) {
 	sem := make(chan struct{}, 6)
 	for i, host := range hosts {
 		wg.Add(1)
-		go func(i int, host models.Host) {
+		go func(i int, hostID string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-
-			res := hostConnectivityStatus{
-				HostID:      host.ID,
-				CheckedAt:   time.Now().UTC().Format(time.RFC3339),
-				Source:      "ssh_quick_check",
-				TimeoutSecs: int(quickTimeout.Seconds()),
-			}
-
-			hostWithSecrets, err := db.GetHost(a.db, host.ID)
-			if err != nil {
-				res.Connected = false
-				res.Error = "unable to load host secrets"
-				results[i] = res
-				return
-			}
-
-			if up, err := checker.CheckConnectivity(hostWithSecrets, a.secrets); err != nil {
-				res.Connected = false
-				res.Error = strings.TrimSpace(err.Error())
-			} else {
-				res.Connected = true
-				res.UptimeSeconds = up
-			}
-			results[i] = res
-		}(i, host)
+			results[i] = a.probeConnectivity(checker, hostID)
+		}(i, host.ID)
 	}
 	wg.Wait()
 
 	writeJSON(w, http.StatusOK, results)
+}
+
+// hostConnectivityOne checks a single host so the dashboard can resolve each status dot
+// independently — a slow or rebooting host no longer holds every other host's result
+// hostage behind one blocking response.
+func (a *app) hostConnectivityOne(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
+	writeJSON(w, http.StatusOK, a.probeConnectivity(checker, id))
 }
 
 func (a *app) listScans(w http.ResponseWriter, _ *http.Request) {
@@ -2285,13 +2297,26 @@ func (a *app) applyStream(w http.ResponseWriter, r *http.Request) {
 	res, err := a.sshClient.ApplyUpdatesStreaming(context.Background(), host, a.secrets, onLine)
 	if err != nil {
 		var hkErr *sshx.HostKeyError
-		if errors.As(err, &hkErr) {
+		var interrupted *sshx.ApplyInterruptedError
+		switch {
+		case errors.As(err, &hkErr):
 			sseWrite(w, flusher, "error", map[string]any{
 				"error": hkErr.Message, "code": "host_key_mismatch",
 				"expected_fingerprint":  hkErr.ExpectedFingerprint,
 				"presented_fingerprint": hkErr.PresentedFingerprint,
 			})
-		} else {
+		case errors.As(err, &interrupted):
+			// The SSH connection dropped mid-apply (service restart or reboot) — the apply
+			// almost certainly finished on the host. Don't cry FAILED; record it and tell
+			// the client to verify by awaiting recovery + re-scanning. No failure alert.
+			_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_interrupted",
+				fmt.Sprintf("Connection lost during apply (%d package(s) installed before drop) — host likely restarting/rebooting; verifying", interrupted.ChangedSoFar))
+			sseWrite(w, flusher, "interrupted", map[string]any{
+				"host_id":        host.ID,
+				"changed_so_far": interrupted.ChangedSoFar,
+				"message":        "Connection lost during apply — the host may be restarting a service or rebooting. Verifying…",
+			})
+		default:
 			if a.notificationEnabledForHostEvent(host.ID, "auto_apply_failure") {
 				_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: apply FAILED on %s (%v)", host.Name, err))
 			}

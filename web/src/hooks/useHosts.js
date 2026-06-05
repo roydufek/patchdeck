@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
+import { useQuery, useQueries, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { createAuthedFetch, apiErrorMessage } from '../api.js'
 import { loadPersistedHostActionState, HOST_ACTION_STATE_STORAGE_KEY } from '../utils/status.js'
 import { useActionStream } from './useStream.js'
@@ -86,16 +86,22 @@ export function useHosts(token, clearToken) {
       return r.json()
     },
   })
-  const connectivityQuery = useQuery({
-    queryKey: ['connectivity'],
-    enabled,
-    staleTime: Infinity,
-    placeholderData: keepPreviousData,
-    queryFn: async () => {
-      const r = await authedFetch('/hosts/connectivity')
-      if (!r.ok) throw new Error('Failed to run host connectivity checks')
-      return r.json().catch(() => [])
-    },
+  // Connectivity is checked PER HOST so each status dot resolves independently — a slow
+  // or rebooting host (which burns the full timeout) no longer blocks every other host's
+  // result behind one response. Each host owns its ['connectivity', hostId] cache entry.
+  // Not polled on an interval (it refreshes on mount, after actions, and on demand).
+  const connectivityHostIds = (hostsQuery.data ?? []).map(h => h.id)
+  const connectivityResults = useQueries({
+    queries: connectivityHostIds.map(hostId => ({
+      queryKey: ['connectivity', hostId],
+      enabled,
+      staleTime: Infinity,
+      queryFn: async () => {
+        const r = await authedFetch(`/hosts/${hostId}/connectivity`)
+        if (!r.ok) throw new Error('Failed to run host connectivity check')
+        return r.json().catch(() => null)
+      },
+    })),
   })
 
   const hosts = hostsQuery.data ?? []
@@ -108,10 +114,18 @@ export function useHosts(token, clearToken) {
     return m
   }, [scans])
 
-  // Derive the connectivity map from the single connectivity cache entry + current hosts.
+  // Derive the connectivity map from the per-host query results + current hosts. The
+  // signature keeps the memo (and the map's identity) stable across renders unless a
+  // host's connectivity actually changed.
+  const connectivityRows = connectivityResults.map(q => q.data).filter(Boolean)
+  const connectivityChecking = connectivityResults.some(q => q.isFetching)
+  const connectivitySig = connectivityRows
+    .map(r => `${r.host_id}:${r.connected}:${r.uptime_seconds || 0}:${r.error || ''}`)
+    .join('|')
   const connectivityByHost = useMemo(
-    () => buildConnectivityMap(hosts, connectivityQuery.data || []),
-    [hosts, connectivityQuery.data]
+    () => buildConnectivityMap(hosts, connectivityRows),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [hosts, connectivitySig]
   )
 
   // Surface query load failures as the banner error, and clear that banner once the
@@ -143,26 +157,24 @@ export function useHosts(token, clearToken) {
     })
   }, [hosts, token])
 
-  // Optimistically upsert a single host's connectivity into the connectivity cache.
+  // Optimistically upsert a single host's connectivity into its per-host cache entry.
   const setHostConnectivityState = useCallback((hostId, connected, errMsg = '') => {
-    queryClient.setQueryData(['connectivity'], (old) => {
-      const rows = (Array.isArray(old) ? old : []).filter(r => r && r.host_id !== hostId)
-      rows.push({
-        host_id: hostId,
-        connected,
-        checked_at: new Date().toISOString(),
-        error: connected ? '' : (errMsg || 'Host action reported a connectivity failure.'),
-      })
-      return rows
+    queryClient.setQueryData(['connectivity', hostId], {
+      host_id: hostId,
+      connected,
+      checked_at: new Date().toISOString(),
+      error: connected ? '' : (errMsg || 'Host action reported a connectivity failure.'),
     })
   }, [queryClient])
 
+  // Refetch connectivity for one host (['connectivity', id]) or, with no id, all hosts
+  // (the ['connectivity'] prefix matches every per-host query).
   const refreshConnectivity = useCallback(async (hostId = '') => {
     if (!enabled) return
     const busyKey = hostId ? `${hostId}:connectivity` : 'connectivity:all'
     setActionBusy(prev => ({ ...prev, [busyKey]: true }))
     try {
-      await queryClient.refetchQueries({ queryKey: ['connectivity'] })
+      await queryClient.refetchQueries({ queryKey: hostId ? ['connectivity', hostId] : ['connectivity'] })
     } catch (err) {
       console.warn('Connectivity refresh failed', err)
     } finally {
@@ -504,6 +516,19 @@ export function useHosts(token, clearToken) {
           if (tokenRef.current) hostActionStream(hostId, 'scan')
         }, 2000)
       }
+    } else if (stream.interrupted) {
+      // Apply's SSH connection dropped mid-run (a service restart or a reboot) — NOT a
+      // failure. Record it as "verifying" and let the recovery monitor confirm the host
+      // comes back, then re-scan (handled by the recovery-outcome effect below).
+      const changed = Number.isFinite(stream.interrupted.changed_so_far) ? stream.interrupted.changed_so_far : null
+      const summary = `Apply interrupted — host restarting${changed === null ? '' : ` after ${changed} package(s)`}; verifying…`
+      setHostActionError(prev => ({ ...prev, [hostId]: '' }))
+      setHostActionState(prev => {
+        const existing = prev[hostId] || {}
+        const nextAction = { mode, ok: true, summary, at: actionAt }
+        return { ...prev, [hostId]: { ...existing, [mode]: nextAction, latest: nextAction } }
+      })
+      if (tokenRef.current) recoveryMonitor.startMonitor(hostId, tokenRef.current, 180)
     } else if (stream.error) {
       const msg = stream.error
       setHostActionError(prev => ({ ...prev, [hostId]: msg }))
@@ -516,7 +541,7 @@ export function useHosts(token, clearToken) {
 
     setActionBusy(prev => ({ ...prev, [key]: false }))
     refreshConnectivity(hostId)
-  }, [stream.isStreaming, stream.result, stream.error, streamHostId, streamMode, loadData, refreshConnectivity, setHostConnectivityState, hostActionStream, scheduleFollowup])
+  }, [stream.isStreaming, stream.result, stream.error, stream.interrupted, streamHostId, streamMode, loadData, refreshConnectivity, setHostConnectivityState, hostActionStream, scheduleFollowup, recoveryMonitor])
 
   const closeStream = useCallback(() => {
     stream.resetStream()
@@ -593,7 +618,7 @@ export function useHosts(token, clearToken) {
     hosts, scans, scanByHost, loading, error, setError,
     actionBusy, setActionBusy, hostActionError, hostActionState,
     connectivityByHost,
-    connectivityChecking: connectivityQuery.isFetching,
+    connectivityChecking,
     hostKeyAuditByHost,
     loadData, hostAction, deleteHost, createHost,
     refreshConnectivity, updateHostOps, updateHostKeyPolicy,
@@ -609,6 +634,7 @@ export function useHosts(token, clearToken) {
     streamIsStreaming: stream.isStreaming,
     streamError: stream.error,
     streamResult: stream.result,
+    streamInterrupted: stream.interrupted,
     streamMeta: stream.streamMeta,
     // Recovery monitor
     recoveryMonitor,

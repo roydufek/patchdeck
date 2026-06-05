@@ -251,6 +251,7 @@ function AppInner() {
             streamIsStreaming={hostsHook.streamIsStreaming}
             streamError={hostsHook.streamError}
             streamResult={hostsHook.streamResult}
+            streamInterrupted={hostsHook.streamInterrupted}
             recoveryMonitor={hostsHook.recoveryMonitor}
             postApplyPrompt={hostsHook.postApplyPrompt}
             onDismissPostApplyPrompt={hostsHook.dismissPostApplyPrompt}

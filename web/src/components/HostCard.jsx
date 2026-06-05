@@ -200,7 +200,7 @@ function ScanAgeBadge({ scan }) {
   )
 }
 
-function StreamPanel({ host, mode, output, phase, progress, isStreaming, error, result, onClose }) {
+function StreamPanel({ host, mode, output, phase, progress, isStreaming, error, result, interrupted, onClose }) {
   const scrollRef = useRef(null)
   const userScrolledRef = useRef(false)
 
@@ -222,6 +222,8 @@ function StreamPanel({ host, mode, output, phase, progress, isStreaming, error, 
 
   const finished = !isStreaming
   const failed = !!error
+  // A mid-apply connection drop (host restarting/rebooting) — not a failure; verify-after.
+  const wasInterrupted = finished && !!interrupted && !error && !result
   const succeeded = finished && result && !error
 
   // Determine status text
@@ -236,6 +238,8 @@ function StreamPanel({ host, mode, output, phase, progress, isStreaming, error, 
       const changed = typeof result.changed_packages === 'number' ? result.changed_packages : 0
       statusText = `Apply complete · ${changed} package${changed !== 1 ? 's' : ''} updated`
     }
+  } else if (wasInterrupted) {
+    statusText = interrupted.message || 'Connection lost during apply — verifying host…'
   } else if (failed) {
     statusText = `${mode === 'scan' ? 'Scan' : 'Apply'} failed`
   }
@@ -256,8 +260,14 @@ function StreamPanel({ host, mode, output, phase, progress, isStreaming, error, 
             </span>
           )}
           {succeeded && <span className="text-emerald-500 dark:text-emerald-400 flex-shrink-0">✓</span>}
+          {wasInterrupted && (
+            <span className="relative flex h-2 w-2 flex-shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
+            </span>
+          )}
           {failed && <span className="text-red-500 dark:text-red-400 flex-shrink-0">✗</span>}
-          <span className={`text-xs truncate ${succeeded ? 'text-emerald-600 dark:text-emerald-400' : failed ? 'text-red-600 dark:text-red-400' : 'text-gray-700 dark:text-zinc-300'}`}>
+          <span className={`text-xs truncate ${succeeded ? 'text-emerald-600 dark:text-emerald-400' : wasInterrupted ? 'text-amber-600 dark:text-amber-400' : failed ? 'text-red-600 dark:text-red-400' : 'text-gray-700 dark:text-zinc-300'}`}>
             {statusText}
           </span>
         </div>
@@ -333,7 +343,7 @@ export default function HostCard({
   onRestartServices, onReboot, onShutdown,
   // Streaming props
   streamActive, streamMode: sMode, streamOutput, streamPhase, streamProgress,
-  streamIsStreaming, streamError, streamResult, onCloseStream,
+  streamIsStreaming, streamError, streamResult, streamInterrupted, onCloseStream,
   // Recovery monitor
   recoveryMonitor,
   // Post-apply prompt
@@ -740,7 +750,7 @@ export default function HostCard({
       />
 
       {/* Stream panel */}
-      {streamActive && (streamIsStreaming || streamOutput.length > 0 || streamError || streamResult) && (
+      {streamActive && (streamIsStreaming || streamOutput.length > 0 || streamError || streamResult || streamInterrupted) && (
         <StreamPanel
           host={h}
           mode={sMode}
@@ -750,6 +760,7 @@ export default function HostCard({
           isStreaming={streamIsStreaming}
           error={streamError}
           result={streamResult}
+          interrupted={streamInterrupted}
           onClose={onCloseStream}
         />
       )}

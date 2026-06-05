@@ -357,6 +357,16 @@ func (e *Engine) runApply(j models.Job, host models.Host) bool {
 			_ = db.RecordActivity(e.db, host.ID, host.Name, "apply_fail", "Scheduled apply blocked: SSH host key mismatch")
 			return false
 		}
+		var interrupted *sshx.ApplyInterruptedError
+		if errors.As(err, &interrupted) {
+			// Connection dropped mid-apply (service restart or reboot) — the apply almost
+			// certainly completed. Don't send a FAILED alert; the next scheduled scan will
+			// reconcile the host's real state.
+			_ = db.RecordActivity(e.db, host.ID, host.Name, "apply_interrupted",
+				fmt.Sprintf("Scheduled apply: connection lost (%d package(s) installed) — host likely rebooting; will reconcile on next scan", interrupted.ChangedSoFar))
+			log.Printf("scheduler: job=%s apply host=%s interrupted (connection lost, %d changed): %v", j.ID, host.Name, interrupted.ChangedSoFar, err)
+			return true
+		}
 		e.sendNotification(host.ID, "auto_apply_failure", fmt.Sprintf("Patchdeck scheduled apply FAILED: %s (%v)", host.Name, err))
 		_ = db.RecordActivity(e.db, host.ID, host.Name, "apply_fail", fmt.Sprintf("Scheduled apply failed: %v", err))
 		log.Printf("scheduler: job=%s apply host=%s failed: %v", j.ID, host.Name, err)

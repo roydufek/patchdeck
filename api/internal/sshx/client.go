@@ -325,6 +325,13 @@ func (c *Client) ScanHost(host models.Host, seal *crypto.SealBox) (models.ScanRe
 func (c *Client) ApplyUpdates(host models.Host, seal *crypto.SealBox) (models.ApplyResult, error) {
 	raw, err := c.runPrivileged(context.Background(), host, seal, applyCmd)
 	if err != nil {
+		if errors.Is(err, ErrConnectionLost) {
+			return models.ApplyResult{}, &ApplyInterruptedError{
+				Underlying:   err,
+				ChangedSoFar: strings.Count(raw, "Setting up "),
+				DpkgStarted:  strings.Contains(raw, "Unpacking ") || strings.Contains(raw, "Setting up "),
+			}
+		}
 		return models.ApplyResult{}, err
 	}
 	// Count only "Setting up" — each package prints both "Unpacking" and "Setting up",
@@ -395,6 +402,11 @@ func (c *Client) runPrivileged(ctx context.Context, host models.Host, seal *cryp
 
 	if out, err := c.run(ctx, host, seal, "sudo -n "+rootCmd); err == nil {
 		return out, nil
+	} else if errors.Is(err, ErrConnectionLost) {
+		// The connection dropped while the privileged command was already running — do
+		// NOT fall through to another escalation method (that would re-run it). Surface
+		// the loss so apply can verify-after.
+		return out, err
 	}
 
 	sudoPass := strings.TrimSpace(sec.SudoPassword)
@@ -406,6 +418,8 @@ func (c *Client) runPrivileged(ctx context.Context, host models.Host, seal *cryp
 	// line (where it'd be visible to ps/auditd on the remote host for the run window).
 	if out, err := c.runWithStdin(ctx, host, seal, "sudo -S -p '' "+rootCmd, strings.NewReader(sudoPass+"\n")); err == nil {
 		return out, nil
+	} else if errors.Is(err, ErrConnectionLost) {
+		return out, err
 	}
 
 	suFallback := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote(rootCmd))
@@ -490,16 +504,77 @@ func (c *Client) runWithStdin(ctx context.Context, host models.Host, seal *crypt
 	if runErr != nil {
 		// Errors usually land on stderr — prefer it for the human-facing snippet,
 		// then fall back to stdout, then the raw error.
+		var built error
 		if snippet := lastLines(errBuf.String(), 3); snippet != "" {
-			return out, fmt.Errorf("%s", snippet)
+			built = fmt.Errorf("%s", snippet)
+		} else if snippet := lastLines(out, 3); snippet != "" {
+			built = fmt.Errorf("%s", snippet)
+		} else {
+			built = runErr
 		}
-		if snippet := lastLines(out, 3); snippet != "" {
-			return out, fmt.Errorf("%s", snippet)
+		// Preserve a connection-loss signal so apply can verify-after instead of hard-failing.
+		if isConnectionLost(runErr) {
+			return out, fmt.Errorf("%w: %v", ErrConnectionLost, built)
 		}
-		return out, runErr
+		return out, built
 	}
 	return out, nil
 }
+
+// ErrConnectionLost marks an error where the SSH connection dropped mid-command —
+// e.g. a package post-install restarted sshd/networking, or the host rebooted — as
+// distinct from the remote command exiting non-zero. Callers detect it via errors.Is
+// to verify-after rather than report a hard failure.
+var ErrConnectionLost = errors.New("ssh connection lost mid-command")
+
+// isConnectionLost reports whether a sess.Wait/Run error reflects the channel/transport
+// dropping (host reboot or service restart) rather than a clean non-zero exit. A clean
+// non-zero exit (apt told us it failed) must NOT be classified as a connection loss.
+func isConnectionLost(err error) bool {
+	if err == nil {
+		return false
+	}
+	// A real, clean non-zero exit code from the remote command is a genuine failure.
+	var exitErr *ssh.ExitError
+	if errors.As(err, &exitErr) {
+		return false
+	}
+	// Channel closed before an exit status arrived — the classic reboot/sshd-restart signal.
+	var missing *ssh.ExitMissingError
+	if errors.As(err, &missing) {
+		return true
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	msg := err.Error()
+	for _, s := range []string{
+		"remote command exited without", "use of closed network connection",
+		"connection reset", "broken pipe", "connection lost", "unexpected EOF", "EOF",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// ApplyInterruptedError signals the SSH connection dropped mid-apply (a package
+// post-install restarted sshd/networking, or the host rebooted) — most likely AFTER
+// dpkg had begun installing. The apply almost certainly completed on the host, so
+// callers should verify by awaiting recovery and re-scanning rather than reporting a
+// hard failure (which would be a false alarm).
+type ApplyInterruptedError struct {
+	Underlying   error
+	ChangedSoFar int
+	DpkgStarted  bool
+}
+
+func (e *ApplyInterruptedError) Error() string {
+	return fmt.Sprintf("connection lost during apply after %d package(s) began installing (host likely restarting a service or rebooting): %v", e.ChangedSoFar, e.Underlying)
+}
+
+func (e *ApplyInterruptedError) Unwrap() error { return e.Underlying }
 
 // runWithDeadline runs fn (sess.Run or sess.Wait) but aborts after c.execTimeout
 // by closing the underlying connection — the only reliable way to unblock an SSH
@@ -663,13 +738,19 @@ func (c *Client) runStreamingWithStdin(ctx context.Context, host models.Host, se
 
 	out := strings.TrimSpace(accumulated.String())
 	if waitErr != nil {
+		var built error
 		if snippet := lastLines(stderrTail.String(), 3); snippet != "" {
-			return out, fmt.Errorf("%s", snippet)
+			built = fmt.Errorf("%s", snippet)
+		} else if snippet := lastLines(out, 3); snippet != "" {
+			built = fmt.Errorf("%s", snippet)
+		} else {
+			built = waitErr
 		}
-		if snippet := lastLines(out, 3); snippet != "" {
-			return out, fmt.Errorf("%s", snippet)
+		// Preserve a connection-loss signal so apply can verify-after instead of hard-failing.
+		if isConnectionLost(waitErr) {
+			return out, fmt.Errorf("%w: %v", ErrConnectionLost, built)
 		}
-		return out, waitErr
+		return out, built
 	}
 	return out, nil
 }
@@ -698,6 +779,9 @@ func (c *Client) runPrivilegedStreaming(ctx context.Context, host models.Host, s
 	// Password to `sudo -S` via stdin, not the command line (ps/audit exposure).
 	if out, err := c.runStreamingWithStdin(ctx, host, seal, "sudo -S -p '' "+rootCmd, onLine, strings.NewReader(sudoPass+"\n")); err == nil {
 		return out, nil
+	} else if errors.Is(err, ErrConnectionLost) {
+		// Connection dropped mid-run — don't fall through to su (it would re-run apply).
+		return out, err
 	}
 
 	suFallback := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote(rootCmd))
@@ -722,6 +806,13 @@ func (c *Client) ScanHostStreaming(ctx context.Context, host models.Host, seal *
 func (c *Client) ApplyUpdatesStreaming(ctx context.Context, host models.Host, seal *crypto.SealBox, onLine func(line string)) (models.ApplyResult, error) {
 	raw, err := c.runPrivilegedStreaming(ctx, host, seal, applyCmd, onLine)
 	if err != nil {
+		if errors.Is(err, ErrConnectionLost) {
+			return models.ApplyResult{}, &ApplyInterruptedError{
+				Underlying:   err,
+				ChangedSoFar: strings.Count(raw, "Setting up "),
+				DpkgStarted:  strings.Contains(raw, "Unpacking ") || strings.Contains(raw, "Setting up "),
+			}
+		}
 		return models.ApplyResult{}, err
 	}
 	// Count only "Setting up" — each package prints both "Unpacking" and "Setting up",

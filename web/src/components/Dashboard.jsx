@@ -62,7 +62,7 @@ export default function Dashboard({
   // Streaming props
   onScanStream, onApplyStream, onCloseStream,
   streamHostId, streamMode, streamOutput, streamPhase, streamProgress,
-  streamIsStreaming, streamError, streamResult,
+  streamIsStreaming, streamError, streamResult, streamInterrupted,
   // Recovery monitor
   recoveryMonitor,
   // Post-apply prompt
@@ -583,6 +583,7 @@ export default function Dashboard({
               streamIsStreaming={streamHostId === h.id ? streamIsStreaming : false}
               streamError={streamHostId === h.id ? streamError : null}
               streamResult={streamHostId === h.id ? streamResult : null}
+              streamInterrupted={streamHostId === h.id ? streamInterrupted : null}
               onCloseStream={onCloseStream}
               recoveryMonitor={recoveryMonitor}
               postApplyPrompt={postApplyPrompt}
