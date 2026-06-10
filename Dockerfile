@@ -24,8 +24,11 @@ FROM alpine:3.22
 WORKDIR /app
 
 # ca-certificates: outbound HTTPS for notifications. su-exec: privilege drop in the
-# entrypoint. The patchdeck user is created here; the entrypoint adjusts UID/GID at runtime.
-RUN apk add --no-cache ca-certificates su-exec \
+# entrypoint. `apk upgrade` pulls the latest patched base packages (e.g. libcrypto3) so a
+# stale base-image snapshot can't carry a fixable CVE past the CI security gate.
+# The patchdeck user is created here; the entrypoint adjusts UID/GID at runtime.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates su-exec \
     && addgroup -g 1000 patchdeck \
     && adduser -D -H -u 1000 -G patchdeck patchdeck \
     && mkdir -p /data && chown patchdeck:patchdeck /data
