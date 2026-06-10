@@ -13,9 +13,8 @@ services:
       #PATCHDECK_DB_PATH: /data/patchdeck.db            # default, optional
       #PATCHDECK_SSH_TIMEOUT_SECONDS: 20                 # default, optional
       #REGISTRATION_ENABLED: true                        # default, optional
-      #PATCHDECK_APPRISE_TIMEOUT_SECONDS: 10             # default, optional
-      #PATCHDECK_APPRISE_BIN: /usr/local/bin/apprise     # default, optional — override only if apprise binary is not in bin
-      #PATCHDECK_APPRISE_URL: tgram://bot_token/chat_id  # optional
+      #PATCHDECK_APPRISE_TIMEOUT_SECONDS: 10             # default, optional — notification delivery timeout
+      #PATCHDECK_APPRISE_URL: gotifys://gotify.example.com/TOKEN   # optional — default notification destination
       #PATCHDECK_TLS: true                              # default, set false if behind a reverse proxy
       #PATCHDECK_TLS_CERT: /data/tls/cert.pem           # default, optional — path to custom TLS certificate
       #PATCHDECK_TLS_KEY: /data/tls/key.pem             # default, optional — path to custom TLS key

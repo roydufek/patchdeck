@@ -86,13 +86,8 @@ func main() {
 	}
 
 	sshClient := sshx.NewClient(cfg.SSHTimeout, cfg.ExecTimeout, nil)
-	notifier := notify.NewDispatcher(cfg.AppriseBinPath, cfg.AppriseTimeout)
-	notifierRuntime := notifier.RuntimeInfo()
-	if notifierRuntime.Available {
-		log.Printf("notifications: apprise runtime ready (%s %s)", notifierRuntime.BinPath, notifierRuntime.Version)
-	} else {
-		log.Printf("notifications: apprise runtime unavailable (%s): %s", notifierRuntime.BinPath, notifierRuntime.Error)
-	}
+	notifier := notify.NewDispatcher(cfg.AppriseTimeout)
+	log.Printf("notifications: native dispatcher ready (schemes: %s)", strings.Join(notify.SupportedSchemes, ", "))
 
 	a := &app{
 		cfg:       cfg,
@@ -1198,20 +1193,6 @@ func (a *app) getNotificationRuntime(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, a.notifier.RuntimeInfo())
 }
 
-func (a *app) ensureNotifierAvailableForTarget(target string) error {
-	if strings.TrimSpace(target) == "" {
-		return nil
-	}
-	runtime := a.notifier.RuntimeInfo()
-	if runtime.Available {
-		return nil
-	}
-	if runtime.Error == "" {
-		return fmt.Errorf("apprise runtime unavailable at %s", runtime.BinPath)
-	}
-	return fmt.Errorf("apprise runtime unavailable at %s: %s", runtime.BinPath, runtime.Error)
-}
-
 func (a *app) putNotificationSettings(w http.ResponseWriter, r *http.Request) {
 	var req models.NotificationSettings
 	if !decodeJSON(w, r, &req) {
@@ -1219,10 +1200,6 @@ func (a *app) putNotificationSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if errMsg := validateAppriseTarget(req.AppriseURL, true); errMsg != "" {
 		writeJSON(w, 400, map[string]string{"error": errMsg})
-		return
-	}
-	if err := a.ensureNotifierAvailableForTarget(req.AppriseURL); err != nil {
-		writeJSON(w, 409, map[string]string{"error": err.Error()})
 		return
 	}
 	if err := db.UpsertNotificationSettings(a.db, req); err != nil {
@@ -1247,13 +1224,10 @@ func (a *app) testNotificationSettings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": errMsg})
 		return
 	}
-	if err := a.ensureNotifierAvailableForTarget(target); err != nil {
-		writeJSON(w, 409, map[string]string{"error": err.Error()})
-		return
-	}
 	body := fmt.Sprintf("Patchdeck notification test from %s", time.Now().UTC().Format(time.RFC3339))
 	if err := a.notifier.Send(target, body); err != nil {
-		writeJSON(w, 502, map[string]string{"error": "Test notification failed to send — check your Apprise URL"})
+		// err is scrubbed of any URL/credentials by the dispatcher.
+		writeJSON(w, 502, map[string]string{"error": "Test notification failed: " + err.Error()})
 		return
 	}
 	writeJSON(w, 200, map[string]string{"message": "test notification sent"})
@@ -1443,13 +1417,14 @@ func validateAppriseTarget(raw string, allowEmpty bool) string {
 		return "apprise_url must not contain whitespace"
 	}
 	if strings.ContainsAny(value, ",;") {
-		return "apprise_url must be a single destination URL for now"
-	}
-	if strings.HasPrefix(strings.ToLower(value), "mailto:") {
-		return ""
+		return "apprise_url must be a single destination URL"
 	}
 	if !strings.Contains(value, "://") {
-		return "apprise_url must look like an Apprise target URL (example: gotify://, discord://, mailto://)"
+		return "apprise_url must look like a notification URL (example: gotify://, ntfy://, discord://, mailto://)"
+	}
+	scheme := notify.SchemeOf(value)
+	if !notify.SchemeSupported(scheme) {
+		return fmt.Sprintf("unsupported notification scheme %q — supported: %s", scheme, strings.Join(notify.SupportedSchemes, ", "))
 	}
 	return ""
 }

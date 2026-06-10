@@ -119,9 +119,10 @@ func TestValidateAppriseTarget(t *testing.T) {
 		{name: "required when empty", raw: "", allowEmpty: false, want: "apprise_url is required"},
 		{name: "allow empty", raw: "", allowEmpty: true, want: ""},
 		{name: "reject whitespace", raw: "gotify://token host", want: "apprise_url must not contain whitespace"},
-		{name: "reject multiple delimiters", raw: "gotify://a,discord://b", want: "apprise_url must be a single destination URL for now"},
-		{name: "accept mailto", raw: "mailto:ops@example.com", want: ""},
-		{name: "reject missing scheme", raw: "discord.com/webhook", want: "apprise_url must look like an Apprise target URL (example: gotify://, discord://, mailto://)"},
+		{name: "reject multiple delimiters", raw: "gotify://a,discord://b", want: "apprise_url must be a single destination URL"},
+		{name: "accept mailto", raw: "mailto://ops:pw@smtp.example.com/?to=x@example.com", want: ""},
+		{name: "reject missing scheme", raw: "discord.com/webhook", want: "apprise_url must look like a notification URL (example: gotify://, ntfy://, discord://, mailto://)"},
+		{name: "reject unsupported scheme", raw: "twilio://sid/tok", want: "unsupported notification scheme \"twilio\" — supported: gotify, gotifys, ntfy, ntfys, discord, tgram, telegram, slack, pover, pushover, mailto, mailtos, json, jsons, form, forms"},
 		{name: "accept scheme", raw: "discord://webhook-id/token", want: ""},
 	}
 

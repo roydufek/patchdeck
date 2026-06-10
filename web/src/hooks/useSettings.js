@@ -10,10 +10,10 @@ export function useSettings(token, clearToken) {
     scan_failure: true
   })
   const [notificationRuntime, setNotificationRuntime] = useState({
-    available: false,
-    bin_path: 'apprise',
-    version: '',
-    error: ''
+    available: true,
+    engine: 'native',
+    version: 'native',
+    supported_schemes: []
   })
   const [settingsBusy, setSettingsBusy] = useState(false)
   const [error, setError] = useState('')
@@ -46,10 +46,10 @@ export function useSettings(token, clearToken) {
       const notif = await notifResp.json()
       const runtime = await notifRuntimeResp.json()
       setNotificationRuntime({
-        available: !!runtime.available,
-        bin_path: runtime.bin_path || 'apprise',
-        version: runtime.version || '',
-        error: runtime.error || ''
+        available: runtime.available !== false,
+        engine: runtime.engine || 'native',
+        version: runtime.version || 'native',
+        supported_schemes: Array.isArray(runtime.supported_schemes) ? runtime.supported_schemes : []
       })
       setNotificationSettings({
         apprise_url: notif.apprise_url || '',
@@ -99,9 +99,8 @@ export function useSettings(token, clearToken) {
     setSettingsBusy(true)
     setError('')
     try {
-      if (!notificationRuntime.available) {
-        throw new Error(`Notifications runtime unavailable: ${notificationRuntime.error || 'Apprise is not ready on this host.'}`)
-      }
+      // Native delivery is always available; the backend validates the URL scheme and the
+      // test response surfaces any actual send error.
       const resp = await authedFetch('/settings/notifications/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -18,13 +18,14 @@ COPY api ./api
 RUN cd api && CGO_ENABLED=0 go build -ldflags='-s -w' -o /out/patchdeck ./cmd/server
 
 # --- Final runtime image ---
-FROM python:3.12-alpine
+# Plain Alpine — no python/Apprise. Notifications are delivered natively by the Go
+# binary, so the runtime carries no interpreter (and none of its CVE surface).
+FROM alpine:3.22
 WORKDIR /app
 
-# su-exec for privilege drop; create default user (entrypoint adjusts UID/GID at runtime)
+# ca-certificates: outbound HTTPS for notifications. su-exec: privilege drop in the
+# entrypoint. The patchdeck user is created here; the entrypoint adjusts UID/GID at runtime.
 RUN apk add --no-cache ca-certificates su-exec \
-    && pip install --no-cache-dir apprise \
-    && apprise --version \
     && addgroup -g 1000 patchdeck \
     && adduser -D -H -u 1000 -G patchdeck patchdeck \
     && mkdir -p /data && chown patchdeck:patchdeck /data

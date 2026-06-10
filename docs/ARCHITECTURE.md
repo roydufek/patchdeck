@@ -4,7 +4,7 @@
 - **web**: React SPA for host management, scan/apply actions, schedules, audit views.
 - **api**: Go REST API handling auth, host inventory, encrypted credentials, SSH execution, scheduler.
 - **sqlite**: embedded via file volume.
-- **apprise CLI (inside api runtime image)**: direct URI notifications (`gotify://`, `discord://`, `mailto://`, etc.) without a separate relay service.
+- **native notifier (in the Go binary)**: direct URI notifications (`gotify://`, `ntfy://`, `discord://`, `mailto://`, etc.) over HTTP(S)/SMTP — no python/Apprise CLI or separate relay service.
 
 ## Data flow
 1. Admin logs in with username/password + TOTP.
@@ -12,7 +12,7 @@
 3. Host credentials are encrypted before DB write.
 4. Scan/apply request decrypts host secrets in memory only.
 5. SSH command executes remotely and output is parsed + persisted.
-6. Notification events execute via bundled Apprise CLI to the configured destination URL.
+6. Notification events are delivered natively in Go (HTTP/SMTP) to the configured destination URL.
 
 ## Command model (Debian/Ubuntu)
 - Scan:

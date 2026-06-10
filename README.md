@@ -34,7 +34,7 @@ Built for homelabbers, sysadmins, and small teams who want visibility without en
 - **Scheduled maintenance** — cron-based schedules with multi-host and tag-group targeting, plus per-job run history (last/next run, per-host outcomes)
 - **Host tagging & grouping** — organize hosts by environment, role, or location
 - **Activity audit log** — full timeline of scans, applies, reboots, and config changes with configurable retention and CSV export
-- **Notifications** — Apprise-powered alerts to Gotify, Telegram, Discord, email, and [80+ services](https://github.com/caronc/apprise)
+- **Notifications** — native (no external dependency) alerts to Gotify, ntfy, Discord, Telegram, Slack, Pushover, email (SMTP), and generic webhooks
 - **SSH host key verification** — TOFU + manual pinning with full audit trail
 - **API tokens** — programmatic access with `Bearer` auth
 - **Dark & light themes** — system preference detection with manual toggle
@@ -137,9 +137,8 @@ services:
       #PATCHDECK_SSH_TIMEOUT_SECONDS: 20                   # default, optional — SSH dial timeout
       #PATCHDECK_EXEC_TIMEOUT_SECONDS: 600                 # default, optional — max wall-clock for a remote command
       #PATCHDECK_CONNECTIVITY_TIMEOUT_SECONDS: 15          # default, optional — live connectivity-check timeout
-      #PATCHDECK_APPRISE_TIMEOUT_SECONDS: 10               # default, optional
-      #PATCHDECK_APPRISE_BIN: /usr/local/bin/apprise       # default, optional — override only if apprise binary is not in bin
-      #PATCHDECK_APPRISE_URL: tgram://bot_token/chat_id    # optional
+      #PATCHDECK_APPRISE_TIMEOUT_SECONDS: 10               # default, optional — notification delivery timeout
+      #PATCHDECK_APPRISE_URL: gotifys://gotify.example.com/TOKEN    # optional — default notification destination
     volumes:
       - ./data:/data
 ```
@@ -178,7 +177,7 @@ docker compose up -d --build
 |-----------|-----------|
 | Backend | Go 1.25 (Chi router + pure-Go SQLite, WAL) |
 | Frontend | React 18 + Vite + Tailwind CSS + TanStack Query |
-| Notifications | Apprise CLI (bundled in image) |
+| Notifications | Native Go (no python/Apprise dependency) |
 | Deployment | Docker Compose (single container) |
 
 ## Configuration
@@ -194,9 +193,8 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` is r
 | `PATCHDECK_SSH_TIMEOUT_SECONDS` | | `20` | SSH dial/handshake timeout |
 | `PATCHDECK_EXEC_TIMEOUT_SECONDS` | | `600` | Max wall-clock for a single remote command (scan/apply) |
 | `PATCHDECK_CONNECTIVITY_TIMEOUT_SECONDS` | | `15` | Timeout for the live dashboard connectivity check |
-| `PATCHDECK_APPRISE_TIMEOUT_SECONDS` | | `10` | Notification delivery timeout |
-| `PATCHDECK_APPRISE_BIN` | | `apprise` | Path to apprise binary (bundled in image) |
-| `PATCHDECK_APPRISE_URL` | | — | Default Apprise destination URL |
+| `PATCHDECK_APPRISE_TIMEOUT_SECONDS` | | `10` | Notification delivery (HTTP/SMTP) timeout |
+| `PATCHDECK_APPRISE_URL` | | — | Default notification destination URL (see [Notifications](#notifications)) |
 | `PATCHDECK_TLS` | | `true` | Enable HTTPS with auto-generated self-signed cert; set `false` if behind a reverse proxy |
 | `PATCHDECK_TLS_CERT` | | `/data/tls/cert.pem` | Path to TLS certificate (auto-generated if missing) |
 | `PATCHDECK_TLS_KEY` | | `/data/tls/key.pem` | Path to TLS private key (auto-generated if missing) |
@@ -214,7 +212,7 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` is r
 │  │ Go API server  │  │
 │  │ + static SPA   │  │
 │  │ + SQLite       │  │
-│  │ + Apprise CLI  │  │
+│  │ + Notifications│  │
 │  │ + Scheduler    │  │
 │  └───────┬───────┘  │
 └──────────┼──────────┘
@@ -237,6 +235,23 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` is r
 - **Rate limiting** — 30-second per-host cooldown on scan/apply
 - **Audit trail** — all operations logged with retention policy
 - **HTTPS by default** — auto-generated self-signed TLS; supports user-provided certificates
+
+## Notifications
+
+Patchdeck delivers alerts (updates available, apply success/failure, scan failure) **natively in Go** — there is no python or Apprise dependency in the image. Configure a single destination URL in **Settings → Notifications** (or via `PATCHDECK_APPRISE_URL`). URLs follow the familiar Apprise-style scheme, so most existing URLs keep working.
+
+| Service | URL format | Notes |
+|---------|-----------|-------|
+| **Gotify** | `gotifys://host/TOKEN` | `gotify://` = http, `gotifys://` = https. `?priority=N` optional |
+| **ntfy** | `ntfys://host/topic` or `ntfy://topic` | topic-only uses ntfy.sh. `user:pass@` or `?token=` for auth |
+| **Discord** | `discord://webhook_id/webhook_token` | from a Discord channel webhook URL |
+| **Telegram** | `tgram://bot_token/chat_id` | one chat id per URL |
+| **Slack** | `slack://TokenA/TokenB/TokenC[/channel]` | incoming-webhook tokens |
+| **Pushover** | `pover://user_key@app_token` | `?priority=N` optional |
+| **Email (SMTP)** | `mailtos://user:pass@smtp.host[:port]/?to=you@example.com` | `mailtos://` = TLS (port 465), `mailto://` = STARTTLS (587). `&from=` / `&name=` optional. Explicit SMTP host required |
+| **Webhook** | `jsons://host/path` or `forms://host/path` | `json*` posts JSON `{title,message,…}`, `form*` posts form data; extra query params are passed through |
+
+> The supported schemes are also listed in **Settings → Notifications**. One destination per instance — use your notification backend (e.g. an ntfy topic or a webhook) for fan-out to multiple recipients. Use **Send test** to verify a URL before saving.
 
 ## API
 

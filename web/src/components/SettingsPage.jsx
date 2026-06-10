@@ -85,14 +85,14 @@ export default function SettingsPage({
       </div>
 
       <form className="space-y-6" onSubmit={handleSave}>
-        {/* Apprise destination */}
+        {/* Notification destination */}
         <div className="rounded-xl border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900/40 p-5 space-y-4">
           <div>
             <label className="block text-xs text-gray-500 dark:text-zinc-500 font-medium uppercase tracking-wider mb-2">Notification destination</label>
             <div className="flex gap-3 flex-wrap">
               <input
                 className="flex-1 min-w-0 rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800/50 px-3 py-2.5 text-sm text-gray-800 dark:text-zinc-100 placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
-                placeholder="Apprise URL (gotify://, discord://, mailto://, etc)"
+                placeholder="Notification URL (gotify://, ntfy://, discord://, mailto://, etc)"
                 value={notificationSettings.apprise_url || ''}
                 onChange={e => setNotificationSettings(s => ({ ...s, apprise_url: e.target.value }))}
               />
@@ -115,12 +115,8 @@ export default function SettingsPage({
           </div>
 
           <div className="text-xs text-gray-500 dark:text-zinc-500">
-            {notificationRuntime.available ? (
-              <p>Apprise CLI ready at <span className="font-mono text-gray-600 dark:text-zinc-400">{notificationRuntime.bin_path}</span>{notificationRuntime.version ? ` · ${notificationRuntime.version}` : ''}</p>
-            ) : (
-              <p className="text-red-500 dark:text-red-400">Apprise CLI unavailable at <span className="font-mono">{notificationRuntime.bin_path}</span>{notificationRuntime.error ? ` · ${notificationRuntime.error}` : ''}</p>
-            )}
-            <p className="mt-1 text-gray-400 dark:text-zinc-600">One destination URL per instance during alpha. Use your notification backend for fan-out.</p>
+            <p>Native delivery — no external dependency.{Array.isArray(notificationRuntime.supported_schemes) && notificationRuntime.supported_schemes.length > 0 ? <> Supports <span className="font-mono text-gray-600 dark:text-zinc-400">{notificationRuntime.supported_schemes.join(', ')}</span>.</> : null}</p>
+            <p className="mt-1 text-gray-400 dark:text-zinc-600">One destination URL per instance. Use your notification backend for fan-out.</p>
           </div>
         </div>
 

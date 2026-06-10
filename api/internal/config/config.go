@@ -17,7 +17,6 @@ type Config struct {
 	ExecTimeout         time.Duration
 	ConnectivityTimeout time.Duration
 	AppriseURL          string
-	AppriseBinPath      string
 	AppriseTimeout      time.Duration
 	TLSEnabled          bool
 	TLSCertPath         string
@@ -66,7 +65,7 @@ func Load() (Config, error) {
 		tlsEnabled = false
 	}
 	cfg := Config{
-		AppVersion:          envOr("PATCHDECK_VERSION", "1.7.7"),
+		AppVersion:          envOr("PATCHDECK_VERSION", "1.8.0"),
 		Port:                port,
 		DatabasePath:        envOr("PATCHDECK_DB_PATH", "/data/patchdeck.db"),
 		MasterKey:           os.Getenv("PATCHDECK_MASTER_KEY"),
@@ -74,7 +73,6 @@ func Load() (Config, error) {
 		ExecTimeout:         execTimeout,
 		ConnectivityTimeout: connectivityTimeout,
 		AppriseURL:          os.Getenv("PATCHDECK_APPRISE_URL"),
-		AppriseBinPath:      envOr("PATCHDECK_APPRISE_BIN", "apprise"),
 		AppriseTimeout:      appriseTimeout,
 		TLSEnabled:          tlsEnabled,
 		TLSCertPath:         envOr("PATCHDECK_TLS_CERT", "/data/tls/cert.pem"),
