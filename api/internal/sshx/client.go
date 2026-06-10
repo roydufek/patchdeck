@@ -340,13 +340,61 @@ func (c *Client) ApplyUpdates(host models.Host, seal *crypto.SealBox) (models.Ap
 	return models.ApplyResult{ChangedPackages: changed, RawOutput: raw, NeedsReboot: strings.Contains(raw, "__REBOOT__")}, nil
 }
 
+// isSystemdManagerUnit reports whether a needrestart-listed "service" is really the
+// systemd manager (PID 1). The manager cannot be `systemctl restart`ed as a unit — the
+// correct action is `systemctl daemon-reexec` — so a plain restart would always fail.
+func isSystemdManagerUnit(svc string) bool {
+	switch strings.ToLower(strings.TrimSpace(svc)) {
+	case "systemd", "systemd.service", "systemd-manager", "systemd-manager.service", "init", "init.scope":
+		return true
+	}
+	return false
+}
+
 func (c *Client) RestartServices(host models.Host, seal *crypto.SealBox, services []string) (models.RestartResult, error) {
 	if len(services) == 0 {
 		return models.RestartResult{Success: true, Output: "no services selected"}, nil
 	}
-	cmd := "systemctl restart " + strings.Join(services, " ")
-	raw, err := c.runPrivileged(context.Background(), host, seal, cmd)
-	return models.RestartResult{Services: services, Success: err == nil, Output: raw}, err
+	// Restart each service independently so one failing/refused unit (e.g. systemd-logind,
+	// or a unit that can't be restarted) is isolated and reported with its REAL error —
+	// rather than one combined `systemctl restart a b c` failing the whole batch opaquely.
+	var lines []string
+	var failures []string
+	for _, svc := range services {
+		cmd := "systemctl restart " + svc
+		label := svc
+		if isSystemdManagerUnit(svc) {
+			cmd = "systemctl daemon-reexec"
+			label = svc + " (daemon-reexec)"
+		}
+		_, err := c.runPrivileged(context.Background(), host, seal, cmd)
+		switch {
+		case err == nil:
+			lines = append(lines, "✓ "+label+" — restarted")
+		case isHostKeyErr(err):
+			// Host-key mismatch is connection-level, not per-service — abort and let the
+			// handler surface the host-key resolution UI.
+			return models.RestartResult{}, err
+		case errors.Is(err, ErrConnectionLost):
+			// Restarting a session/network-critical unit dropped the connection; the
+			// restart was dispatched to systemd and almost certainly applied.
+			lines = append(lines, "• "+label+" — connection dropped during restart (likely restarted; reconnect to confirm)")
+		default:
+			reason := strings.TrimSpace(err.Error())
+			lines = append(lines, "✗ "+label+" — "+reason)
+			failures = append(failures, svc+": "+reason)
+		}
+	}
+	res := models.RestartResult{Services: services, Success: len(failures) == 0, Output: strings.Join(lines, "\n")}
+	if len(failures) > 0 {
+		return res, fmt.Errorf("restarted %d of %d service(s); failed — %s", len(services)-len(failures), len(services), strings.Join(failures, "; "))
+	}
+	return res, nil
+}
+
+func isHostKeyErr(err error) bool {
+	var hkErr *HostKeyError
+	return errors.As(err, &hkErr)
 }
 
 func (c *Client) Power(host models.Host, seal *crypto.SealBox, action string) error {
@@ -400,13 +448,13 @@ func (c *Client) runPrivileged(ctx context.Context, host models.Host, seal *cryp
 
 	rootCmd := runAsRootCommand(command)
 
-	if out, err := c.run(ctx, host, seal, "sudo -n "+rootCmd); err == nil {
-		return out, nil
-	} else if errors.Is(err, ErrConnectionLost) {
-		// The connection dropped while the privileged command was already running — do
-		// NOT fall through to another escalation method (that would re-run it). Surface
-		// the loss so apply can verify-after.
-		return out, err
+	// Each escalation method is PROBED with a no-op (`true`) first; on success we commit
+	// to that method and run the real command, returning ITS result. This is what lets a
+	// command that legitimately exits non-zero (e.g. `systemctl restart` of a refused or
+	// missing unit) surface its OWN error, instead of being masked as "privilege escalation
+	// failed" after we needlessly re-run it under every method. Mirrors runPrivilegedStreaming.
+	if _, err := c.run(ctx, host, seal, "sudo -n true"); err == nil {
+		return c.run(ctx, host, seal, "sudo -n "+rootCmd)
 	}
 
 	sudoPass := strings.TrimSpace(sec.SudoPassword)
@@ -416,15 +464,15 @@ func (c *Client) runPrivileged(ctx context.Context, host models.Host, seal *cryp
 
 	// Pass the password via stdin to `sudo -S` rather than embedding it in the command
 	// line (where it'd be visible to ps/auditd on the remote host for the run window).
-	if out, err := c.runWithStdin(ctx, host, seal, "sudo -S -p '' "+rootCmd, strings.NewReader(sudoPass+"\n")); err == nil {
-		return out, nil
-	} else if errors.Is(err, ErrConnectionLost) {
-		return out, err
+	if _, err := c.runWithStdin(ctx, host, seal, "sudo -S -p '' true", strings.NewReader(sudoPass+"\n")); err == nil {
+		return c.runWithStdin(ctx, host, seal, "sudo -S -p '' "+rootCmd, strings.NewReader(sudoPass+"\n"))
 	}
 
-	suFallback := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote(rootCmd))
-	if out, err := c.run(ctx, host, seal, suFallback); err == nil {
-		return out, nil
+	// su fallback (root password == sudoPass on many single-admin hosts).
+	suProbe := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote("true"))
+	if _, err := c.run(ctx, host, seal, suProbe); err == nil {
+		suCmd := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote(rootCmd))
+		return c.run(ctx, host, seal, suCmd)
 	}
 
 	return "", fmt.Errorf("privilege escalation failed: sudo -n, sudo -S, and su fallback all failed (verify sudo/root password and host policy)")
@@ -776,17 +824,19 @@ func (c *Client) runPrivilegedStreaming(ctx context.Context, host models.Host, s
 		return "", fmt.Errorf("privilege escalation required: passwordless sudo unavailable and sudo/root password not provided")
 	}
 
-	// Password to `sudo -S` via stdin, not the command line (ps/audit exposure).
-	if out, err := c.runStreamingWithStdin(ctx, host, seal, "sudo -S -p '' "+rootCmd, onLine, strings.NewReader(sudoPass+"\n")); err == nil {
-		return out, nil
-	} else if errors.Is(err, ErrConnectionLost) {
-		// Connection dropped mid-run — don't fall through to su (it would re-run apply).
-		return out, err
+	// Probe password sudo with a no-op (password via stdin, not the command line — ps/audit
+	// exposure), then commit. Committing means the real command's own non-zero exit / its
+	// connection-loss surfaces directly, instead of falling through to su (which would
+	// re-run the command) or masking it as a privilege-escalation failure.
+	if _, err := c.runWithStdin(ctx, host, seal, "sudo -S -p '' true", strings.NewReader(sudoPass+"\n")); err == nil {
+		return c.runStreamingWithStdin(ctx, host, seal, "sudo -S -p '' "+rootCmd, onLine, strings.NewReader(sudoPass+"\n"))
 	}
 
-	suFallback := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote(rootCmd))
-	if out, err := c.RunStreaming(ctx, host, seal, suFallback, onLine); err == nil {
-		return out, nil
+	// su fallback (root password == sudoPass on many single-admin hosts).
+	suProbe := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote("true"))
+	if _, err := c.run(ctx, host, seal, suProbe); err == nil {
+		suCmd := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote(rootCmd))
+		return c.RunStreaming(ctx, host, seal, suCmd, onLine)
 	}
 
 	return "", fmt.Errorf("privilege escalation failed: sudo -n, sudo -S, and su fallback all failed (verify sudo/root password and host policy)")

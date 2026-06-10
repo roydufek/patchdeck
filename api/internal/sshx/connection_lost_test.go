@@ -45,6 +45,21 @@ func TestErrConnectionLostWrapsAndIsDetectable(t *testing.T) {
 	}
 }
 
+func TestIsSystemdManagerUnit(t *testing.T) {
+	managers := []string{"systemd", "systemd.service", "systemd-manager", "systemd-manager.service", "init", "init.scope", "SYSTEMD", " systemd "}
+	for _, m := range managers {
+		if !isSystemdManagerUnit(m) {
+			t.Errorf("isSystemdManagerUnit(%q) = false, want true", m)
+		}
+	}
+	regular := []string{"systemd-logind.service", "systemd-journald.service", "dbus.service", "cron.service", "user@1000.service", "ssh.service"}
+	for _, r := range regular {
+		if isSystemdManagerUnit(r) {
+			t.Errorf("isSystemdManagerUnit(%q) = true, want false (must restart normally)", r)
+		}
+	}
+}
+
 func TestApplyInterruptedError(t *testing.T) {
 	underlying := fmt.Errorf("%w: boom", ErrConnectionLost)
 	ai := &ApplyInterruptedError{Underlying: underlying, ChangedSoFar: 3, DpkgStarted: true}
