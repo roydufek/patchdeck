@@ -64,6 +64,14 @@ func TestParseScanOutput_Needrestart(t *testing.T) {
 	if res2.NeedrestartFound {
 		t.Fatal("NeedrestartFound should be false when __NEEDRESTART_MISSING__ present")
 	}
+
+	// The per-user manager pseudo-unit (systemd-user) is not a restartable unit and must
+	// be filtered out so it doesn't show as an actionable "needs restart" service.
+	withUserMgr := "NEEDRESTART-SVC: apache2.service\nNEEDRESTART-SVC: systemd-user\nNEEDRESTART-SVC: cron.service\n"
+	res3 := parseScanOutput(withUserMgr, "h")
+	if len(res3.NeedsRestart) != 2 || res3.NeedsRestart[0] != "apache2.service" || res3.NeedsRestart[1] != "cron.service" {
+		t.Fatalf("systemd-user should be filtered from NeedsRestart: %+v", res3.NeedsRestart)
+	}
 }
 
 func TestParseScanOutput_AptUpdateFailed(t *testing.T) {

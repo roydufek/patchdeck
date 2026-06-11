@@ -60,6 +60,57 @@ func TestIsSystemdManagerUnit(t *testing.T) {
 	}
 }
 
+func TestIsUserManagerUnit(t *testing.T) {
+	for _, s := range []string{"systemd-user", "systemd-user.service", "SYSTEMD-USER", " systemd-user "} {
+		if !isUserManagerUnit(s) {
+			t.Errorf("isUserManagerUnit(%q) = false, want true", s)
+		}
+	}
+	// The real per-user instance and the sessions unit ARE genuine restartable units.
+	for _, s := range []string{"user@1000.service", "systemd-user-sessions.service", "systemd-logind.service", "ssh.service"} {
+		if isUserManagerUnit(s) {
+			t.Errorf("isUserManagerUnit(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestIsUnitNotFound(t *testing.T) {
+	yes := []error{
+		errors.New("Failed to restart systemd-user.service: Unit systemd-user.service not found."),
+		errors.New("Unit foo.service not loaded."),
+		errors.New("No such file or directory"),
+	}
+	for _, e := range yes {
+		if !isUnitNotFound(e) {
+			t.Errorf("isUnitNotFound(%v) = false, want true", e)
+		}
+	}
+	no := []error{
+		nil,
+		errors.New("Job for nginx.service failed because the control process exited"),
+		errors.New("Interactive authentication required"),
+	}
+	for _, e := range no {
+		if isUnitNotFound(e) {
+			t.Errorf("isUnitNotFound(%v) = true, want false", e)
+		}
+	}
+}
+
+func TestStripAuthPromptNoise(t *testing.T) {
+	cases := map[string]string{
+		"Password: Failed to restart systemd-user.service: Unit systemd-user.service not found.": "Failed to restart systemd-user.service: Unit systemd-user.service not found.",
+		"Password: Password: boom": "boom",
+		"no prompt here":           "no prompt here",
+		"  Password: trimmed  ":    "trimmed",
+	}
+	for in, want := range cases {
+		if got := stripAuthPromptNoise(in); got != want {
+			t.Errorf("stripAuthPromptNoise(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestApplyInterruptedError(t *testing.T) {
 	underlying := fmt.Errorf("%w: boom", ErrConnectionLost)
 	ai := &ApplyInterruptedError{Underlying: underlying, ChangedSoFar: 3, DpkgStarted: true}

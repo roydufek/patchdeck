@@ -197,7 +197,10 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 			}
 		}
 		if strings.HasPrefix(line, "NEEDRESTART-SVC:") {
-			if svc := strings.TrimSpace(strings.TrimPrefix(line, "NEEDRESTART-SVC:")); svc != "" {
+			// Drop the per-user manager pseudo-unit (systemd-user) — needrestart flags it
+			// but it has no real `systemctl restart` target, so it shouldn't appear as an
+			// actionable "needs restart" service.
+			if svc := strings.TrimSpace(strings.TrimPrefix(line, "NEEDRESTART-SVC:")); svc != "" && !isUserManagerUnit(svc) {
 				services = append(services, svc)
 			}
 		}
@@ -351,6 +354,45 @@ func isSystemdManagerUnit(svc string) bool {
 	return false
 }
 
+// isUserManagerUnit reports whether a needrestart entry is the per-user service manager
+// pseudo-unit (`systemd --user`). needrestart flags it after a lib upgrade, but there is
+// no real `systemd-user.service` to `systemctl restart` — the per-user managers refresh on
+// the next login/reboot. So it is filtered out of the restart list and skipped if it slips
+// through (NOT treated as a failure). The real per-user instance `user@<uid>.service` is a
+// genuine unit and is intentionally NOT matched here.
+func isUserManagerUnit(svc string) bool {
+	switch strings.ToLower(strings.TrimSpace(svc)) {
+	case "systemd-user", "systemd-user.service":
+		return true
+	}
+	return false
+}
+
+// isUnitNotFound reports whether a `systemctl restart` failure means the unit does not
+// exist / is not loaded — i.e. needrestart listed something that isn't a real restartable
+// unit. Such entries are skipped rather than reported as a hard failure.
+func isUnitNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "not found") || strings.Contains(m, "not loaded") || strings.Contains(m, "no such")
+}
+
+// stripAuthPromptNoise removes the "Password:" prompt text that the `su` fallback writes to
+// stderr (with no trailing newline, so it glues onto the real error). Cosmetic — keeps
+// surfaced command errors readable on hosts without passwordless sudo.
+func stripAuthPromptNoise(s string) string {
+	s = strings.TrimSpace(s)
+	for {
+		next := strings.TrimSpace(strings.TrimPrefix(s, "Password:"))
+		if next == s {
+			return s
+		}
+		s = next
+	}
+}
+
 func (c *Client) RestartServices(host models.Host, seal *crypto.SealBox, services []string) (models.RestartResult, error) {
 	if len(services) == 0 {
 		return models.RestartResult{Success: true, Output: "no services selected"}, nil
@@ -360,7 +402,15 @@ func (c *Client) RestartServices(host models.Host, seal *crypto.SealBox, service
 	// rather than one combined `systemctl restart a b c` failing the whole batch opaquely.
 	var lines []string
 	var failures []string
+	skipped := 0
 	for _, svc := range services {
+		// The per-user manager (systemd-user) isn't a restartable system unit — skip it
+		// cleanly rather than attempt a doomed restart.
+		if isUserManagerUnit(svc) {
+			lines = append(lines, "• "+svc+" — per-user service manager; refreshes on next login/reboot (skipped)")
+			skipped++
+			continue
+		}
 		cmd := "systemctl restart " + svc
 		label := svc
 		if isSystemdManagerUnit(svc) {
@@ -379,15 +429,25 @@ func (c *Client) RestartServices(host models.Host, seal *crypto.SealBox, service
 			// Restarting a session/network-critical unit dropped the connection; the
 			// restart was dispatched to systemd and almost certainly applied.
 			lines = append(lines, "• "+label+" — connection dropped during restart (likely restarted; reconnect to confirm)")
+		case isUnitNotFound(err):
+			// needrestart can list entries that aren't real restartable units — skip
+			// rather than report a hard failure.
+			lines = append(lines, "• "+label+" — not a restartable unit on this host (skipped)")
+			skipped++
 		default:
-			reason := strings.TrimSpace(err.Error())
+			reason := stripAuthPromptNoise(err.Error())
 			lines = append(lines, "✗ "+label+" — "+reason)
 			failures = append(failures, svc+": "+reason)
 		}
 	}
 	res := models.RestartResult{Services: services, Success: len(failures) == 0, Output: strings.Join(lines, "\n")}
 	if len(failures) > 0 {
-		return res, fmt.Errorf("restarted %d of %d service(s); failed — %s", len(services)-len(failures), len(services), strings.Join(failures, "; "))
+		ok := len(services) - len(failures) - skipped
+		msg := fmt.Sprintf("restarted %d of %d service(s)", ok, len(services))
+		if skipped > 0 {
+			msg += fmt.Sprintf("; %d skipped", skipped)
+		}
+		return res, fmt.Errorf("%s; failed — %s", msg, strings.Join(failures, "; "))
 	}
 	return res, nil
 }
