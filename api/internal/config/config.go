@@ -65,7 +65,7 @@ func Load() (Config, error) {
 		tlsEnabled = false
 	}
 	cfg := Config{
-		AppVersion:          envOr("PATCHDECK_VERSION", "1.8.1"),
+		AppVersion:          envOr("PATCHDECK_VERSION", "1.8.2"),
 		Port:                port,
 		DatabasePath:        envOr("PATCHDECK_DB_PATH", "/data/patchdeck.db"),
 		MasterKey:           os.Getenv("PATCHDECK_MASTER_KEY"),
