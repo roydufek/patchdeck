@@ -29,6 +29,41 @@ func jobsByName(t *testing.T, d *sql.DB) map[string]models.Job {
 	return m
 }
 
+// TestSecretCipherLoadingContract locks the contract the scheduler relies on: GetHost
+// loads secret_cipher (needed to SSH), while the API list path strips it (so creds never
+// leak to the dashboard). The scheduler's resolveJobHosts re-hydrates tag/multi-host
+// results via GetHost — if GetHost ever stopped loading the cipher, scheduled scans would
+// break for every host with "cipher too short" (the bug this guards against).
+func TestSecretCipherLoadingContract(t *testing.T) {
+	d := newTestDB(t)
+	defer d.Close()
+
+	const cipher = "NONEMPTY-CIPHER-BLOB"
+	id, err := CreateHost(d, models.Host{Name: "sec", Address: "sec.local", Port: 22, SSHUser: "root", AuthType: "password", SecretCipher: cipher})
+	if err != nil {
+		t.Fatalf("CreateHost: %v", err)
+	}
+
+	full, err := GetHost(d, id)
+	if err != nil {
+		t.Fatalf("GetHost: %v", err)
+	}
+	if full.SecretCipher != cipher {
+		t.Fatalf("GetHost must load secret_cipher (scan/scheduler depend on it); got %q", full.SecretCipher)
+	}
+
+	byID, err := ListHostsByIDs(d, []string{id})
+	if err != nil {
+		t.Fatalf("ListHostsByIDs: %v", err)
+	}
+	if len(byID) != 1 {
+		t.Fatalf("ListHostsByIDs returned %d, want 1", len(byID))
+	}
+	if byID[0].SecretCipher != "" {
+		t.Fatalf("ListHostsByIDs must NOT expose secret_cipher (API safety); got %q — if intentional, update scheduler.resolveJobHosts", byID[0].SecretCipher)
+	}
+}
+
 // TestDeleteHostReconcilesJobs verifies that removing a host drops it from each
 // job's target list and deletes a job only when it has no targets left — instead
 // of the old behavior that deleted any job whose stored primary host matched.

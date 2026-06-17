@@ -303,23 +303,47 @@ func (e *Engine) finishRun(runID, status string, total, ok, failed int, detail s
 }
 
 func (e *Engine) resolveJobHosts(j models.Job) ([]models.Host, error) {
-	// Tag filter takes priority
-	if strings.TrimSpace(j.TagFilter) != "" {
-		return db.ListHostsByTag(e.db, j.TagFilter)
-	}
-	// Multi-host IDs
-	if len(j.HostIDs) > 0 {
-		return db.ListHostsByIDs(e.db, j.HostIDs)
-	}
-	// Legacy single host
-	if strings.TrimSpace(j.HostID) != "" {
+	// Resolve the TARGET host list first. The single-host path already returns a full,
+	// secret-bearing record via GetHost; the tag/multi-host helpers (ListHostsByTag /
+	// ListHostsByIDs) are built on ListHosts, which deliberately OMITS secret_cipher (so
+	// the API never leaks creds) — so those rows have an empty cipher.
+	var targets []models.Host
+	switch {
+	case strings.TrimSpace(j.TagFilter) != "":
+		hs, err := db.ListHostsByTag(e.db, j.TagFilter)
+		if err != nil {
+			return nil, err
+		}
+		targets = hs
+	case len(j.HostIDs) > 0:
+		hs, err := db.ListHostsByIDs(e.db, j.HostIDs)
+		if err != nil {
+			return nil, err
+		}
+		targets = hs
+	case strings.TrimSpace(j.HostID) != "":
 		host, err := db.GetHost(e.db, j.HostID)
 		if err != nil {
 			return nil, err
 		}
 		return []models.Host{host}, nil
+	default:
+		return nil, nil
 	}
-	return nil, nil
+
+	// Re-load each target via GetHost so it carries its encrypted SSH secret. Without this
+	// the scan/apply fails for every host with "cipher too short" (decrypting an empty
+	// cipher) — the tag/multi-host scheduled jobs were hitting exactly that.
+	full := make([]models.Host, 0, len(targets))
+	for _, t := range targets {
+		h, err := db.GetHost(e.db, t.ID)
+		if err != nil {
+			log.Printf("scheduler: skip host %s (%s) — load failed: %v", t.ID, t.Name, err)
+			continue
+		}
+		full = append(full, h)
+	}
+	return full, nil
 }
 
 func (e *Engine) runScan(j models.Job, host models.Host) bool {

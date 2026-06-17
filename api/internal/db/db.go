@@ -211,13 +211,22 @@ func ListHosts(db *sql.DB) ([]models.Host, error) {
 		if h.Tags == nil {
 			h.Tags = []string{}
 		}
-		prefs, err := GetHostNotificationPrefs(db, h.ID)
-		if err == nil {
-			h.NotificationPrefs = prefs
-		}
 		out = append(out, h)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Release the cursor's connection BEFORE the per-host notification-prefs queries
+	// below. Issuing a query while these rows are still open needs a SECOND connection;
+	// under a constrained pool (e.g. tests' MaxOpenConns(1), or prod under load) that
+	// nested query would deadlock waiting on the connection this cursor holds.
+	rows.Close()
+	for i := range out {
+		if prefs, err := GetHostNotificationPrefs(db, out[i].ID); err == nil {
+			out[i].NotificationPrefs = prefs
+		}
+	}
+	return out, nil
 }
 
 func GetHost(db *sql.DB, id string) (models.Host, error) {
