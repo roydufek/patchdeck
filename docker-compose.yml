@@ -12,6 +12,7 @@ services:
       PGID: 1000                                         # default, set to match your host group
       PATCHDECK_PORT: 6070
       PATCHDECK_MASTER_KEY: ${PATCHDECK_MASTER_KEY}
+      #TZ: America/Los_Angeles                          # optional — timezone for scheduled jobs (IANA name); default UTC
       #PATCHDECK_DB_PATH: /data/patchdeck.db            # default, optional
       #PATCHDECK_SSH_TIMEOUT_SECONDS: 20                 # default, optional
       #REGISTRATION_ENABLED: true                        # default, optional

@@ -18,6 +18,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	// Embed the IANA timezone database in the binary so TZ=<zone> resolves even on the
+	// minimal Alpine runtime image (which ships no system tzdata). Lets scheduled jobs
+	// fire in the operator's timezone via the TZ env var.
+	_ "time/tzdata"
 
 	"patchdeck/api/internal/auth"
 	"patchdeck/api/internal/config"
@@ -88,6 +92,8 @@ func main() {
 	sshClient := sshx.NewClient(cfg.SSHTimeout, cfg.ExecTimeout, nil)
 	notifier := notify.NewDispatcher(cfg.AppriseTimeout)
 	log.Printf("notifications: native dispatcher ready (schemes: %s)", strings.Join(notify.SupportedSchemes, ", "))
+	tzName, _ := time.Now().Zone()
+	log.Printf("scheduler timezone: %s (local now %s) — set the TZ env var to change", tzName, time.Now().Format("2006-01-02 15:04:05 -0700"))
 
 	a := &app{
 		cfg:       cfg,
@@ -981,7 +987,7 @@ func (a *app) listJobs(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": "Failed to load scheduled jobs"})
 		return
 	}
-	now := time.Now().UTC()
+	now := time.Now() // local time — schedules fire and display in the TZ-configured zone
 	for i := range jobs {
 		if lr, e := db.GetLastJobRun(a.db, jobs[i].ID); e == nil {
 			jobs[i].LastRun = lr

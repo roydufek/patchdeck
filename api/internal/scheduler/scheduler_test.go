@@ -89,3 +89,19 @@ func TestNextRun(t *testing.T) {
 		t.Error("NextRun should return nil for an invalid expression")
 	}
 }
+
+// TestNextRunRespectsTimezone verifies cron is evaluated in the timezone of `from` (the
+// scheduler passes local/TZ-driven time) — a daily "0 3 * * *" must fire at 03:00 LOCAL,
+// not 03:00 UTC. Guards the TZ fix.
+func TestNextRunRespectsTimezone(t *testing.T) {
+	loc := time.FixedZone("TEST+5", 5*3600) // UTC+5
+	from := time.Date(2026, time.June, 1, 4, 0, 0, 0, loc)
+	got := NextRun("0 3 * * *", from)
+	if got == nil {
+		t.Fatal("NextRun returned nil")
+	}
+	want := time.Date(2026, time.June, 2, 3, 0, 0, 0, loc) // next 03:00 in UTC+5
+	if !got.Equal(want) {
+		t.Errorf("NextRun=%s, want %s — cron must fire in local time, not UTC", got.Format(time.RFC3339), want.Format(time.RFC3339))
+	}
+}

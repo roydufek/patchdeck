@@ -43,7 +43,11 @@ func NewEngine(dbConn *sql.DB, ssh *sshx.Client, secrets *crypto.SealBox, notifi
 }
 
 func (e *Engine) Run(ctx context.Context) {
-	e.tick(ctx, time.Now().UTC())
+	// Cron is evaluated in LOCAL time so schedules fire in the operator's timezone (set
+	// via the TZ env var; the binary embeds tzdata so named zones resolve on the minimal
+	// runtime image). The per-minute dedup keys below normalize to UTC internally, which
+	// keeps them correct regardless of the wall-clock zone.
+	e.tick(ctx, time.Now())
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
 	for {
@@ -51,7 +55,7 @@ func (e *Engine) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			e.tick(ctx, time.Now().UTC())
+			e.tick(ctx, time.Now())
 		}
 	}
 }
@@ -439,7 +443,9 @@ func NextRun(expr string, from time.Time) *time.Time {
 	if strings.TrimSpace(expr) == "" {
 		return nil
 	}
-	t := from.UTC().Truncate(time.Minute).Add(time.Minute)
+	// Evaluate in from's own timezone (callers pass local time) so the computed "next run"
+	// matches when the schedule actually fires.
+	t := from.Truncate(time.Minute).Add(time.Minute)
 	for i := 0; i < 366*24*60; i++ {
 		if cronMatches(expr, t) {
 			next := t

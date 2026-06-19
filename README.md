@@ -189,6 +189,7 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` is r
 | `PUID` | | `1000` | User ID for the container process (linuxserver.io convention) |
 | `PGID` | | `1000` | Group ID for the container process (linuxserver.io convention) |
 | `PATCHDECK_MASTER_KEY` | ✅ | — | 32+ char secret; an AES-256 key is derived from it (HKDF) to encrypt SSH credentials at rest |
+| `TZ` | | `UTC` | Timezone for **scheduled jobs** (IANA name, e.g. `America/Los_Angeles`). Cron schedules fire in this zone; the active TZ is shown in the startup log. tzdata is embedded in the binary, so no extra package is needed |
 | `PATCHDECK_DB_PATH` | | `/data/patchdeck.db` | SQLite database path inside the container |
 | `PATCHDECK_SSH_TIMEOUT_SECONDS` | | `20` | SSH dial/handshake timeout |
 | `PATCHDECK_EXEC_TIMEOUT_SECONDS` | | `600` | Max wall-clock for a single remote command (scan/apply) |
