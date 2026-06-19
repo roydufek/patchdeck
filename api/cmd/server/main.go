@@ -725,7 +725,7 @@ func (a *app) deleteHost(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) scanHost(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if ok, retryAfter := a.limiter.Allow(id); !ok {
+	if ok, retryAfter := a.limiter.Allow(id + ":scan"); !ok {
 		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
 		return
 	}
@@ -767,7 +767,7 @@ func (a *app) scanHost(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) applyUpdates(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if ok, retryAfter := a.limiter.Allow(id); !ok {
+	if ok, retryAfter := a.limiter.Allow(id + ":apply"); !ok {
 		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
 		return
 	}
@@ -804,7 +804,7 @@ func (a *app) applyUpdates(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) restartServices(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if ok, retryAfter := a.limiter.Allow(id); !ok {
+	if ok, retryAfter := a.limiter.Allow(id + ":restart"); !ok {
 		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
 		return
 	}
@@ -948,7 +948,7 @@ func csvField(s string) string {
 
 func (a *app) powerAction(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if ok, retryAfter := a.limiter.Allow(id); !ok {
+	if ok, retryAfter := a.limiter.Allow(id + ":power"); !ok {
 		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
 		return
 	}
@@ -1744,7 +1744,7 @@ func (a *app) scanAllHosts(w http.ResponseWriter, _ *http.Request) {
 		if !host.ChecksEnabled {
 			continue
 		}
-		if ok, _ := a.limiter.Allow(host.ID); !ok {
+		if ok, _ := a.limiter.Allow(host.ID + ":scan"); !ok {
 			results = append(results, scanAllResult{HostID: host.ID, HostName: host.Name, Success: false, Error: "rate limited"})
 			continue
 		}

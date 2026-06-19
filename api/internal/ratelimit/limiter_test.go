@@ -5,6 +5,34 @@ import (
 	"time"
 )
 
+func TestHostLimiterPerOperation(t *testing.T) {
+	l := NewHostLimiter(50 * time.Millisecond)
+	// A repeat of the SAME operation on a host within the cooldown is blocked (debounce).
+	if ok, _ := l.Allow("h1:apply"); !ok {
+		t.Fatal("first apply should be allowed")
+	}
+	if ok, retry := l.Allow("h1:apply"); ok || retry <= 0 {
+		t.Fatalf("immediate repeat of the same op should be rate-limited: ok=%v retry=%d", ok, retry)
+	}
+	// A DIFFERENT operation on the same host is independent — this is what lets apply, its
+	// follow-up scan, and a restart run back-to-back without blocking each other.
+	if ok, _ := l.Allow("h1:scan"); !ok {
+		t.Fatal("scan must not be blocked by a recent apply on the same host")
+	}
+	if ok, _ := l.Allow("h1:restart"); !ok {
+		t.Fatal("restart must not be blocked by a recent apply on the same host")
+	}
+	// A different host is independent.
+	if ok, _ := l.Allow("h2:apply"); !ok {
+		t.Fatal("a different host must be independent")
+	}
+	// After the cooldown elapses the same op is allowed again.
+	time.Sleep(60 * time.Millisecond)
+	if ok, _ := l.Allow("h1:apply"); !ok {
+		t.Fatal("same op should be allowed again after the cooldown")
+	}
+}
+
 func TestLoginLimiterLockout(t *testing.T) {
 	l := NewLoginLimiter(3, time.Hour)
 	key := "1.2.3.4"
