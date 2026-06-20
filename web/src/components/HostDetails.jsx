@@ -141,6 +141,7 @@ export default function HostDetails({
   const [auditOpen, setAuditOpen] = useState(false)
   const [rawOutputOpen, setRawOutputOpen] = useState(false)
   const [selectedServices, setSelectedServices] = useState([])
+  const [restartedServices, setRestartedServices] = useState([]) // last submitted for restart — to detect units that don't clear
   const [restartConfirm, setRestartConfirm] = useState(null) // 'reboot' | 'restart-services' | null
 
   const checksEnabled = h.checks_enabled !== false
@@ -162,6 +163,14 @@ export default function HostDetails({
 
   const rebootBusy = !!actionBusy[`${h.id}:reboot`]
   const restartServicesBusy = !!actionBusy[`${h.id}:restart-services`]
+
+  // Services the user restarted that are STILL flagged once the follow-up scan settled —
+  // e.g. containerd, whose per-container shim processes keep the OLD binary mapped, so a
+  // service restart can't replace them. Surface a clear explanation + reboot guidance instead
+  // of leaving the user thinking the button "did nothing". Gated on no action in flight so it
+  // only appears after the re-scan has refreshed needs_restart.
+  const restartResidual = restartedServices.filter(s => restartServices.includes(s))
+  const showRestartResidual = restartResidual.length > 0 && !scanBusy && !restartServicesBusy
 
   const scanFailureNotificationsEnabled = h.notification_prefs?.scan_failure !== false
 
@@ -346,6 +355,28 @@ export default function HostDetails({
             </div>
           )}
 
+          {/* Explain a service that stays flagged after a restart (e.g. containerd shims) */}
+          {showRestartResidual && (
+            <div className="rounded-lg border border-amber-300/70 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-xs space-y-1.5">
+              <p className="font-medium text-amber-700 dark:text-amber-300">
+                Still flagged after restart: <span className="font-mono">{restartResidual.join(', ')}</span>
+              </p>
+              <p className="text-amber-700/90 dark:text-amber-300/80 leading-relaxed">
+                The service was restarted, but needrestart still flags it. This is expected for units
+                like <span className="font-mono">containerd</span>: each running container keeps a
+                long-lived shim process mapping the old binary, and restarting the service can't
+                replace those. Recycle the affected containers, or reboot the host to fully clear it.
+              </p>
+              <button
+                onClick={() => setRestartConfirm('reboot')}
+                disabled={rebootBusy}
+                className="mt-1 rounded-lg px-3 py-1.5 text-xs border border-amber-400/60 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 disabled:opacity-40 transition-colors"
+              >
+                {rebootBusy ? 'Rebooting…' : 'Reboot host to clear'}
+              </button>
+            </div>
+          )}
+
           {/* Confirm dialogs for restart/reboot */}
           <ConfirmDialog
             open={restartConfirm === 'reboot'}
@@ -369,6 +400,7 @@ export default function HostDetails({
             busy={restartServicesBusy}
             onConfirm={() => {
               setRestartConfirm(null)
+              setRestartedServices(selectedServices)
               onRestartServices(h.id, selectedServices)
             }}
             onCancel={() => setRestartConfirm(null)}
