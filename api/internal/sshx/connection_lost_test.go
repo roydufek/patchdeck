@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -71,6 +72,53 @@ func TestIsUserManagerUnit(t *testing.T) {
 		if isUserManagerUnit(s) {
 			t.Errorf("isUserManagerUnit(%q) = true, want false", s)
 		}
+	}
+}
+
+func TestIsRiskyRestartUnit(t *testing.T) {
+	// Restarting any of these live severs the session bus / logind and locks out SSH —
+	// they must be routed to needrestart's coordinated handler or a reboot, never a naive restart.
+	risky := []string{
+		"dbus", "dbus.service", "dbus.socket",
+		"dbus-broker", "dbus-broker.service",
+		"systemd-logind", "systemd-logind.service",
+		"DBUS.SERVICE", " systemd-logind ",
+	}
+	for _, s := range risky {
+		if !isRiskyRestartUnit(s) {
+			t.Errorf("isRiskyRestartUnit(%q) = false, want true (must not be restarted live)", s)
+		}
+	}
+	// Normal units that MUST stay directly restartable — guard against over-blocking.
+	safe := []string{
+		"containerd.service", "ssh.service", "cron.service", "nginx.service",
+		"systemd-journald.service", "systemd-user.service", "user@1000.service",
+		"NetworkManager.service", "docker.service",
+	}
+	for _, s := range safe {
+		if isRiskyRestartUnit(s) {
+			t.Errorf("isRiskyRestartUnit(%q) = true, want false (over-blocking a normally-restartable unit)", s)
+		}
+	}
+}
+
+func TestRiskyRestartCmd(t *testing.T) {
+	cmd := riskyRestartCmd("dbus.service")
+	// Must invoke the host's needrestart coordinated handler for the unit...
+	if !strings.Contains(cmd, "/etc/needrestart/restart.d/dbus.service") {
+		t.Errorf("riskyRestartCmd missing needrestart handler path: %q", cmd)
+	}
+	// ...non-interactively, so the handler skips its prompt and dispatches via systemd-run...
+	if !strings.Contains(cmd, "DEBIAN_FRONTEND=noninteractive") {
+		t.Errorf("riskyRestartCmd not non-interactive: %q", cmd)
+	}
+	// ...and fall back to the absent-marker (NOT a destructive restart) when the host has no
+	// handler, so the caller marks the unit reboot-required.
+	if !strings.Contains(cmd, needrestartHandlerAbsentMarker) {
+		t.Errorf("riskyRestartCmd missing absent-marker fallback: %q", cmd)
+	}
+	if strings.Contains(cmd, "systemctl restart") {
+		t.Errorf("riskyRestartCmd must NOT run a naive `systemctl restart`: %q", cmd)
 	}
 }
 

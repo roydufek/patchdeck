@@ -368,6 +368,44 @@ func isUserManagerUnit(svc string) bool {
 	return false
 }
 
+// needrestartHandlerAbsentMarker is emitted by riskyRestartCmd when the host has no
+// needrestart coordinated-restart handler for the unit, so RestartServices can mark it
+// reboot-required instead of running a destructive live restart.
+const needrestartHandlerAbsentMarker = "__NR_HANDLER_ABSENT__"
+
+// isRiskyRestartUnit reports whether restarting the unit with a plain `systemctl restart`
+// over SSH is destructive. Restarting the D-Bus broker or logind severs the system message
+// bus / login-session manager: systemd-logind loses its bus connection, PAM's pam_systemd
+// can no longer register sessions, and NO NEW SSH LOGIN succeeds — the operator is locked out
+// until a reboot. (Confirmed on a real host: a naive `systemctl restart dbus` bricked SSH; the
+// only recovery was a reboot.) These must be restarted via needrestart's coordinated handler
+// (which restarts the bus AND re-registers every bus client as a detached transient unit, so
+// the box recovers) or deferred to a reboot — never restarted directly.
+func isRiskyRestartUnit(svc string) bool {
+	switch strings.ToLower(strings.TrimSpace(svc)) {
+	case "dbus", "dbus.service", "dbus.socket",
+		"dbus-broker", "dbus-broker.service",
+		"systemd-logind", "systemd-logind.service":
+		return true
+	}
+	return false
+}
+
+// riskyRestartCmd builds the remote command for a risky unit: run the unit's needrestart
+// coordinated-restart handler (/etc/needrestart/restart.d/<unit>) non-interactively if the
+// host has one, otherwise emit needrestartHandlerAbsentMarker so the caller marks the unit
+// reboot-required rather than running a destructive live restart. needrestart's handler
+// enumerates the bus's active dependents and restarts them (after a systemd daemon-reexec) as
+// a detached `systemd-run` transient unit, so the restart survives its own session teardown
+// and the host recovers. DEBIAN_FRONTEND=noninteractive makes the handler skip its prompt and
+// dispatch immediately. svc is pre-validated by validServiceName (alnum plus . _ - @ : — no
+// spaces, quotes, slashes, or other shell metacharacters), so interpolating it into the
+// fixed handler-dir path cannot escape the directory or inject a command.
+func riskyRestartCmd(svc string) string {
+	h := "/etc/needrestart/restart.d/" + svc
+	return "if [ -x \"" + h + "\" ]; then DEBIAN_FRONTEND=noninteractive \"" + h + "\"; else echo " + needrestartHandlerAbsentMarker + "; fi"
+}
+
 // isUnitNotFound reports whether a `systemctl restart` failure means the unit does not
 // exist / is not loaded — i.e. needrestart listed something that isn't a real restartable
 // unit. Such entries are skipped rather than reported as a hard failure.
@@ -402,6 +440,7 @@ func (c *Client) RestartServices(host models.Host, seal *crypto.SealBox, service
 	// rather than one combined `systemctl restart a b c` failing the whole batch opaquely.
 	var lines []string
 	var failures []string
+	var rebootRequired []string
 	skipped := 0
 	for _, svc := range services {
 		// The per-user manager (systemd-user) isn't a restartable system unit — skip it
@@ -409,6 +448,31 @@ func (c *Client) RestartServices(host models.Host, seal *crypto.SealBox, service
 		if isUserManagerUnit(svc) {
 			lines = append(lines, "• "+svc+" — per-user service manager; refreshes on next login/reboot (skipped)")
 			skipped++
+			continue
+		}
+		// Risky units (dbus/dbus-broker/systemd-logind): a naive `systemctl restart` would
+		// sever the session bus and lock out SSH. Delegate to needrestart's coordinated
+		// handler when the host has one; otherwise refuse and mark the unit reboot-required
+		// rather than run the destructive command.
+		if isRiskyRestartUnit(svc) {
+			out, err := c.runPrivileged(context.Background(), host, seal, riskyRestartCmd(svc))
+			switch {
+			case isHostKeyErr(err):
+				return models.RestartResult{}, err
+			case strings.Contains(out, needrestartHandlerAbsentMarker):
+				rebootRequired = append(rebootRequired, svc)
+				lines = append(lines, "⚠ "+svc+" — cannot be safely restarted on a running host (a live restart severs D-Bus/logind and locks out SSH); reboot to apply (no needrestart coordinated-restart handler available)")
+			case err == nil:
+				lines = append(lines, "✓ "+svc+" — restarted safely via needrestart (coordinated: bus + its clients re-registered)")
+			case errors.Is(err, ErrConnectionLost):
+				// The coordinated restart dropped the connection; needrestart dispatched it as
+				// a detached transient unit, so it runs to completion and the host recovers.
+				lines = append(lines, "• "+svc+" — coordinated restart dispatched via needrestart; connection dropped (expected — reconnect to confirm)")
+			default:
+				reason := stripAuthPromptNoise(err.Error())
+				lines = append(lines, "✗ "+svc+" — "+reason)
+				failures = append(failures, svc+": "+reason)
+			}
 			continue
 		}
 		cmd := "systemctl restart " + svc
@@ -440,12 +504,15 @@ func (c *Client) RestartServices(host models.Host, seal *crypto.SealBox, service
 			failures = append(failures, svc+": "+reason)
 		}
 	}
-	res := models.RestartResult{Services: services, Success: len(failures) == 0, Output: strings.Join(lines, "\n")}
+	res := models.RestartResult{Services: services, Success: len(failures) == 0, Output: strings.Join(lines, "\n"), RebootRequired: rebootRequired}
 	if len(failures) > 0 {
-		ok := len(services) - len(failures) - skipped
+		ok := len(services) - len(failures) - skipped - len(rebootRequired)
 		msg := fmt.Sprintf("restarted %d of %d service(s)", ok, len(services))
 		if skipped > 0 {
 			msg += fmt.Sprintf("; %d skipped", skipped)
+		}
+		if len(rebootRequired) > 0 {
+			msg += fmt.Sprintf("; %d need reboot", len(rebootRequired))
 		}
 		return res, fmt.Errorf("%s; failed — %s", msg, strings.Join(failures, "; "))
 	}

@@ -842,7 +842,11 @@ func (a *app) restartServices(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", fmt.Sprintf("Restarted %d service(s): %s", len(req.Services), strings.Join(req.Services, ", ")))
+	restartMsg := fmt.Sprintf("Restarted %d service(s): %s", len(req.Services), strings.Join(req.Services, ", "))
+	if len(res.RebootRequired) > 0 {
+		restartMsg += fmt.Sprintf(" — %d require a reboot to apply: %s", len(res.RebootRequired), strings.Join(res.RebootRequired, ", "))
+	}
+	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", restartMsg)
 	writeJSON(w, 200, res)
 }
 

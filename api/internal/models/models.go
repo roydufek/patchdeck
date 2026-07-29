@@ -102,6 +102,10 @@ type RestartResult struct {
 	Services []string `json:"services"`
 	Success  bool     `json:"success"`
 	Output   string   `json:"output"`
+	// RebootRequired lists units that were NOT restarted because a live restart would be
+	// destructive (e.g. dbus/logind — it severs the session bus and locks out SSH) and no
+	// needrestart coordinated-restart handler was available. The operator must reboot to apply.
+	RebootRequired []string `json:"reboot_required,omitempty"`
 }
 
 type Job struct {

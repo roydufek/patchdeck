@@ -130,6 +130,17 @@ function CopyableFingerprint({ label, value }) {
   )
 }
 
+// Units patchdeck won't restart with a naive `systemctl restart` — a live restart of the
+// D-Bus broker or logind severs the session bus and locks out SSH. Mirrors the backend's
+// isRiskyRestartUnit; used to give the correct "reboot to apply" guidance (vs the container-shim
+// explanation) when one of these stays flagged after a restart attempt.
+const RISKY_RESTART_UNITS = new Set([
+  'dbus', 'dbus.service', 'dbus.socket',
+  'dbus-broker', 'dbus-broker.service',
+  'systemd-logind', 'systemd-logind.service',
+])
+const isRiskyRestartUnit = (svc) => RISKY_RESTART_UNITS.has(String(svc).trim().toLowerCase())
+
 export default function HostDetails({
   host: h, scan: snap, connectivity, connection, actionState, actionError,
   actionBusy, onUpdateHostOps, onUpdateHostKeyPolicy,
@@ -164,13 +175,18 @@ export default function HostDetails({
   const rebootBusy = !!actionBusy[`${h.id}:reboot`]
   const restartServicesBusy = !!actionBusy[`${h.id}:restart-services`]
 
-  // Services the user restarted that are STILL flagged once the follow-up scan settled —
-  // e.g. containerd, whose per-container shim processes keep the OLD binary mapped, so a
-  // service restart can't replace them. Surface a clear explanation + reboot guidance instead
-  // of leaving the user thinking the button "did nothing". Gated on no action in flight so it
-  // only appears after the re-scan has refreshed needs_restart.
+  // Services the user restarted that are STILL flagged once the follow-up scan settled.
+  // Two distinct reasons, surfaced with different guidance (gated on no action in flight so
+  // they only appear after the re-scan has refreshed needs_restart):
+  //   - risky units (dbus/dbus-broker/systemd-logind): patchdeck refused a destructive live
+  //     restart because the host had no needrestart coordinated handler — a reboot is required.
+  //   - everything else (e.g. containerd): the restart ran, but needrestart still flags it
+  //     because long-lived child processes (container shims) keep the old binary mapped.
   const restartResidual = restartedServices.filter(s => restartServices.includes(s))
-  const showRestartResidual = restartResidual.length > 0 && !scanBusy && !restartServicesBusy
+  const rebootRequiredResidual = restartResidual.filter(isRiskyRestartUnit)
+  const shimResidual = restartResidual.filter(s => !isRiskyRestartUnit(s))
+  const showRebootRequired = rebootRequiredResidual.length > 0 && !scanBusy && !restartServicesBusy
+  const showShimResidual = shimResidual.length > 0 && !scanBusy && !restartServicesBusy
 
   const scanFailureNotificationsEnabled = h.notification_prefs?.scan_failure !== false
 
@@ -355,11 +371,33 @@ export default function HostDetails({
             </div>
           )}
 
-          {/* Explain a service that stays flagged after a restart (e.g. containerd shims) */}
-          {showRestartResidual && (
+          {/* Risky unit (dbus/logind) that patchdeck refused to restart live — reboot to apply */}
+          {showRebootRequired && (
             <div className="rounded-lg border border-amber-300/70 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-xs space-y-1.5">
               <p className="font-medium text-amber-700 dark:text-amber-300">
-                Still flagged after restart: <span className="font-mono">{restartResidual.join(', ')}</span>
+                Reboot required to apply: <span className="font-mono">{rebootRequiredResidual.join(', ')}</span>
+              </p>
+              <p className="text-amber-700/90 dark:text-amber-300/80 leading-relaxed">
+                Patchdeck did <span className="font-medium">not</span> restart {rebootRequiredResidual.length > 1 ? 'these' : 'this'} live:
+                restarting the D-Bus bus or <span className="font-mono">systemd-logind</span> on a running host severs the
+                login-session manager and would lock out SSH. This host has no needrestart coordinated-restart
+                handler for {rebootRequiredResidual.length > 1 ? 'them' : 'it'}, so a reboot is the safe way to apply the update.
+              </p>
+              <button
+                onClick={() => setRestartConfirm('reboot')}
+                disabled={rebootBusy}
+                className="mt-1 rounded-lg px-3 py-1.5 text-xs border border-amber-400/60 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 disabled:opacity-40 transition-colors"
+              >
+                {rebootBusy ? 'Rebooting…' : 'Reboot host to apply'}
+              </button>
+            </div>
+          )}
+
+          {/* Explain a service that stays flagged after a successful restart (e.g. containerd shims) */}
+          {showShimResidual && (
+            <div className="rounded-lg border border-amber-300/70 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-xs space-y-1.5">
+              <p className="font-medium text-amber-700 dark:text-amber-300">
+                Still flagged after restart: <span className="font-mono">{shimResidual.join(', ')}</span>
               </p>
               <p className="text-amber-700/90 dark:text-amber-300/80 leading-relaxed">
                 The service was restarted, but needrestart still flags it. This is expected for units
