@@ -381,6 +381,32 @@ export function useHosts(token, clearToken) {
     }
   }, [authedFetch, loadData, refreshConnectivity, setHostConnectivityState])
 
+  const restartAll = useCallback(async (hostId) => {
+    if (!authedFetch) return
+    const key = `${hostId}:restart-services` // shares the services-busy key so the section shows busy
+    setActionBusy(prev => ({ ...prev, [key]: true }))
+    setError('')
+    setHostActionError(prev => ({ ...prev, [hostId]: '' }))
+    try {
+      const resp = await authedFetch(`/hosts/${hostId}/restart-all`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (resp.status === 429) throw new Error(data.error || 'Rate limited — please wait before retrying.')
+      if (!resp.ok) throw new Error(apiErrorMessage(data, 'Restart failed'))
+      setHostConnectivityState(hostId, true)
+      await loadData({ skipConnectivity: true })
+      if (tokenRef.current) hostActionStream(hostId, 'scan')
+    } catch (e) {
+      const msg = e.message || 'Restart failed'
+      setError(msg)
+      setHostActionError(prev => ({ ...prev, [hostId]: msg }))
+    } finally {
+      await refreshConnectivity(hostId)
+      setActionBusy(prev => ({ ...prev, [key]: false }))
+    }
+  }, [authedFetch, loadData, refreshConnectivity, setHostConnectivityState])
+
   const rebootHost = useCallback(async (hostId) => {
     if (!authedFetch) return
     const key = `${hostId}:reboot`
@@ -622,7 +648,7 @@ export function useHosts(token, clearToken) {
     hostKeyAuditByHost,
     loadData, hostAction, deleteHost, createHost,
     refreshConnectivity, updateHostOps, updateHostKeyPolicy,
-    resolveHostKeyMismatch, restartServices, rebootHost, shutdownHost,
+    resolveHostKeyMismatch, restartServices, restartAll, rebootHost, shutdownHost,
     updateHostNotificationPrefs,
     loadHostKeyAudit, resetState,
     // Streaming

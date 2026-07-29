@@ -137,6 +137,7 @@ func main() {
 		pr.Post("/api/hosts/{id}/scan", a.scanHost)
 		pr.Post("/api/hosts/{id}/apply", a.applyUpdates)
 		pr.Post("/api/hosts/{id}/restart-services", a.restartServices)
+		pr.Post("/api/hosts/{id}/restart-all", a.restartAll)
 		pr.Post("/api/hosts/{id}/power", a.powerAction)
 		pr.Get("/api/jobs", a.listJobs)
 		pr.Post("/api/jobs", a.createJob)
@@ -847,6 +848,36 @@ func (a *app) restartServices(w http.ResponseWriter, r *http.Request) {
 		restartMsg += fmt.Sprintf(" — %d require a reboot to apply: %s", len(res.RebootRequired), strings.Join(res.RebootRequired, ", "))
 	}
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", restartMsg)
+	writeJSON(w, 200, res)
+}
+
+// restartAll runs needrestart's coordinated auto-restart pass (`needrestart -r a`) — the safe
+// "restart everything the upgrade needs" action. needrestart restarts the flagged services
+// correctly and skips the units that are unsafe to restart live (dbus/network/docker/…), which
+// stay flagged and surface as reboot-required on the next scan.
+func (a *app) restartAll(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if ok, retryAfter := a.limiter.Allow(id + ":restart"); !ok {
+		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
+		return
+	}
+	host, err := db.GetHost(a.db, id)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"error": "host not found"})
+		return
+	}
+	res, err := a.sshClient.RestartAllViaNeedrestart(host, a.secrets)
+	if err != nil {
+		var hkErr *sshx.HostKeyError
+		if errors.As(err, &hkErr) {
+			writeJSON(w, 409, map[string]any{"error": hkErr.Message, "code": "host_key_mismatch", "operator_action_required": true, "expected_fingerprint": hkErr.ExpectedFingerprint, "presented_fingerprint": hkErr.PresentedFingerprint, "actions": []string{"accept_new_fingerprint", "deny_new_fingerprint"}})
+			return
+		}
+		_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_fail", fmt.Sprintf("needrestart restart-all failed: %v", err))
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", "Ran needrestart coordinated restart (all safe services)")
 	writeJSON(w, 200, res)
 }
 

@@ -524,6 +524,53 @@ func isHostKeyErr(err error) bool {
 	return errors.As(err, &hkErr)
 }
 
+// needrestartMissingMarker is emitted when the host has no needrestart binary at all.
+const needrestartMissingMarker = "__NEEDRESTART_MISSING__"
+
+// restartAllCmd builds the remote command for the coordinated bulk restart: run
+// `needrestart -r a` non-interactively if needrestart is installed, else emit the missing
+// marker. `|| true` prevents needrestart's variable exit code (it can exit non-zero merely to
+// signal "reboot recommended") from being reported as a failure.
+func restartAllCmd() string {
+	return "if command -v needrestart >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive needrestart -r a 2>&1 || true; else echo " + needrestartMissingMarker + "; fi"
+}
+
+// RestartAllViaNeedrestart runs needrestart's own coordinated auto-restart pass
+// (`needrestart -r a`) — the same pass that runs after `apt upgrade` on Debian/Ubuntu. It
+// restarts the flagged services in dependency order using their correct restart methods
+// (including the coordinated handlers for special units) and AUTOMATICALLY SKIPS the units
+// its override_rc marks as unsafe to restart live — dbus, all network daemons, docker,
+// display managers, gettys. Those stay flagged and are surfaced as reboot-required by the
+// next scan. This is the safe "just apply what the upgrade needs" bulk action.
+//
+// `|| true` keeps needrestart's variable exit code (it can exit non-zero merely to signal
+// "reboot recommended") from being reported as a command failure; the re-scan is the source
+// of truth for what remains. A dropped connection is still surfaced via ErrConnectionLost.
+// If needrestart isn't installed there is nothing to restart (detection needs it too), so we
+// return a clear, actionable error rather than silently doing nothing.
+func (c *Client) RestartAllViaNeedrestart(host models.Host, seal *crypto.SealBox) (models.RestartResult, error) {
+	out, err := c.runPrivileged(context.Background(), host, seal, restartAllCmd())
+	out = strings.TrimSpace(out)
+	switch {
+	case isHostKeyErr(err):
+		return models.RestartResult{}, err
+	case strings.Contains(out, needrestartMissingMarker):
+		msg := "needrestart is not installed on this host — install it (apt install needrestart) so Patchdeck can detect and safely restart services after upgrades."
+		return models.RestartResult{Success: false, Output: msg}, fmt.Errorf("%s", msg)
+	case errors.Is(err, ErrConnectionLost):
+		// needrestart skips the session-critical units, so a drop here is unusual; treat the
+		// pass as dispatched and let the re-scan confirm.
+		return models.RestartResult{Success: true, Output: out + "\n(connection dropped during restart — reconnect to confirm)"}, nil
+	case err != nil:
+		return models.RestartResult{Success: false, Output: out}, fmt.Errorf("needrestart restart failed: %s", stripAuthPromptNoise(err.Error()))
+	default:
+		if out == "" {
+			out = "needrestart: nothing to restart."
+		}
+		return models.RestartResult{Success: true, Output: out}, nil
+	}
+}
+
 func (c *Client) Power(host models.Host, seal *crypto.SealBox, action string) error {
 	// Use systemctl for graceful systemd-managed reboot/shutdown.
 	// Wrap in nohup + setsid so the command survives SSH session teardown.

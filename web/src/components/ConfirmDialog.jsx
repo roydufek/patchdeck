@@ -8,7 +8,7 @@ import React from 'react'
  *   message    - string, dialog body text
  *   confirmLabel - string, label for the confirm button (default: "Confirm")
  *   cancelLabel  - string, label for the cancel button (default: "Cancel")
- *   confirmColor - 'red' | 'blue' (default: 'red')
+ *   confirmColor - 'red' | 'blue' | 'emerald' (default: 'red')
  *   onConfirm  - function, called when user confirms
  *   onCancel   - function, called when user cancels or clicks backdrop
  *   busy       - boolean, disable buttons while busy (optional)
@@ -21,7 +21,9 @@ export default function ConfirmDialog({
 
   const confirmColorClass = confirmColor === 'blue'
     ? 'bg-blue-600 hover:bg-blue-500 text-white'
-    : 'bg-red-600 hover:bg-red-500 text-white'
+    : confirmColor === 'emerald'
+      ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+      : 'bg-red-600 hover:bg-red-500 text-white'
 
   return (
     <div

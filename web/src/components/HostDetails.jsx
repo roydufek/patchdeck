@@ -147,13 +147,14 @@ export default function HostDetails({
   onResolveHostKeyMismatch, onUpdateHostNotificationPrefs,
   onLoadHostKeyAudit, hostKeyAudit,
   onEdit, onDelete,
-  onRestartServices, onReboot, onShutdown
+  onRestartServices, onRestartAll, onReboot, onShutdown
 }) {
   const [auditOpen, setAuditOpen] = useState(false)
   const [rawOutputOpen, setRawOutputOpen] = useState(false)
   const [selectedServices, setSelectedServices] = useState([])
   const [restartedServices, setRestartedServices] = useState([]) // last submitted for restart — to detect units that don't clear
-  const [restartConfirm, setRestartConfirm] = useState(null) // 'reboot' | 'restart-services' | null
+  const [restartConfirm, setRestartConfirm] = useState(null) // 'reboot' | 'restart-services' | 'restart-all' | null
+  const [advancedRestartOpen, setAdvancedRestartOpen] = useState(false)
 
   const checksEnabled = h.checks_enabled !== false
   const hostKeyStatus = hostKeyHealth(h)
@@ -171,6 +172,10 @@ export default function HostDetails({
   const restartServicesCount = Array.isArray(snap?.needs_restart) ? snap.needs_restart.length : 0
   const restartServices = Array.isArray(snap?.needs_restart) ? snap.needs_restart : []
   const restartNeeded = !!(snap?.needs_reboot || restartServicesCount > 0)
+  // Units that needrestart's coordinated pass will skip as unsafe to restart live — pre-deselected
+  // in the advanced list and labelled, mirroring needrestart's own interactive screen.
+  const safeRestartServices = restartServices.filter(s => !isRiskyRestartUnit(s))
+  const needrestartInstalled = snap?.needrestart_found !== false
 
   const rebootBusy = !!actionBusy[`${h.id}:reboot`]
   const restartServicesBusy = !!actionBusy[`${h.id}:restart-services`]
@@ -303,6 +308,19 @@ export default function HostDetails({
                   : 'needrestart is not installed — service restart detection is unavailable.'}
           </p>
 
+          {/* needrestart not installed — recommend it (detection + safe restart both depend on it) */}
+          {!needrestartInstalled && (
+            <div className="rounded-lg border border-blue-300/60 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 px-4 py-3 text-xs space-y-1.5">
+              <p className="font-medium text-blue-700 dark:text-blue-300">needrestart isn’t installed on this host</p>
+              <p className="text-blue-700/90 dark:text-blue-300/80 leading-relaxed">
+                Patchdeck relies on <span className="font-mono">needrestart</span> to detect which services need
+                restarting after an upgrade — and to restart them safely (coordinated, and skipping units that would
+                break your session). Install it for full functionality:
+              </p>
+              <p className="font-mono text-[11px] text-blue-800 dark:text-blue-200 bg-blue-100/60 dark:bg-blue-500/10 rounded px-2 py-1 inline-block">apt install needrestart</p>
+            </div>
+          )}
+
           {/* Reboot required */}
           {snap.needs_reboot && onReboot && (
             <div className="rounded-lg border border-red-300 dark:border-red-800/50 bg-red-50 dark:bg-red-950/20 px-4 py-3">
@@ -320,54 +338,95 @@ export default function HostDetails({
             </div>
           )}
 
-          {/* Service restarts */}
-          {restartServices.length > 0 && onRestartServices && (
-            <div className="rounded-lg border border-gray-200 dark:border-zinc-700/60 bg-gray-50 dark:bg-zinc-900/60 px-4 py-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-gray-700 dark:text-zinc-300 text-xs font-medium">Services needing restart</p>
-                <label className="flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-zinc-500 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={selectedServices.length === restartServices.length && restartServices.length > 0}
-                    onChange={e => {
-                      setSelectedServices(e.target.checked ? [...restartServices] : [])
-                    }}
-                    className="h-3 w-3 rounded border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-900 text-emerald-500 focus:ring-0 focus:ring-offset-0 accent-emerald-500"
-                  />
-                  Select all
-                </label>
+          {/* Service restarts — needrestart-driven: one safe coordinated action, granular under Advanced */}
+          {restartServices.length > 0 && (onRestartAll || onRestartServices) && (
+            <div className="rounded-lg border border-gray-200 dark:border-zinc-700/60 bg-gray-50 dark:bg-zinc-900/60 px-4 py-3 space-y-3">
+              <div>
+                <p className="text-gray-700 dark:text-zinc-300 text-xs font-medium">
+                  {restartServicesCount} service{restartServicesCount !== 1 ? 's' : ''} flagged by needrestart
+                </p>
+                <p className="text-[11px] text-gray-500 dark:text-zinc-500 mt-0.5 leading-relaxed">
+                  Restart them the way needrestart would after an upgrade — coordinated, in dependency order,
+                  automatically skipping units that can’t be safely restarted live (those need a reboot).
+                </p>
               </div>
-              <div className="grid sm:grid-cols-2 gap-1">
-                {restartServices.map(svc => {
-                  const checked = selectedServices.includes(svc)
-                  return (
-                    <label key={svc} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-100 dark:hover:bg-zinc-800/50 cursor-pointer select-none transition-colors">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={e => {
-                          setSelectedServices(prev =>
-                            e.target.checked ? [...prev, svc] : prev.filter(s => s !== svc)
+
+              {/* Primary: coordinated safe restart via needrestart -r a */}
+              {onRestartAll && safeRestartServices.length > 0 && (
+                <button
+                  onClick={() => setRestartConfirm('restart-all')}
+                  disabled={restartServicesBusy}
+                  className="rounded-lg px-3 py-1.5 text-xs bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 transition-colors"
+                >
+                  {restartServicesBusy ? 'Restarting…' : 'Restart services safely'}
+                </button>
+              )}
+
+              {/* Advanced: pick individual services (risky ones excluded from select-all + labelled) */}
+              {onRestartServices && (
+                <div className="pt-1 border-t border-gray-200/70 dark:border-zinc-700/50">
+                  <button
+                    onClick={() => setAdvancedRestartOpen(v => !v)}
+                    className="text-[11px] text-gray-500 dark:text-zinc-500 hover:text-gray-700 dark:hover:text-zinc-300 transition-colors"
+                  >
+                    {advancedRestartOpen ? '▾' : '▸'} Advanced — restart individual services
+                  </button>
+                  {advancedRestartOpen && (
+                    <div className="mt-2 space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-[11px] text-gray-500 dark:text-zinc-500 leading-relaxed">
+                          Risky units (dbus/logind) are excluded from “select all safe” — restarting them live can
+                          lock out SSH; Patchdeck routes them through needrestart’s coordinated handler or a reboot.
+                        </p>
+                        <label className="flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-zinc-500 cursor-pointer select-none shrink-0">
+                          <input
+                            type="checkbox"
+                            checked={safeRestartServices.length > 0 && selectedServices.length === safeRestartServices.length && selectedServices.every(s => !isRiskyRestartUnit(s))}
+                            onChange={e => setSelectedServices(e.target.checked ? [...safeRestartServices] : [])}
+                            className="h-3 w-3 rounded border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-900 text-emerald-500 focus:ring-0 focus:ring-offset-0 accent-emerald-500"
+                          />
+                          Select all safe
+                        </label>
+                      </div>
+                      <div className="grid sm:grid-cols-2 gap-1">
+                        {restartServices.map(svc => {
+                          const checked = selectedServices.includes(svc)
+                          const risky = isRiskyRestartUnit(svc)
+                          return (
+                            <label key={svc} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-100 dark:hover:bg-zinc-800/50 cursor-pointer select-none transition-colors">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={e => {
+                                  setSelectedServices(prev =>
+                                    e.target.checked ? [...prev, svc] : prev.filter(s => s !== svc)
+                                  )
+                                }}
+                                className="h-3 w-3 rounded border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-900 text-emerald-500 focus:ring-0 focus:ring-offset-0 accent-emerald-500"
+                              />
+                              <span className="font-mono text-[11px] text-gray-700 dark:text-zinc-300 truncate">{svc}</span>
+                              {risky && (
+                                <span className="text-[10px] text-amber-600 dark:text-amber-400/90 shrink-0">coordinated · may need reboot</span>
+                              )}
+                            </label>
                           )
-                        }}
-                        className="h-3 w-3 rounded border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-900 text-emerald-500 focus:ring-0 focus:ring-offset-0 accent-emerald-500"
-                      />
-                      <span className="font-mono text-[11px] text-gray-700 dark:text-zinc-300 truncate">{svc}</span>
-                    </label>
-                  )
-                })}
-              </div>
-              <button
-                onClick={() => setRestartConfirm('restart-services')}
-                disabled={selectedServices.length === 0 || restartServicesBusy}
-                className="rounded-lg px-3 py-1.5 text-xs bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 transition-colors"
-              >
-                {restartServicesBusy
-                  ? 'Restarting…'
-                  : selectedServices.length > 0
-                    ? `Restart ${selectedServices.length} service${selectedServices.length !== 1 ? 's' : ''}`
-                    : 'Restart selected'}
-              </button>
+                        })}
+                      </div>
+                      <button
+                        onClick={() => setRestartConfirm('restart-services')}
+                        disabled={selectedServices.length === 0 || restartServicesBusy}
+                        className="rounded-lg px-3 py-1.5 text-xs border border-gray-300 dark:border-zinc-600 text-gray-700 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 disabled:opacity-40 transition-colors"
+                      >
+                        {restartServicesBusy
+                          ? 'Restarting…'
+                          : selectedServices.length > 0
+                            ? `Restart ${selectedServices.length} selected`
+                            : 'Restart selected'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -440,6 +499,19 @@ export default function HostDetails({
               setRestartConfirm(null)
               setRestartedServices(selectedServices)
               onRestartServices(h.id, selectedServices)
+            }}
+            onCancel={() => setRestartConfirm(null)}
+          />
+          <ConfirmDialog
+            open={restartConfirm === 'restart-all'}
+            title="Restart services safely"
+            message={`Run needrestart's coordinated restart on ${h.name}? It restarts the ${safeRestartServices.length} safe service${safeRestartServices.length !== 1 ? 's' : ''} in dependency order and skips units that can't be safely restarted live (those need a reboot).`}
+            confirmLabel="Restart safely"
+            confirmColor="emerald"
+            busy={restartServicesBusy}
+            onConfirm={() => {
+              setRestartConfirm(null)
+              onRestartAll(h.id)
             }}
             onCancel={() => setRestartConfirm(null)}
           />

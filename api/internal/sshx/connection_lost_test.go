@@ -122,6 +122,29 @@ func TestRiskyRestartCmd(t *testing.T) {
 	}
 }
 
+func TestRestartAllCmd(t *testing.T) {
+	cmd := restartAllCmd()
+	// The safe coordinated bulk pass = needrestart's own `-r a`, non-interactive...
+	if !strings.Contains(cmd, "needrestart -r a") {
+		t.Errorf("restartAllCmd missing `needrestart -r a`: %q", cmd)
+	}
+	if !strings.Contains(cmd, "DEBIAN_FRONTEND=noninteractive") {
+		t.Errorf("restartAllCmd not non-interactive: %q", cmd)
+	}
+	// ...gated on needrestart being present, else the missing-marker (so the caller returns a
+	// clear "install needrestart" error instead of silently doing nothing)...
+	if !strings.Contains(cmd, "command -v needrestart") {
+		t.Errorf("restartAllCmd does not gate on needrestart presence: %q", cmd)
+	}
+	if !strings.Contains(cmd, needrestartMissingMarker) {
+		t.Errorf("restartAllCmd missing the not-installed marker: %q", cmd)
+	}
+	// ...and it must NOT hand-roll a naive `systemctl restart` (that's what the whole design avoids).
+	if strings.Contains(cmd, "systemctl restart") {
+		t.Errorf("restartAllCmd must delegate to needrestart, not run `systemctl restart`: %q", cmd)
+	}
+}
+
 func TestIsUnitNotFound(t *testing.T) {
 	yes := []error{
 		errors.New("Failed to restart systemd-user.service: Unit systemd-user.service not found."),
