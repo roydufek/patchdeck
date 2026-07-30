@@ -1,4 +1,5 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
+import { isNeedrestartDeferred, isCoordinatedRestartUnit } from '../lib/needrestart.js'
 import { hostKeyHealth } from '../utils/status.js'
 import { formatTimestamp, formatFingerprintShort, truncateText } from '../utils/format.js'
 import { timeAgo, fullDate } from '../utils/timeago.js'
@@ -130,17 +131,6 @@ function CopyableFingerprint({ label, value }) {
   )
 }
 
-// Units patchdeck won't restart with a naive `systemctl restart` — a live restart of the
-// D-Bus broker or logind severs the session bus and locks out SSH. Mirrors the backend's
-// isRiskyRestartUnit; used to give the correct "reboot to apply" guidance (vs the container-shim
-// explanation) when one of these stays flagged after a restart attempt.
-const RISKY_RESTART_UNITS = new Set([
-  'dbus', 'dbus.service', 'dbus.socket',
-  'dbus-broker', 'dbus-broker.service',
-  'systemd-logind', 'systemd-logind.service',
-])
-const isRiskyRestartUnit = (svc) => RISKY_RESTART_UNITS.has(String(svc).trim().toLowerCase())
-
 export default function HostDetails({
   host: h, scan: snap, connectivity, connection, actionState, actionError,
   actionBusy, onUpdateHostOps, onUpdateHostKeyPolicy,
@@ -169,29 +159,37 @@ export default function HostDetails({
 
   const packageCount = Array.isArray(snap?.packages) ? snap.packages.length : 0
   const deferredPackages = Array.isArray(snap?.deferred_packages) ? snap.deferred_packages : []
-  const restartServicesCount = Array.isArray(snap?.needs_restart) ? snap.needs_restart.length : 0
-  const restartServices = Array.isArray(snap?.needs_restart) ? snap.needs_restart : []
-  const restartNeeded = !!(snap?.needs_reboot || restartServicesCount > 0)
-  // Units that needrestart's coordinated pass will skip as unsafe to restart live — pre-deselected
-  // in the advanced list and labelled, mirroring needrestart's own interactive screen.
-  const safeRestartServices = restartServices.filter(s => !isRiskyRestartUnit(s))
+  const allFlagged = Array.isArray(snap?.needs_restart) ? snap.needs_restart : []
+  // needrestart's `-b` (which drives needs_restart) lists EVERY flagged unit, but its restart
+  // pass (`-r a`, our "Restart services safely") only clears the ones NOT in override_rc. Split
+  // accordingly so the count reflects what a restart can actually clear (see lib/needrestart.js):
+  //   - restartable: cleared by "Restart services safely" / an individual restart.
+  //   - deferred: needrestart won't live-restart these → reboot to apply. dbus/dbus-broker are
+  //     the exception — they have a coordinated handler, so we also offer a coordinated restart.
+  const restartableServices = allFlagged.filter(s => !isNeedrestartDeferred(s))
+  const deferredServices = allFlagged.filter(isNeedrestartDeferred)
+  const coordinatedServices = deferredServices.filter(isCoordinatedRestartUnit)
+  const restartServicesCount = restartableServices.length
   const needrestartInstalled = snap?.needrestart_found !== false
 
   const rebootBusy = !!actionBusy[`${h.id}:reboot`]
   const restartServicesBusy = !!actionBusy[`${h.id}:restart-services`]
 
-  // Services the user restarted that are STILL flagged once the follow-up scan settled.
-  // Two distinct reasons, surfaced with different guidance (gated on no action in flight so
-  // they only appear after the re-scan has refreshed needs_restart):
-  //   - risky units (dbus/dbus-broker/systemd-logind): patchdeck refused a destructive live
-  //     restart because the host had no needrestart coordinated handler — a reboot is required.
-  //   - everything else (e.g. containerd): the restart ran, but needrestart still flags it
-  //     because long-lived child processes (container shims) keep the old binary mapped.
-  const restartResidual = restartedServices.filter(s => restartServices.includes(s))
-  const rebootRequiredResidual = restartResidual.filter(isRiskyRestartUnit)
-  const shimResidual = restartResidual.filter(s => !isRiskyRestartUnit(s))
-  const showRebootRequired = rebootRequiredResidual.length > 0 && !scanBusy && !restartServicesBusy
-  const showShimResidual = shimResidual.length > 0 && !scanBusy && !restartServicesBusy
+  // Keep the selection consistent with the currently-flagged list: once a re-scan clears a
+  // unit (restarted, or no longer flagged) it must drop out of the selection too, otherwise the
+  // "Restart N selected" count goes stale (shows units no longer displayed). Only restartable
+  // units are ever selectable.
+  useEffect(() => {
+    setSelectedServices(prev => prev.filter(s => restartableServices.includes(s)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allFlagged.join(' ')])
+
+  // A restartable unit the user just restarted that is STILL flagged once the follow-up scan
+  // settled — e.g. containerd, whose per-container shim processes keep the old binary mapped, so
+  // a service restart can't replace them. (Deferred units aren't restarted here — they live in
+  // the reboot-to-apply section — so this only ever covers the shim/containerd case.)
+  const restartResidual = restartedServices.filter(s => restartableServices.includes(s))
+  const showShimResidual = restartResidual.length > 0 && !scanBusy && !restartServicesBusy
 
   const scanFailureNotificationsEnabled = h.notification_prefs?.scan_failure !== false
 
@@ -247,7 +245,8 @@ export default function HostDetails({
           <p className="text-xs font-medium text-gray-600 dark:text-zinc-400 mb-2">
             {packageCount > 0 ? `${packageCount} upgradable package${packageCount !== 1 ? 's' : ''}` : 'No upgradable packages'}
             {snap?.needs_reboot && <span className="text-amber-500 dark:text-amber-400 ml-2">· Reboot required</span>}
-            {!snap?.needs_reboot && restartNeeded && <span className="text-amber-500 dark:text-amber-400 ml-2">· {restartServicesCount} service restart{restartServicesCount !== 1 ? 's' : ''} needed</span>}
+            {!snap?.needs_reboot && restartServicesCount > 0 && <span className="text-amber-500 dark:text-amber-400 ml-2">· {restartServicesCount} service restart{restartServicesCount !== 1 ? 's' : ''} needed</span>}
+            {!snap?.needs_reboot && deferredServices.length > 0 && <span className="text-amber-500 dark:text-amber-400 ml-2">· reboot to apply</span>}
           </p>
           {snap?.packages?.length > 0 && (
             <PackageTable packages={snap.packages} />
@@ -301,8 +300,15 @@ export default function HostDetails({
               ? (snap.reboot_reason
                 ? `Reboot required — triggered by: ${snap.reboot_reason}`
                 : 'Reboot required (/var/run/reboot-required present).')
-              : restartServicesCount > 0
-                ? `${restartServicesCount} service${restartServicesCount !== 1 ? 's' : ''} flagged by needrestart.`
+              : (restartableServices.length > 0 || deferredServices.length > 0)
+                ? [
+                    restartableServices.length > 0
+                      ? `${restartableServices.length} service${restartableServices.length !== 1 ? 's' : ''} to restart`
+                      : null,
+                    deferredServices.length > 0
+                      ? `${deferredServices.length} to apply via reboot`
+                      : null,
+                  ].filter(Boolean).join(' · ')
                 : snap.needrestart_found
                   ? 'No reboot or service restarts needed.'
                   : 'needrestart is not installed — service restart detection is unavailable.'}
@@ -338,21 +344,20 @@ export default function HostDetails({
             </div>
           )}
 
-          {/* Service restarts — needrestart-driven: one safe coordinated action, granular under Advanced */}
-          {restartServices.length > 0 && (onRestartAll || onRestartServices) && (
+          {/* Restartable services — needrestart-driven: one safe action, granular under Advanced */}
+          {restartableServices.length > 0 && (onRestartAll || onRestartServices) && (
             <div className="rounded-lg border border-gray-200 dark:border-zinc-700/60 bg-gray-50 dark:bg-zinc-900/60 px-4 py-3 space-y-3">
               <div>
                 <p className="text-gray-700 dark:text-zinc-300 text-xs font-medium">
-                  {restartServicesCount} service{restartServicesCount !== 1 ? 's' : ''} flagged by needrestart
+                  {restartableServices.length} service{restartableServices.length !== 1 ? 's' : ''} can be restarted
                 </p>
                 <p className="text-[11px] text-gray-500 dark:text-zinc-500 mt-0.5 leading-relaxed">
-                  Restart them the way needrestart would after an upgrade — coordinated, in dependency order,
-                  automatically skipping units that can’t be safely restarted live (those need a reboot).
+                  Restart them the way needrestart would after an upgrade — coordinated, in dependency order.
                 </p>
               </div>
 
               {/* Primary: coordinated safe restart via needrestart -r a */}
-              {onRestartAll && safeRestartServices.length > 0 && (
+              {onRestartAll && (
                 <button
                   onClick={() => setRestartConfirm('restart-all')}
                   disabled={restartServicesBusy}
@@ -362,7 +367,7 @@ export default function HostDetails({
                 </button>
               )}
 
-              {/* Advanced: pick individual services (risky ones excluded from select-all + labelled) */}
+              {/* Advanced: pick individual services (all restartable — deferred units live in their own card) */}
               {onRestartServices && (
                 <div className="pt-1 border-t border-gray-200/70 dark:border-zinc-700/50">
                   <button
@@ -373,25 +378,21 @@ export default function HostDetails({
                   </button>
                   {advancedRestartOpen && (
                     <div className="mt-2 space-y-2">
-                      <div className="flex items-start justify-between gap-2">
-                        <p className="text-[11px] text-gray-500 dark:text-zinc-500 leading-relaxed">
-                          Risky units (dbus/logind) are excluded from “select all safe” — restarting them live can
-                          lock out SSH; Patchdeck routes them through needrestart’s coordinated handler or a reboot.
-                        </p>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[11px] text-gray-500 dark:text-zinc-500">Restart only the services you pick.</p>
                         <label className="flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-zinc-500 cursor-pointer select-none shrink-0">
                           <input
                             type="checkbox"
-                            checked={safeRestartServices.length > 0 && selectedServices.length === safeRestartServices.length && selectedServices.every(s => !isRiskyRestartUnit(s))}
-                            onChange={e => setSelectedServices(e.target.checked ? [...safeRestartServices] : [])}
+                            checked={restartableServices.length > 0 && selectedServices.length === restartableServices.length}
+                            onChange={e => setSelectedServices(e.target.checked ? [...restartableServices] : [])}
                             className="h-3 w-3 rounded border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-900 text-emerald-500 focus:ring-0 focus:ring-offset-0 accent-emerald-500"
                           />
-                          Select all safe
+                          Select all
                         </label>
                       </div>
                       <div className="grid sm:grid-cols-2 gap-1">
-                        {restartServices.map(svc => {
+                        {restartableServices.map(svc => {
                           const checked = selectedServices.includes(svc)
-                          const risky = isRiskyRestartUnit(svc)
                           return (
                             <label key={svc} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-100 dark:hover:bg-zinc-800/50 cursor-pointer select-none transition-colors">
                               <input
@@ -405,9 +406,6 @@ export default function HostDetails({
                                 className="h-3 w-3 rounded border-gray-300 dark:border-zinc-700 bg-gray-100 dark:bg-zinc-900 text-emerald-500 focus:ring-0 focus:ring-offset-0 accent-emerald-500"
                               />
                               <span className="font-mono text-[11px] text-gray-700 dark:text-zinc-300 truncate">{svc}</span>
-                              {risky && (
-                                <span className="text-[10px] text-amber-600 dark:text-amber-400/90 shrink-0">coordinated · may need reboot</span>
-                              )}
                             </label>
                           )
                         })}
@@ -430,25 +428,40 @@ export default function HostDetails({
             </div>
           )}
 
-          {/* Risky unit (dbus/logind) that patchdeck refused to restart live — reboot to apply */}
-          {showRebootRequired && (
+          {/* Units needrestart itself defers (override_rc: dbus/logind/network/docker/oneshots…) — reboot to apply */}
+          {deferredServices.length > 0 && (
             <div className="rounded-lg border border-amber-300/70 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-xs space-y-1.5">
               <p className="font-medium text-amber-700 dark:text-amber-300">
-                Reboot required to apply: <span className="font-mono">{rebootRequiredResidual.join(', ')}</span>
+                Reboot to apply: <span className="font-mono">{deferredServices.join(', ')}</span>
               </p>
               <p className="text-amber-700/90 dark:text-amber-300/80 leading-relaxed">
-                Patchdeck did <span className="font-medium">not</span> restart {rebootRequiredResidual.length > 1 ? 'these' : 'this'} live:
-                restarting the D-Bus bus or <span className="font-mono">systemd-logind</span> on a running host severs the
-                login-session manager and would lock out SSH. This host has no needrestart coordinated-restart
-                handler for {rebootRequiredResidual.length > 1 ? 'them' : 'it'}, so a reboot is the safe way to apply the update.
+                needrestart flagged {deferredServices.length > 1 ? 'these' : 'this'} but won’t restart {deferredServices.length > 1 ? 'them' : 'it'} on a
+                running host — restarting units like the D-Bus bus, <span className="font-mono">systemd-logind</span>, networking, or
+                Docker live is unsafe or wouldn’t clear the flag. A reboot is the safe way to apply the update.
               </p>
-              <button
-                onClick={() => setRestartConfirm('reboot')}
-                disabled={rebootBusy}
-                className="mt-1 rounded-lg px-3 py-1.5 text-xs border border-amber-400/60 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 disabled:opacity-40 transition-colors"
-              >
-                {rebootBusy ? 'Rebooting…' : 'Reboot host to apply'}
-              </button>
+              {onReboot && (
+                <button
+                  onClick={() => setRestartConfirm('reboot')}
+                  disabled={rebootBusy}
+                  className="mt-1 rounded-lg px-3 py-1.5 text-xs border border-amber-400/60 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 disabled:opacity-40 transition-colors"
+                >
+                  {rebootBusy ? 'Rebooting…' : 'Reboot host to apply'}
+                </button>
+              )}
+              {/* dbus is the one deferred unit with a coordinated needrestart handler — offer it as an advanced alternative to a reboot */}
+              {coordinatedServices.length > 0 && onRestartServices && (
+                <div className="pt-0.5">
+                  <button
+                    onClick={() => setRestartConfirm('restart-coordinated')}
+                    disabled={restartServicesBusy}
+                    className="text-[11px] text-amber-700/80 dark:text-amber-300/70 hover:text-amber-800 dark:hover:text-amber-200 underline underline-offset-2 disabled:opacity-40 transition-colors"
+                  >
+                    {restartServicesBusy
+                      ? 'Restarting…'
+                      : `Advanced: coordinated restart of ${coordinatedServices.join(', ')} without a reboot`}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -456,7 +469,7 @@ export default function HostDetails({
           {showShimResidual && (
             <div className="rounded-lg border border-amber-300/70 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-xs space-y-1.5">
               <p className="font-medium text-amber-700 dark:text-amber-300">
-                Still flagged after restart: <span className="font-mono">{shimResidual.join(', ')}</span>
+                Still flagged after restart: <span className="font-mono">{restartResidual.join(', ')}</span>
               </p>
               <p className="text-amber-700/90 dark:text-amber-300/80 leading-relaxed">
                 The service was restarted, but needrestart still flags it. This is expected for units
@@ -505,13 +518,27 @@ export default function HostDetails({
           <ConfirmDialog
             open={restartConfirm === 'restart-all'}
             title="Restart services safely"
-            message={`Run needrestart's coordinated restart on ${h.name}? It restarts the ${safeRestartServices.length} safe service${safeRestartServices.length !== 1 ? 's' : ''} in dependency order and skips units that can't be safely restarted live (those need a reboot).`}
+            message={`Run needrestart's coordinated restart on ${h.name}? It restarts the ${restartableServices.length} restartable service${restartableServices.length !== 1 ? 's' : ''} in dependency order. Units needrestart defers (dbus, logind, networking, …) are left for a reboot.`}
             confirmLabel="Restart safely"
             confirmColor="emerald"
             busy={restartServicesBusy}
             onConfirm={() => {
               setRestartConfirm(null)
+              setRestartedServices(restartableServices)
               onRestartAll(h.id)
+            }}
+            onCancel={() => setRestartConfirm(null)}
+          />
+          <ConfirmDialog
+            open={restartConfirm === 'restart-coordinated'}
+            title="Coordinated restart"
+            message={`Restart ${coordinatedServices.join(', ')} on ${h.name} via needrestart's coordinated handler? This restarts the D-Bus bus and re-registers its clients as a detached unit — your SSH session may briefly drop and reconnect. If the host has no handler, Patchdeck will tell you to reboot instead.`}
+            confirmLabel="Coordinated restart"
+            confirmColor="blue"
+            busy={restartServicesBusy}
+            onConfirm={() => {
+              setRestartConfirm(null)
+              onRestartServices(h.id, coordinatedServices)
             }}
             onCancel={() => setRestartConfirm(null)}
           />
