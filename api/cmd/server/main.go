@@ -192,11 +192,22 @@ func main() {
 			path := req.URL.Path
 			if f, err := fsys.Open(path); err == nil {
 				f.Close()
+				// Vite emits content-hashed assets under /assets/ (index-<hash>.js|css) — their
+				// URL changes whenever the content does, so they're safe to cache forever. Every
+				// OTHER path (notably index.html) MUST be revalidated on each load: it's the entry
+				// point that references the current hashed bundle, and if a browser caches it the
+				// user stays pinned to an OLD frontend after a deploy (they'd need to clear cache).
+				if strings.HasPrefix(path, "/assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				} else {
+					w.Header().Set("Cache-Control", "no-cache")
+				}
 				fileServer.ServeHTTP(w, req)
 				return
 			}
-			// SPA fallback: serve index.html for client-side routing
+			// SPA fallback: serve index.html for client-side routing. Never cache it (see above).
 			if idx, err := fs.Stat(os.DirFS(staticDir), "index.html"); err == nil && !idx.IsDir() {
+				w.Header().Set("Cache-Control", "no-cache")
 				req.URL.Path = "/"
 				fileServer.ServeHTTP(w, req)
 				return
