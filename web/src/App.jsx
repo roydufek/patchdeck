@@ -238,6 +238,7 @@ function AppInner() {
             hostKeyAuditByHost={hostsHook.hostKeyAuditByHost}
             onRestartServices={(hostId, services) => hostsHook.restartServices(hostId, services)}
             onRestartAll={(hostId) => hostsHook.restartAll(hostId)}
+            onRestartDeferred={(hostId, services) => hostsHook.restartDeferred(hostId, services)}
             onReboot={(hostId) => hostsHook.rebootHost(hostId)}
             onShutdown={(hostId) => hostsHook.shutdownHost(hostId)}
             error=""

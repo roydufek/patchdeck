@@ -407,6 +407,31 @@ export function useHosts(token, clearToken) {
     }
   }, [authedFetch, loadData, refreshConnectivity, setHostConnectivityState])
 
+  const restartDeferred = useCallback(async (hostId, services) => {
+    if (!authedFetch || !Array.isArray(services) || services.length === 0) return
+    const key = `${hostId}:restart-services`
+    setActionBusy(prev => ({ ...prev, [key]: true }))
+    setError('')
+    setHostActionError(prev => ({ ...prev, [hostId]: '' }))
+    try {
+      const resp = await authedFetch(`/hosts/${hostId}/restart-deferred`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ services }),
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (resp.status === 429) throw new Error(data.error || 'Rate limited — please wait before retrying.')
+      if (!resp.ok) throw new Error(apiErrorMessage(data, 'Restart failed'))
+      // These run detached and may flap the connection — hand off to the recovery monitor to
+      // reconnect and confirm (it re-scans on recovery). Services recover fast, so a shorter cap.
+      if (tokenRef.current) recoveryMonitor.startMonitor(hostId, tokenRef.current, 120)
+    } catch (e) {
+      const msg = e.message || 'Restart failed'
+      setError(msg)
+      setHostActionError(prev => ({ ...prev, [hostId]: msg }))
+    } finally {
+      setActionBusy(prev => ({ ...prev, [key]: false }))
+    }
+  }, [authedFetch, recoveryMonitor])
+
   const rebootHost = useCallback(async (hostId) => {
     if (!authedFetch) return
     const key = `${hostId}:reboot`
@@ -648,7 +673,7 @@ export function useHosts(token, clearToken) {
     hostKeyAuditByHost,
     loadData, hostAction, deleteHost, createHost,
     refreshConnectivity, updateHostOps, updateHostKeyPolicy,
-    resolveHostKeyMismatch, restartServices, restartAll, rebootHost, shutdownHost,
+    resolveHostKeyMismatch, restartServices, restartAll, restartDeferred, rebootHost, shutdownHost,
     updateHostNotificationPrefs,
     loadHostKeyAudit, resetState,
     // Streaming

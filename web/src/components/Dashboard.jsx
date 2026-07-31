@@ -57,7 +57,7 @@ export default function Dashboard({
   onUpdateHostOps, onUpdateHostKeyPolicy, onResolveHostKeyMismatch,
   onUpdateHostNotificationPrefs, onLoadHostKeyAudit, hostKeyAuditByHost,
   // restart/reboot
-  onRestartServices, onRestartAll, onReboot, onShutdown,
+  onRestartServices, onRestartAll, onRestartDeferred, onReboot, onShutdown,
   error, loading,
   // Streaming props
   onScanStream, onApplyStream, onCloseStream,
@@ -574,6 +574,7 @@ export default function Dashboard({
               hostKeyAudit={hostKeyAuditByHost?.[h.id]}
               onRestartServices={onRestartServices}
               onRestartAll={onRestartAll}
+              onRestartDeferred={onRestartDeferred}
               onReboot={onReboot}
               onShutdown={onShutdown}
               streamActive={streamHostId === h.id}

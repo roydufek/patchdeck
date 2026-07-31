@@ -145,6 +145,47 @@ func TestRestartAllCmd(t *testing.T) {
 	}
 }
 
+func TestIsDbusFamily(t *testing.T) {
+	for _, s := range []string{"dbus", "dbus.service", "dbus.socket", "dbus-broker", "dbus-broker.service", "DBUS.SERVICE"} {
+		if !isDbusFamily(s) {
+			t.Errorf("isDbusFamily(%q) = false, want true", s)
+		}
+	}
+	// logind is deferred but NOT dbus — it's safely restartable (must not be forced to reboot).
+	for _, s := range []string{"systemd-logind.service", "NetworkManager.service", "docker.service", "containerd.service"} {
+		if isDbusFamily(s) {
+			t.Errorf("isDbusFamily(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestDeferredRestartCmd(t *testing.T) {
+	// dbus: handler if present, else the absent-marker → reboot. NEVER a generic/detached restart
+	// of the bus (that severs it and locks out SSH).
+	dbus := deferredRestartCmd("dbus.service")
+	if !strings.Contains(dbus, "/etc/needrestart/restart.d/dbus.service") {
+		t.Errorf("dbus cmd missing coordinated handler path: %q", dbus)
+	}
+	if !strings.Contains(dbus, needrestartHandlerAbsentMarker) {
+		t.Errorf("dbus cmd must fall back to the reboot-marker, not a restart: %q", dbus)
+	}
+	if strings.Contains(dbus, "systemd-run") || strings.Contains(dbus, "systemctl restart dbus") {
+		t.Errorf("dbus cmd must NEVER do a generic/detached bus restart (lockout guardrail): %q", dbus)
+	}
+	// logind (and other non-dbus deferred units): handler if present, else a DETACHED systemctl
+	// restart via systemd-run — never reboot-deferred (it's safely restartable, per the Nova test).
+	logind := deferredRestartCmd("systemd-logind.service")
+	if !strings.Contains(logind, "systemd-run") {
+		t.Errorf("logind cmd must run detached via systemd-run: %q", logind)
+	}
+	if !strings.Contains(logind, "systemctl restart systemd-logind.service") {
+		t.Errorf("logind cmd missing the actual restart: %q", logind)
+	}
+	if strings.Contains(logind, needrestartHandlerAbsentMarker) {
+		t.Errorf("logind cmd must NOT be reboot-deferred (it is safely restartable): %q", logind)
+	}
+}
+
 func TestIsUnitNotFound(t *testing.T) {
 	yes := []error{
 		errors.New("Failed to restart systemd-user.service: Unit systemd-user.service not found."),

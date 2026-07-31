@@ -406,6 +406,36 @@ func riskyRestartCmd(svc string) string {
 	return "if [ -x \"" + h + "\" ]; then DEBIAN_FRONTEND=noninteractive \"" + h + "\"; else echo " + needrestartHandlerAbsentMarker + "; fi"
 }
 
+// isDbusFamily reports whether the unit is the D-Bus bus itself. These are the ONLY units for
+// which "no coordinated handler" must mean "reboot" rather than a generic restart: a naive
+// restart of the bus severs it and strands its clients (logind etc.) → SSH lockout. They may be
+// restarted ONLY via needrestart's coordinated restart.d handler (which restarts the bus AND
+// re-registers its clients), never by a plain `systemctl restart`.
+func isDbusFamily(svc string) bool {
+	switch strings.ToLower(strings.TrimSpace(svc)) {
+	case "dbus", "dbus.service", "dbus.socket", "dbus-broker", "dbus-broker.service":
+		return true
+	}
+	return false
+}
+
+// deferredRestartCmd builds the remote command to restart one needrestart-deferred (override_rc)
+// unit as an opt-in alternative to a reboot. Rule: use the unit's needrestart restart.d handler
+// whenever one exists (that IS needrestart's own handling, and for dbus it's the only safe way);
+// otherwise fall back to a plain `systemctl restart` run DETACHED via `systemd-run` — the same
+// restart needrestart would do for a unit with no special handler, but decoupled from the SSH
+// session so a connection flap (network, etc.) can't interrupt it. The sole exception is dbus:
+// with no handler it emits the absent-marker so the caller marks it reboot-required — a generic
+// restart of the bus would lock the operator out. svc is pre-validated by validServiceName.
+func deferredRestartCmd(svc string) string {
+	h := "/etc/needrestart/restart.d/" + svc
+	if isDbusFamily(svc) {
+		return "if [ -x \"" + h + "\" ]; then DEBIAN_FRONTEND=noninteractive \"" + h + "\"; else echo " + needrestartHandlerAbsentMarker + "; fi"
+	}
+	detached := "systemd-run --collect --description=\"patchdeck restart " + svc + "\" systemctl restart " + svc
+	return "if [ -x \"" + h + "\" ]; then DEBIAN_FRONTEND=noninteractive \"" + h + "\"; else " + detached + "; fi"
+}
+
 // isUnitNotFound reports whether a `systemctl restart` failure means the unit does not
 // exist / is not loaded — i.e. needrestart listed something that isn't a real restartable
 // unit. Such entries are skipped rather than reported as a hard failure.
@@ -569,6 +599,47 @@ func (c *Client) RestartAllViaNeedrestart(host models.Host, seal *crypto.SealBox
 		}
 		return models.RestartResult{Success: true, Output: out}, nil
 	}
+}
+
+// RestartDeferredDetached restarts needrestart-deferred (override_rc) units as an opt-in
+// alternative to a reboot. Each unit is restarted via its needrestart handler if it has one,
+// else a detached `systemd-run systemctl restart` (see deferredRestartCmd) — so a
+// connection-flapping unit completes regardless of the SSH session. dbus with no handler is
+// refused and returned in RebootRequired (a naive bus restart would lock out SSH). The caller
+// starts recovery monitoring afterward to reconnect and confirm.
+func (c *Client) RestartDeferredDetached(host models.Host, seal *crypto.SealBox, services []string) (models.RestartResult, error) {
+	if len(services) == 0 {
+		return models.RestartResult{Success: true, Output: "no services selected"}, nil
+	}
+	var lines []string
+	var failures []string
+	var rebootRequired []string
+	for _, svc := range services {
+		out, err := c.runPrivileged(context.Background(), host, seal, deferredRestartCmd(svc))
+		switch {
+		case isHostKeyErr(err):
+			return models.RestartResult{}, err
+		case strings.Contains(out, needrestartHandlerAbsentMarker):
+			// dbus with no coordinated handler — refuse; a generic restart would sever the bus.
+			rebootRequired = append(rebootRequired, svc)
+			lines = append(lines, "⚠ "+svc+" — no coordinated handler on this host; reboot to apply (a naive restart would sever the D-Bus bus and lock out SSH)")
+		case err == nil:
+			lines = append(lines, "✓ "+svc+" — restart dispatched (detached; reconnecting to confirm)")
+		case errors.Is(err, ErrConnectionLost):
+			// Expected for units whose restart flaps the connection — it was dispatched detached,
+			// so it runs to completion; recovery monitoring reconnects to confirm.
+			lines = append(lines, "• "+svc+" — restart dispatched; connection dropped as expected (reconnecting to confirm)")
+		default:
+			reason := stripAuthPromptNoise(err.Error())
+			lines = append(lines, "✗ "+svc+" — "+reason)
+			failures = append(failures, svc+": "+reason)
+		}
+	}
+	res := models.RestartResult{Services: services, Success: len(failures) == 0, Output: strings.Join(lines, "\n"), RebootRequired: rebootRequired}
+	if len(failures) > 0 {
+		return res, fmt.Errorf("some restarts failed — %s", strings.Join(failures, "; "))
+	}
+	return res, nil
 }
 
 func (c *Client) Power(host models.Host, seal *crypto.SealBox, action string) error {

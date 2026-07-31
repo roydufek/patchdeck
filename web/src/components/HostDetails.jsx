@@ -137,13 +137,14 @@ export default function HostDetails({
   onResolveHostKeyMismatch, onUpdateHostNotificationPrefs,
   onLoadHostKeyAudit, hostKeyAudit,
   onEdit, onDelete,
-  onRestartServices, onRestartAll, onReboot, onShutdown
+  onRestartServices, onRestartAll, onRestartDeferred, onReboot, onShutdown
 }) {
   const [auditOpen, setAuditOpen] = useState(false)
   const [rawOutputOpen, setRawOutputOpen] = useState(false)
   const [selectedServices, setSelectedServices] = useState([])
+  const [deferredSelected, setDeferredSelected] = useState([]) // deferred units the user opted to restart instead of rebooting
   const [restartedServices, setRestartedServices] = useState([]) // last submitted for restart — to detect units that don't clear
-  const [restartConfirm, setRestartConfirm] = useState(null) // 'reboot' | 'restart-services' | 'restart-all' | null
+  const [restartConfirm, setRestartConfirm] = useState(null) // 'reboot' | 'restart-services' | 'restart-all' | 'restart-deferred' | null
   const [advancedRestartOpen, setAdvancedRestartOpen] = useState(false)
 
   const checksEnabled = h.checks_enabled !== false
@@ -168,7 +169,6 @@ export default function HostDetails({
   //     the exception — they have a coordinated handler, so we also offer a coordinated restart.
   const restartableServices = allFlagged.filter(s => !isNeedrestartDeferred(s))
   const deferredServices = allFlagged.filter(isNeedrestartDeferred)
-  const coordinatedServices = deferredServices.filter(isCoordinatedRestartUnit)
   const restartServicesCount = restartableServices.length
   const needrestartInstalled = snap?.needrestart_found !== false
 
@@ -181,6 +181,7 @@ export default function HostDetails({
   // units are ever selectable.
   useEffect(() => {
     setSelectedServices(prev => prev.filter(s => restartableServices.includes(s)))
+    setDeferredSelected(prev => prev.filter(s => deferredServices.includes(s)))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allFlagged.join(' ')])
 
@@ -428,39 +429,76 @@ export default function HostDetails({
             </div>
           )}
 
-          {/* Units needrestart itself defers (override_rc: dbus/logind/network/docker/oneshots…) — reboot to apply */}
+          {/* Units needrestart itself defers (override_rc): restart the ones you pick (detached) to avoid a reboot, or reboot */}
           {deferredServices.length > 0 && (
-            <div className="rounded-lg border border-amber-300/70 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-xs space-y-1.5">
-              <p className="font-medium text-amber-700 dark:text-amber-300">
-                Reboot to apply: <span className="font-mono">{deferredServices.join(', ')}</span>
-              </p>
-              <p className="text-amber-700/90 dark:text-amber-300/80 leading-relaxed">
-                needrestart flagged {deferredServices.length > 1 ? 'these' : 'this'} but won’t restart {deferredServices.length > 1 ? 'them' : 'it'} on a
-                running host — restarting units like the D-Bus bus, <span className="font-mono">systemd-logind</span>, networking, or
-                Docker live is unsafe or wouldn’t clear the flag. A reboot is the safe way to apply the update.
-              </p>
-              {onReboot && (
-                <button
-                  onClick={() => setRestartConfirm('reboot')}
-                  disabled={rebootBusy}
-                  className="mt-1 rounded-lg px-3 py-1.5 text-xs border border-amber-400/60 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 disabled:opacity-40 transition-colors"
-                >
-                  {rebootBusy ? 'Rebooting…' : 'Reboot host to apply'}
-                </button>
-              )}
-              {/* dbus is the one deferred unit with a coordinated needrestart handler — offer it as an advanced alternative to a reboot */}
-              {coordinatedServices.length > 0 && onRestartServices && (
-                <div className="pt-0.5">
-                  <button
-                    onClick={() => setRestartConfirm('restart-coordinated')}
-                    disabled={restartServicesBusy}
-                    className="text-[11px] text-amber-700/80 dark:text-amber-300/70 hover:text-amber-800 dark:hover:text-amber-200 underline underline-offset-2 disabled:opacity-40 transition-colors"
-                  >
-                    {restartServicesBusy
-                      ? 'Restarting…'
-                      : `Advanced: coordinated restart of ${coordinatedServices.join(', ')} without a reboot`}
-                  </button>
+            <div className="rounded-lg border border-amber-300/70 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-4 py-3 text-xs space-y-2">
+              <div>
+                <p className="font-medium text-amber-700 dark:text-amber-300">
+                  {deferredServices.length} unit{deferredServices.length !== 1 ? 's' : ''} needrestart won’t auto-restart
+                </p>
+                <p className="text-amber-700/90 dark:text-amber-300/80 leading-relaxed mt-0.5">
+                  needrestart flagged {deferredServices.length > 1 ? 'these' : 'this'} but leaves {deferredServices.length > 1 ? 'them' : 'it'} for you to decide —
+                  restarting the D-Bus bus, <span className="font-mono">systemd-logind</span>, networking, or Docker live can be disruptive.
+                  Restart the ones you choose to avoid a reboot (each runs detached; your connection may briefly drop and reconnect),
+                  or reboot to apply everything. D-Bus only ever restarts via its coordinated handler — if the host has none, it needs a reboot.
+                </p>
+              </div>
+              {onRestartDeferred ? (
+                <div className="space-y-1.5">
+                  <div className="grid sm:grid-cols-2 gap-1">
+                    {deferredServices.map(svc => {
+                      const checked = deferredSelected.includes(svc)
+                      return (
+                        <label key={svc} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-amber-100/50 dark:hover:bg-amber-500/10 cursor-pointer select-none transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={e => {
+                              setDeferredSelected(prev => e.target.checked ? [...prev, svc] : prev.filter(s => s !== svc))
+                            }}
+                            className="h-3 w-3 rounded border-amber-400/60 bg-amber-50 dark:bg-amber-900/30 text-amber-600 focus:ring-0 focus:ring-offset-0 accent-amber-600"
+                          />
+                          <span className="font-mono text-[11px] text-amber-800 dark:text-amber-200 truncate">{svc}</span>
+                          {isCoordinatedRestartUnit(svc) && (
+                            <span className="text-[10px] text-amber-600/80 dark:text-amber-400/70 shrink-0">via handler</span>
+                          )}
+                        </label>
+                      )
+                    })}
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-0.5">
+                    <button
+                      onClick={() => setRestartConfirm('restart-deferred')}
+                      disabled={deferredSelected.length === 0 || restartServicesBusy}
+                      className="rounded-lg px-3 py-1.5 text-xs bg-amber-600 text-white hover:bg-amber-500 disabled:opacity-40 transition-colors"
+                    >
+                      {restartServicesBusy
+                        ? 'Restarting…'
+                        : deferredSelected.length > 0
+                          ? `Restart ${deferredSelected.length} selected`
+                          : 'Restart selected'}
+                    </button>
+                    {onReboot && (
+                      <button
+                        onClick={() => setRestartConfirm('reboot')}
+                        disabled={rebootBusy}
+                        className="rounded-lg px-3 py-1.5 text-xs border border-amber-400/60 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 disabled:opacity-40 transition-colors"
+                      >
+                        {rebootBusy ? 'Rebooting…' : 'Reboot host to apply'}
+                      </button>
+                    )}
+                  </div>
                 </div>
+              ) : (
+                onReboot && (
+                  <button
+                    onClick={() => setRestartConfirm('reboot')}
+                    disabled={rebootBusy}
+                    className="mt-1 rounded-lg px-3 py-1.5 text-xs border border-amber-400/60 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-500/20 disabled:opacity-40 transition-colors"
+                  >
+                    {rebootBusy ? 'Rebooting…' : 'Reboot host to apply'}
+                  </button>
+                )
               )}
             </div>
           )}
@@ -530,15 +568,16 @@ export default function HostDetails({
             onCancel={() => setRestartConfirm(null)}
           />
           <ConfirmDialog
-            open={restartConfirm === 'restart-coordinated'}
-            title="Coordinated restart"
-            message={`Restart ${coordinatedServices.join(', ')} on ${h.name} via needrestart's coordinated handler? This restarts the D-Bus bus and re-registers its clients as a detached unit — your SSH session may briefly drop and reconnect. If the host has no handler, Patchdeck will tell you to reboot instead.`}
-            confirmLabel="Coordinated restart"
+            open={restartConfirm === 'restart-deferred'}
+            title="Restart deferred units"
+            message={`Restart ${deferredSelected.join(', ')} on ${h.name} instead of rebooting? Each runs detached, so your connection may briefly drop — Patchdeck will reconnect and confirm. D-Bus (if selected) uses its coordinated handler; a unit with no handler is left for a reboot.`}
+            confirmLabel={`Restart ${deferredSelected.length}`}
             confirmColor="blue"
             busy={restartServicesBusy}
             onConfirm={() => {
               setRestartConfirm(null)
-              onRestartServices(h.id, coordinatedServices)
+              onRestartDeferred(h.id, deferredSelected)
+              setDeferredSelected([])
             }}
             onCancel={() => setRestartConfirm(null)}
           />

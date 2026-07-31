@@ -138,6 +138,7 @@ func main() {
 		pr.Post("/api/hosts/{id}/apply", a.applyUpdates)
 		pr.Post("/api/hosts/{id}/restart-services", a.restartServices)
 		pr.Post("/api/hosts/{id}/restart-all", a.restartAll)
+		pr.Post("/api/hosts/{id}/restart-deferred", a.restartDeferred)
 		pr.Post("/api/hosts/{id}/power", a.powerAction)
 		pr.Get("/api/jobs", a.listJobs)
 		pr.Post("/api/jobs", a.createJob)
@@ -889,6 +890,56 @@ func (a *app) restartAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", "Ran needrestart coordinated restart (all safe services)")
+	writeJSON(w, 200, res)
+}
+
+// restartDeferred restarts needrestart-deferred (override_rc) units as an opt-in alternative to
+// a reboot — detached, so a connection flap can't interrupt it. dbus uses its coordinated
+// handler or is refused (reboot-required); everything else gets a detached `systemctl restart`.
+// The frontend starts recovery monitoring after this returns.
+func (a *app) restartDeferred(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if ok, retryAfter := a.limiter.Allow(id + ":restart"); !ok {
+		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
+		return
+	}
+	host, err := db.GetHost(a.db, id)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"error": "host not found"})
+		return
+	}
+	var req struct {
+		Services []string `json:"services"`
+	}
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if len(req.Services) == 0 || len(req.Services) > 100 {
+		writeJSON(w, 400, map[string]string{"error": "invalid services list"})
+		return
+	}
+	for _, s := range req.Services {
+		if !validServiceName(s) {
+			writeJSON(w, 400, map[string]string{"error": fmt.Sprintf("invalid service name: %q", s)})
+			return
+		}
+	}
+	res, err := a.sshClient.RestartDeferredDetached(host, a.secrets, req.Services)
+	if err != nil {
+		var hkErr *sshx.HostKeyError
+		if errors.As(err, &hkErr) {
+			writeJSON(w, 409, map[string]any{"error": hkErr.Message, "code": "host_key_mismatch", "operator_action_required": true, "expected_fingerprint": hkErr.ExpectedFingerprint, "presented_fingerprint": hkErr.PresentedFingerprint, "actions": []string{"accept_new_fingerprint", "deny_new_fingerprint"}})
+			return
+		}
+		_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_fail", fmt.Sprintf("Detached restart failed: %v", err))
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	msg := fmt.Sprintf("Restarted %d deferred service(s) detached: %s", len(req.Services), strings.Join(req.Services, ", "))
+	if len(res.RebootRequired) > 0 {
+		msg += fmt.Sprintf(" — %d require a reboot: %s", len(res.RebootRequired), strings.Join(res.RebootRequired, ", "))
+	}
+	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", msg)
 	writeJSON(w, 200, res)
 }
 
