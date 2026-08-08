@@ -9,20 +9,23 @@ import { useToastContext } from './Toast.jsx'
 function RecoveryBanner({ recoveryMonitor, hostId }) {
   const [dismissed, setDismissed] = useState(false)
   const autoDismissRef = useRef(null)
+  const m = recoveryMonitor.monitors?.get(hostId)
+  const status = m?.status
 
   // Auto-dismiss recovered banner after 5s
   useEffect(() => {
-    if (recoveryMonitor.status === 'recovered' && recoveryMonitor.hostId === hostId) {
+    if (status === 'recovered') {
       autoDismissRef.current = setTimeout(() => setDismissed(true), 5000)
       return () => clearTimeout(autoDismissRef.current)
     }
     setDismissed(false)
-  }, [recoveryMonitor.status, recoveryMonitor.hostId, hostId])
+  }, [status])
 
-  if (!recoveryMonitor || recoveryMonitor.hostId !== hostId) return null
+  if (!m) return null
+  const timeoutSec = m.timeoutSec || 180
 
-  if (recoveryMonitor.status === 'monitoring') {
-    const pct = recoveryMonitor.elapsed > 0 ? Math.min(100, (recoveryMonitor.elapsed / 180) * 100) : 0
+  if (status === 'monitoring') {
+    const pct = m.elapsed > 0 ? Math.min(100, (m.elapsed / timeoutSec) * 100) : 0
     return (
       <div className="mx-3 mb-3 rounded-lg border border-amber-300 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-950/30 px-4 py-3" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2 mb-2">
@@ -33,7 +36,7 @@ function RecoveryBanner({ recoveryMonitor, hostId }) {
           <span className="text-xs text-amber-700 dark:text-amber-200 font-medium">Waiting for host to come back up…</span>
         </div>
         <div className="flex items-center gap-3 mb-1.5">
-          <span className="text-[10px] text-amber-600 dark:text-amber-300/80">Attempt {recoveryMonitor.attempts} · {recoveryMonitor.elapsed}s elapsed</span>
+          <span className="text-[10px] text-amber-600 dark:text-amber-300/80">Attempt {m.attempts} · {m.elapsed}s elapsed</span>
         </div>
         <div className="h-1.5 bg-gray-200 dark:bg-zinc-800 rounded-full overflow-hidden">
           <div
@@ -45,15 +48,15 @@ function RecoveryBanner({ recoveryMonitor, hostId }) {
     )
   }
 
-  if (recoveryMonitor.status === 'recovered' && !dismissed) {
+  if (status === 'recovered' && !dismissed) {
     return (
       <div className="mx-3 mb-3 rounded-lg border border-emerald-300 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-950/30 px-4 py-2.5 flex items-center justify-between" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2">
           <span className="text-emerald-500 dark:text-emerald-400 flex-shrink-0">✓</span>
-          <span className="text-xs text-emerald-600 dark:text-emerald-300">Host recovered after {recoveryMonitor.elapsed}s</span>
+          <span className="text-xs text-emerald-600 dark:text-emerald-300">Host recovered after {m.elapsed}s</span>
         </div>
         <button
-          onClick={() => { setDismissed(true); recoveryMonitor.reset() }}
+          onClick={() => { setDismissed(true); recoveryMonitor.reset(hostId) }}
           className="text-xs text-gray-400 dark:text-zinc-500 hover:text-gray-600 dark:hover:text-zinc-300 transition-colors ml-2"
         >
           ✕
@@ -62,15 +65,15 @@ function RecoveryBanner({ recoveryMonitor, hostId }) {
     )
   }
 
-  if (recoveryMonitor.status === 'timeout') {
+  if (status === 'timeout') {
     return (
       <div className="mx-3 mb-3 rounded-lg border border-amber-300 dark:border-amber-800/50 bg-amber-50 dark:bg-amber-950/30 px-4 py-2.5 flex items-center justify-between" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2">
           <span className="text-amber-500 dark:text-amber-400 flex-shrink-0">⚠</span>
-          <span className="text-xs text-amber-600 dark:text-amber-300">Host hasn't responded after 3 minutes — may need a manual check</span>
+          <span className="text-xs text-amber-600 dark:text-amber-300">Host hasn't come back within {timeoutSec}s — may need a manual check</span>
         </div>
         <button
-          onClick={() => recoveryMonitor.reset()}
+          onClick={() => recoveryMonitor.reset(hostId)}
           className="text-xs text-gray-400 dark:text-zinc-500 hover:text-gray-600 dark:hover:text-zinc-300 transition-colors ml-2"
         >
           ✕
@@ -79,7 +82,7 @@ function RecoveryBanner({ recoveryMonitor, hostId }) {
     )
   }
 
-  if (recoveryMonitor.status === 'error') {
+  if (status === 'error') {
     return (
       <div className="mx-3 mb-3 rounded-lg border border-red-300 dark:border-red-800/50 bg-red-50 dark:bg-red-950/30 px-4 py-2.5 flex items-center justify-between" onClick={e => e.stopPropagation()}>
         <div className="flex items-center gap-2">
@@ -87,7 +90,7 @@ function RecoveryBanner({ recoveryMonitor, hostId }) {
           <span className="text-xs text-red-600 dark:text-red-300">Recovery monitoring failed</span>
         </div>
         <button
-          onClick={() => recoveryMonitor.reset()}
+          onClick={() => recoveryMonitor.reset(hostId)}
           className="text-xs text-gray-400 dark:text-zinc-500 hover:text-gray-600 dark:hover:text-zinc-300 transition-colors ml-2"
         >
           ✕

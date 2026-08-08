@@ -445,7 +445,7 @@ export function useHosts(token, clearToken) {
       const data = await resp.json().catch(() => ({}))
       if (resp.status === 429) throw new Error(data.error || 'Rate limited — please wait before retrying.')
       if (!resp.ok) throw new Error(apiErrorMessage(data, 'Reboot failed'))
-      recoveryMonitor.startMonitor(hostId, tokenRef.current, 180)
+      recoveryMonitor.startMonitor(hostId, tokenRef.current, 300)
       const actionAt = new Date().toISOString()
       setHostActionState(prev => {
         const existing = prev[hostId] || {}
@@ -600,48 +600,48 @@ export function useHosts(token, clearToken) {
     setStreamMode(null)
   }, [stream])
 
-  // React to recovery-monitor outcome (exactly once per reboot event).
-  const recoveryActedRef = useRef(false)
+  // React to recovery-monitor outcomes — per host, exactly once per recovery event. Bulk reboots
+  // monitor many hosts concurrently, so this iterates EVERY monitored host, not just one.
+  const recoveryActedRef = useRef(new Set())
   useEffect(() => {
-    if (recoveryMonitor.status === 'idle') {
-      recoveryActedRef.current = false
-      return
+    const monitors = recoveryMonitor.monitors
+    const acted = recoveryActedRef.current
+    // A host whose monitor was cleared can be rebooted again — forget it so we re-act next time.
+    for (const id of [...acted]) {
+      if (!monitors.has(id)) acted.delete(id)
     }
-    if (recoveryActedRef.current) return
-    if (recoveryMonitor.status === 'recovered' && recoveryMonitor.hostId) {
-      recoveryActedRef.current = true
-      const hostId = recoveryMonitor.hostId
-      const elapsed = recoveryMonitor.elapsed
+    monitors.forEach((m, hostId) => {
+      if (!m || acted.has(hostId) || m.status === 'monitoring') return
       const actionAt = new Date().toISOString()
-      setHostActionState(prev => {
-        const existing = prev[hostId] || {}
-        const nextAction = { mode: 'reboot', ok: true, summary: `Host recovered after ${elapsed}s`, at: actionAt }
-        return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
-      })
-      setHostActionError(prev => ({ ...prev, [hostId]: '' }))
-      refreshConnectivity(hostId)
-      scheduleFollowup(() => { hostAction(hostId, 'scan') }, 2000)
-    } else if (recoveryMonitor.status === 'timeout' && recoveryMonitor.hostId) {
-      recoveryActedRef.current = true
-      const hostId = recoveryMonitor.hostId
-      const actionAt = new Date().toISOString()
-      setHostActionState(prev => {
-        const existing = prev[hostId] || {}
-        const nextAction = { mode: 'reboot', ok: false, summary: 'Host hasn\'t responded after 3 minutes — may need a manual check', at: actionAt }
-        return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
-      })
-      refreshConnectivity(hostId)
-    } else if (recoveryMonitor.status === 'error' && recoveryMonitor.hostId) {
-      recoveryActedRef.current = true
-      const hostId = recoveryMonitor.hostId
-      const actionAt = new Date().toISOString()
-      setHostActionState(prev => {
-        const existing = prev[hostId] || {}
-        const nextAction = { mode: 'reboot', ok: false, summary: 'Recovery monitoring failed', at: actionAt }
-        return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
-      })
-    }
-  }, [recoveryMonitor.status, recoveryMonitor.hostId, refreshConnectivity, hostAction, scheduleFollowup])
+      if (m.status === 'recovered') {
+        acted.add(hostId)
+        setHostActionState(prev => {
+          const existing = prev[hostId] || {}
+          const nextAction = { mode: 'reboot', ok: true, summary: `Host recovered after ${m.elapsed}s`, at: actionAt }
+          return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
+        })
+        setHostActionError(prev => ({ ...prev, [hostId]: '' }))
+        refreshConnectivity(hostId)
+        scheduleFollowup(() => { hostAction(hostId, 'scan') }, 2000)
+      } else if (m.status === 'timeout') {
+        acted.add(hostId)
+        setHostActionState(prev => {
+          const existing = prev[hostId] || {}
+          const nextAction = { mode: 'reboot', ok: false, summary: `Host hasn't responded after ${m.timeoutSec || 180}s — may need a manual check`, at: actionAt }
+          return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
+        })
+        refreshConnectivity(hostId)
+      } else if (m.status === 'error') {
+        acted.add(hostId)
+        setHostActionState(prev => {
+          const existing = prev[hostId] || {}
+          const nextAction = { mode: 'reboot', ok: false, summary: 'Recovery monitoring failed', at: actionAt }
+          return { ...prev, [hostId]: { ...existing, reboot: nextAction, latest: nextAction } }
+        })
+        refreshConnectivity(hostId)
+      }
+    })
+  }, [recoveryMonitor.monitors, refreshConnectivity, hostAction, scheduleFollowup])
 
   const dismissPostApplyPrompt = useCallback(() => setPostApplyPrompt(null), [])
 

@@ -104,6 +104,7 @@ export default function Dashboard({
   const [bulkConfirm, setBulkConfirm] = useState(null) // { type: 'scan'|'apply'|'reboot', hostIds: [...], requestedCount?: number }
   const [bulkProgress, setBulkProgress] = useState(null) // { type, current, total, requestedCount }
   const bulkBusy = bulkProgress !== null
+  const [rebootBatch, setRebootBatch] = useState(null) // { ids: [...], total } — hosts whose recovery we're watching after a bulk reboot
 
   const toast = useToastContext()
 
@@ -297,13 +298,54 @@ export default function Dashboard({
     // Final full reload after bulk scans/applies complete
     if ((type === 'scan' || type === 'apply') && onRefreshAll) onRefreshAll()
 
-    const labels = { scan: 'Scanned', apply: 'Applied updates to', reboot: 'Rebooted' }
     const eligibleSuffix = requestedCount > total ? ` (${total} eligible of ${requestedCount} selected)` : ''
-    toast.addToast({
-      type: successCount === total ? 'success' : 'info',
-      message: `${labels[type]} ${successCount}/${total} host${total !== 1 ? 's' : ''}${eligibleSuffix}`
-    })
+    if (type === 'reboot') {
+      // The reboot COMMANDS were sent; recovery is async and per-host. Hand off to the batch
+      // watcher (progress + summary come from the recovery monitors), not a "done" toast here.
+      setRebootBatch({ ids: [...hostIds], total })
+      toast.addToast({
+        type: 'info',
+        message: `Reboot sent to ${successCount}/${total} host${total !== 1 ? 's' : ''}${eligibleSuffix} — watching for recovery…`
+      })
+    } else {
+      const labels = { scan: 'Scanned', apply: 'Applied updates to' }
+      toast.addToast({
+        type: successCount === total ? 'success' : 'info',
+        message: `${labels[type]} ${successCount}/${total} host${total !== 1 ? 's' : ''}${eligibleSuffix}`
+      })
+    }
   }, [onScan, onScanBulk, onRefreshScans, onApply, onReboot, onRefreshAll, toast])
+
+  // Bulk-reboot recovery progress, derived live from the per-host recovery monitors.
+  const rebootRecovery = useMemo(() => {
+    if (!rebootBatch) return null
+    let recovered = 0, failed = 0, waiting = 0
+    rebootBatch.ids.forEach(id => {
+      const st = recoveryMonitor?.monitors?.get(id)?.status
+      if (st === 'recovered') recovered++
+      else if (st === 'timeout' || st === 'error') failed++
+      else waiting++ // 'monitoring' or not-yet-registered
+    })
+    return { recovered, failed, waiting, total: rebootBatch.total }
+  }, [rebootBatch, recoveryMonitor?.monitors])
+
+  // When every host in the batch has settled, post one summary and clear the batch.
+  useEffect(() => {
+    if (!rebootBatch || !rebootRecovery || rebootRecovery.waiting > 0) return
+    toast.addToast({
+      type: rebootRecovery.failed === 0 ? 'success' : 'info',
+      message: `${rebootRecovery.recovered}/${rebootRecovery.total} host${rebootRecovery.total !== 1 ? 's' : ''} recovered${rebootRecovery.failed ? ` · ${rebootRecovery.failed} timed out` : ''}`
+    })
+    setRebootBatch(null)
+  }, [rebootRecovery, rebootBatch, toast])
+
+  // Safety: never leave the batch watcher stuck (e.g. a host whose reboot command failed to send
+  // never gets a monitor). Clears a bit past the reboot recovery cap (300s).
+  useEffect(() => {
+    if (!rebootBatch) return
+    const t = setTimeout(() => setRebootBatch(null), 330000)
+    return () => clearTimeout(t)
+  }, [rebootBatch])
 
   // Confirmation labels
   function bulkConfirmConfig(type, ids, requestedCount = ids.length) {
@@ -383,6 +425,11 @@ export default function Dashboard({
           {bulkBusy && (
             <span className="text-xs text-blue-400 animate-pulse">
               {bulkProgress.type === 'scan' ? 'Scanning' : bulkProgress.type === 'apply' ? 'Applying' : 'Rebooting'} {bulkProgress.current}/{bulkProgress.total}{bulkProgress.requestedCount > bulkProgress.total ? ` (eligible of ${bulkProgress.requestedCount} selected)` : ''}…
+            </span>
+          )}
+          {!bulkBusy && rebootRecovery && rebootRecovery.waiting > 0 && (
+            <span className="text-xs text-amber-400 animate-pulse">
+              Reboots: {rebootRecovery.recovered}/{rebootRecovery.total} back{rebootRecovery.failed ? ` · ${rebootRecovery.failed} timed out` : ''}…
             </span>
           )}
 
