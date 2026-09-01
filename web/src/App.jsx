@@ -308,6 +308,9 @@ function AppInner() {
             auditBusy={settingsHook.auditBusy}
             onSaveAuditRetention={settingsHook.saveAuditRetention}
             onExportActivity={settingsHook.exportActivityCSV}
+            oidcSettings={settingsHook.oidcSettings}
+            oidcBusy={settingsHook.oidcBusy}
+            onSaveOidc={settingsHook.saveOidcSettings}
             totpStatus={totpHook.totpStatus}
             setupData={totpHook.setupData}
             recoveryCodes={totpHook.recoveryCodes}

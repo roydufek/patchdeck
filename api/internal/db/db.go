@@ -1176,6 +1176,80 @@ func SetAuditRetentionDays(db *sql.DB, days int) error {
 	return err
 }
 
+// --- Generic app_settings helpers + OIDC configuration ---
+
+func getAppSetting(db *sql.DB, key string) (string, error) {
+	var v string
+	err := db.QueryRow(`SELECT value FROM app_settings WHERE key=?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+func setAppSetting(db *sql.DB, key, value string) error {
+	_, err := db.Exec(`INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+	return err
+}
+
+// GetOIDCConfig reads the OIDC settings from app_settings. The client secret comes back
+// as stored (AES-GCM ciphertext in ClientSecretEnc); the caller decrypts it.
+func GetOIDCConfig(db *sql.DB) (models.OIDCConfig, error) {
+	var c models.OIDCConfig
+	get := func(k string) string { v, _ := getAppSetting(db, k); return v }
+	c.Enabled = get("oidc_enabled") == "true"
+	c.Issuer = get("oidc_issuer")
+	c.ClientID = get("oidc_client_id")
+	c.ClientSecretEnc = get("oidc_client_secret")
+	c.BaseURL = get("oidc_base_url")
+	c.Allowed = get("oidc_allowed")
+	c.ButtonLabel = get("oidc_button_label")
+	return c, nil
+}
+
+// SetOIDCConfig persists the OIDC settings. ClientSecretEnc is written verbatim (it is
+// already encrypted by the caller) — callers that don't want to change the secret should
+// carry the existing ciphertext forward.
+func SetOIDCConfig(db *sql.DB, c models.OIDCConfig) error {
+	enabled := "false"
+	if c.Enabled {
+		enabled = "true"
+	}
+	pairs := [][2]string{
+		{"oidc_enabled", enabled},
+		{"oidc_issuer", strings.TrimSpace(c.Issuer)},
+		{"oidc_client_id", strings.TrimSpace(c.ClientID)},
+		{"oidc_client_secret", c.ClientSecretEnc},
+		{"oidc_base_url", strings.TrimSpace(c.BaseURL)},
+		{"oidc_allowed", strings.TrimSpace(c.Allowed)},
+		{"oidc_button_label", strings.TrimSpace(c.ButtonLabel)},
+	}
+	for _, p := range pairs {
+		if err := setAppSetting(db, p[0], p[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// GetPrimaryAdmin returns the account an OIDC login maps to: the oldest admin user (or
+// the oldest user of any role as a fallback). Patchdeck is effectively single-admin, so
+// this is the account whose session an IdP-authenticated user is granted.
+func GetPrimaryAdmin(db *sql.DB) (models.User, error) {
+	var u models.User
+	const cols = `SELECT id,username,role,password_hash,totp_secret,created_at FROM users`
+	err := db.QueryRow(cols+` WHERE lower(role)='admin' ORDER BY created_at ASC LIMIT 1`).
+		Scan(&u.ID, &u.Username, &u.Role, &u.PasswordHash, &u.TOTPSecret, &u.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = db.QueryRow(cols + ` ORDER BY created_at ASC LIMIT 1`).
+			Scan(&u.ID, &u.Username, &u.Role, &u.PasswordHash, &u.TOTPSecret, &u.CreatedAt)
+	}
+	if u.Role == "" {
+		u.Role = "admin"
+	}
+	return u, err
+}
+
 // PurgeOldActivity deletes activity records older than the retention window.
 // Respects a hard 30-day floor regardless of input. Returns count deleted.
 func PurgeOldActivity(db *sql.DB, retentionDays int) (int64, error) {

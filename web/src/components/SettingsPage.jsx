@@ -8,6 +8,7 @@ export default function SettingsPage({
   settingsBusy, onSave, onTest,
   tokens, tokensBusy, newToken, onClearNewToken, onCreateToken, onRevokeToken,
   auditRetentionDays, setAuditRetentionDays, auditBusy, onSaveAuditRetention, onExportActivity,
+  oidcSettings, oidcBusy, onSaveOidc,
   totpStatus, setupData, recoveryCodes, totpBusy, totpError,
   onTotpStartSetup, onTotpConfirm, onTotpDisable, onTotpCancelSetup, onTotpDismissRecoveryCodes,
   error, loading
@@ -382,6 +383,14 @@ export default function SettingsPage({
         </div>
       </div>
 
+      {/* Single sign-on (OIDC) */}
+      <OidcCard
+        oidcSettings={oidcSettings}
+        oidcBusy={oidcBusy}
+        onSaveOidc={onSaveOidc}
+        toast={toast}
+      />
+
       {/* Two-Factor Authentication */}
       <TOTPSection
         totpStatus={totpStatus}
@@ -398,6 +407,100 @@ export default function SettingsPage({
       />
 
       {error && <p className="text-sm text-red-500 dark:text-red-400 mt-4">{error}</p>}
+    </div>
+  )
+}
+
+function OidcCard({ oidcSettings, oidcBusy, onSaveOidc, toast }) {
+  const [form, setForm] = useState(oidcSettings || {})
+  const [secret, setSecret] = useState('')
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => { setForm(oidcSettings || {}) }, [oidcSettings])
+
+  const callbackUrl = (oidcSettings && oidcSettings.callback_url)
+    || (typeof window !== 'undefined' ? window.location.origin + '/auth/oidc/callback' : '/auth/oidc/callback')
+
+  const field = "w-full rounded-lg border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800/50 px-3 py-2.5 text-sm text-gray-800 dark:text-zinc-100 placeholder-gray-400 dark:placeholder-zinc-500 focus:outline-none focus:border-gray-400 dark:focus:border-zinc-500 transition-colors"
+  const upd = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  async function save() {
+    const payload = {
+      enabled: !!form.enabled,
+      issuer: (form.issuer || '').trim(),
+      client_id: (form.client_id || '').trim(),
+      base_url: (form.base_url || '').trim(),
+      allowed: (form.allowed || '').trim(),
+      button_label: (form.button_label || '').trim()
+    }
+    if (secret.trim()) payload.client_secret = secret.trim()
+    const result = await onSaveOidc(payload)
+    if (result?.ok) {
+      setSecret('')
+      toast.addToast({ type: 'success', message: 'SSO settings saved.' })
+    } else if (result?.error) {
+      toast.addToast({ type: 'error', message: result.error, duration: 6000 })
+    }
+  }
+
+  function copyCallback() {
+    navigator.clipboard?.writeText(callbackUrl).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
+  return (
+    <div className="mt-6 rounded-xl border border-gray-200 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-900/40 p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <label className="block text-xs text-gray-500 dark:text-zinc-500 font-medium uppercase tracking-wider">Single sign-on (OIDC)</label>
+        <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-zinc-300">
+          <input type="checkbox" checked={!!form.enabled} onChange={e => upd('enabled', e.target.checked)} />
+          Enabled
+        </label>
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div className="sm:col-span-2">
+          <label className="block text-xs text-gray-500 dark:text-zinc-500 mb-1">Issuer / provider URL</label>
+          <input className={field} placeholder="https://id.example.com" value={form.issuer || ''} onChange={e => upd('issuer', e.target.value)} />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 dark:text-zinc-500 mb-1">Client ID</label>
+          <input className={field} value={form.client_id || ''} onChange={e => upd('client_id', e.target.value)} />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 dark:text-zinc-500 mb-1">Client secret</label>
+          <input className={field} type="password" autoComplete="new-password"
+            placeholder={oidcSettings?.has_client_secret ? '•••••• stored — leave blank to keep' : ''}
+            value={secret} onChange={e => setSecret(e.target.value)} />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 dark:text-zinc-500 mb-1">Public base URL <span className="text-gray-400 dark:text-zinc-600">(optional)</span></label>
+          <input className={field} placeholder="https://patchdeck.example.com" value={form.base_url || ''} onChange={e => upd('base_url', e.target.value)} />
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 dark:text-zinc-500 mb-1">Button label <span className="text-gray-400 dark:text-zinc-600">(optional)</span></label>
+          <input className={field} placeholder="Sign in with SSO" value={form.button_label || ''} onChange={e => upd('button_label', e.target.value)} />
+        </div>
+        <div className="sm:col-span-2">
+          <label className="block text-xs text-gray-500 dark:text-zinc-500 mb-1">Allowed emails or groups <span className="text-gray-400 dark:text-zinc-600">(optional, comma-separated)</span></label>
+          <input className={field} placeholder="Leave blank to let your IdP gate access" value={form.allowed || ''} onChange={e => upd('allowed', e.target.value)} />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-xs text-gray-500 dark:text-zinc-500 mb-1">Redirect / callback URL — register this in your provider</label>
+        <div className="flex gap-2">
+          <input readOnly className={field + ' font-mono text-xs'} value={callbackUrl} onFocus={e => e.target.select()} />
+          <button type="button" onClick={copyCallback} className="shrink-0 rounded-lg px-3 py-2 border border-gray-300 dark:border-zinc-700 text-sm text-gray-600 dark:text-zinc-300 hover:text-gray-900 dark:hover:text-white hover:border-gray-400 dark:hover:border-zinc-500 transition-colors">{copied ? 'Copied' : 'Copy'}</button>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 pt-1">
+        <p className="text-[11px] text-gray-400 dark:text-zinc-600">Your local password and 2FA keep working as a break-glass login. Leave the allowlist empty and restrict who can use this client in your IdP.</p>
+        <button type="button" disabled={oidcBusy} onClick={save} className="shrink-0 rounded-lg px-4 py-2.5 bg-gray-900 dark:bg-white text-white dark:text-zinc-900 text-sm font-medium hover:bg-gray-800 dark:hover:bg-zinc-200 disabled:opacity-50 transition-colors">{oidcBusy ? 'Saving…' : 'Save'}</button>
+      </div>
     </div>
   )
 }

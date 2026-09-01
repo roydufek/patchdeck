@@ -146,6 +146,19 @@ type NotificationSettings struct {
 	ScanFailure      bool   `json:"scan_failure"`
 }
 
+// OIDCConfig is the persisted OpenID Connect configuration. ClientSecretEnc holds the
+// AES-GCM ciphertext of the client secret (never the plaintext, never serialized to the
+// API). The HTTP layer decrypts it only when building an authenticator.
+type OIDCConfig struct {
+	Enabled         bool
+	Issuer          string
+	ClientID        string
+	ClientSecretEnc string
+	BaseURL         string
+	Allowed         string
+	ButtonLabel     string
+}
+
 type HostNotificationPrefs struct {
 	UpdatesAvailable bool `json:"updates_available"`
 	AutoApplySuccess bool `json:"auto_apply_success"`

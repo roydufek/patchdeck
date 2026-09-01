@@ -1,4 +1,16 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
+
+function ssoErrorMessage(code) {
+  switch (code) {
+    case 'sso_disabled': return 'Single sign-on is not enabled.'
+    case 'sso_unavailable': return 'Could not reach the SSO provider. Try again shortly.'
+    case 'sso_denied': return 'Sign-in was cancelled or denied.'
+    case 'sso_expired': return 'The sign-in request expired. Please try again.'
+    case 'sso_forbidden': return 'Your account is not allowed to access Patchdeck.'
+    case 'sso_no_admin': return 'No administrator account exists yet. Complete first-run setup.'
+    default: return 'Single sign-on failed. Please try again.'
+  }
+}
 
 export default function LoginPage({
   setupLoading, setupStatus,
@@ -9,6 +21,8 @@ export default function LoginPage({
   error
 }) {
   const otpRef = useRef(null)
+  const [sso, setSso] = useState({ enabled: false, label: 'Sign in with SSO' })
+  const [ssoError, setSsoError] = useState('')
 
   // Focus the TOTP field when it becomes visible
   useEffect(() => {
@@ -18,6 +32,27 @@ export default function LoginPage({
       return () => clearTimeout(t)
     }
   }, [totpRequired])
+
+  // Discover whether SSO is enabled (to show the button) and surface any sso_error the
+  // OIDC callback bounced back with, then scrub it from the URL.
+  useEffect(() => {
+    let alive = true
+    fetch('/api/auth/oidc/status', { credentials: 'same-origin' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (alive && d) setSso({ enabled: !!d.enabled, label: d.label || 'Sign in with SSO' }) })
+      .catch(() => {})
+    try {
+      const params = new URLSearchParams(window.location.search)
+      const code = params.get('sso_error')
+      if (code) {
+        setSsoError(ssoErrorMessage(code))
+        params.delete('sso_error')
+        const qs = params.toString()
+        window.history.replaceState({}, '', window.location.pathname + (qs ? '?' + qs : ''))
+      }
+    } catch { /* ignore */ }
+    return () => { alive = false }
+  }, [])
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-zinc-950 text-gray-800 dark:text-zinc-100 p-6">
       <div className="w-full max-w-sm">
@@ -82,6 +117,9 @@ export default function LoginPage({
                 {bootstrapDone ? (
                   <p className="text-sm text-emerald-600 dark:text-emerald-400 mb-4">Account created! You can now sign in.</p>
                 ) : null}
+                {ssoError ? (
+                  <p className="text-sm text-red-500 dark:text-red-400 mb-4">{ssoError}</p>
+                ) : null}
                 <form className="space-y-4" onSubmit={doLogin}>
                   <input
                     id="username"
@@ -112,6 +150,22 @@ export default function LoginPage({
                     {loginBusy ? 'Signing in…' : 'Sign in'}
                   </button>
                 </form>
+                {sso.enabled ? (
+                  <>
+                    <div className="flex items-center gap-3 my-4">
+                      <div className="flex-1 h-px bg-gray-200 dark:bg-zinc-800" />
+                      <span className="text-xs text-gray-400 dark:text-zinc-600">or</span>
+                      <div className="flex-1 h-px bg-gray-200 dark:bg-zinc-800" />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { window.location.href = '/auth/oidc/login' }}
+                      className="w-full rounded-lg px-4 py-2.5 border border-gray-300 dark:border-zinc-700 text-sm font-medium text-gray-700 dark:text-zinc-200 hover:border-gray-400 dark:hover:border-zinc-500 hover:bg-gray-50 dark:hover:bg-zinc-800/50 transition-colors"
+                    >
+                      {sso.label}
+                    </button>
+                  </>
+                ) : null}
               </div>
 
               {/* Step 2: TOTP code entry — always in DOM for password manager detection */}

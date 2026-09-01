@@ -124,6 +124,13 @@ func main() {
 	r.Post("/api/login", a.login)
 	r.Post("/api/logout", a.logout)
 
+	// OIDC (SSO) — unauthenticated by nature: /status tells the login page whether to
+	// show the button; /login and /callback are the redirect flow. Session mint on
+	// success reuses the same cookie as local login.
+	r.Get("/api/auth/oidc/status", a.oidcStatus)
+	r.Get("/auth/oidc/login", a.oidcLogin)
+	r.Get("/auth/oidc/callback", a.oidcCallback)
+
 	r.Group(func(pr chi.Router) {
 		pr.Use(a.authMiddleware)
 		pr.Get("/api/me", a.me)
@@ -151,6 +158,8 @@ func main() {
 		pr.Post("/api/settings/notifications/test", a.testNotificationSettings)
 		pr.Get("/api/settings/audit", a.getAuditRetention)
 		pr.Put("/api/settings/audit", a.putAuditRetention)
+		pr.Get("/api/settings/oidc", a.getOIDCSettings)
+		pr.Put("/api/settings/oidc", a.putOIDCSettings)
 		pr.Get("/api/activity/export", a.exportActivity)
 		pr.Put("/api/hosts/{id}/notifications", a.putHostNotificationPrefs)
 		pr.Put("/api/hosts/{id}/operations", a.putHostOperationalControls)

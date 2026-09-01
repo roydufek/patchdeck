@@ -27,6 +27,13 @@ export function useSettings(token, clearToken) {
   const [auditRetentionDays, setAuditRetentionDays] = useState(30)
   const [auditBusy, setAuditBusy] = useState(false)
 
+  // OIDC (SSO) state
+  const [oidcSettings, setOidcSettings] = useState({
+    enabled: false, issuer: '', client_id: '', has_client_secret: false,
+    base_url: '', allowed: '', button_label: '', callback_url: ''
+  })
+  const [oidcBusy, setOidcBusy] = useState(false)
+
   const authedFetch = useMemo(() => {
     if (!token) return null
     return createAuthedFetch(token, clearToken)
@@ -35,10 +42,11 @@ export function useSettings(token, clearToken) {
   const loadSettings = useCallback(async () => {
     if (!authedFetch) return
     try {
-      const [notifResp, notifRuntimeResp, auditResp] = await Promise.all([
+      const [notifResp, notifRuntimeResp, auditResp, oidcResp] = await Promise.all([
         authedFetch('/settings/notifications'),
         authedFetch('/settings/notifications/runtime'),
-        authedFetch('/settings/audit')
+        authedFetch('/settings/audit'),
+        authedFetch('/settings/oidc')
       ])
       if (!notifResp.ok) throw new Error('Failed to load notification settings')
       if (!notifRuntimeResp.ok) throw new Error('Failed to load notification runtime status')
@@ -61,6 +69,19 @@ export function useSettings(token, clearToken) {
       if (auditResp.ok) {
         const audit = await auditResp.json()
         setAuditRetentionDays(audit.retention_days ?? 30)
+      }
+      if (oidcResp.ok) {
+        const o = await oidcResp.json()
+        setOidcSettings({
+          enabled: !!o.enabled,
+          issuer: o.issuer || '',
+          client_id: o.client_id || '',
+          has_client_secret: !!o.has_client_secret,
+          base_url: o.base_url || '',
+          allowed: o.allowed || '',
+          button_label: o.button_label || '',
+          callback_url: o.callback_url || ''
+        })
       }
     } catch (e) {
       setError(e.message || 'Failed to load settings')
@@ -172,6 +193,30 @@ export function useSettings(token, clearToken) {
 
   const clearNewToken = useCallback(() => setNewToken(null), [])
 
+  // --- OIDC (SSO) functions ---
+
+  const saveOidcSettings = useCallback(async (payload) => {
+    if (!authedFetch) return { ok: false }
+    setOidcBusy(true)
+    setError('')
+    try {
+      const resp = await authedFetch('/settings/oidc', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      const data = await resp.json().catch(() => ({}))
+      if (!resp.ok) throw new Error(apiErrorMessage(data, 'Failed to save SSO settings'))
+      await loadSettings()
+      return { ok: true }
+    } catch (e) {
+      setError(e.message || 'Failed to save SSO settings')
+      return { ok: false, error: e.message }
+    } finally {
+      setOidcBusy(false)
+    }
+  }, [authedFetch, loadSettings])
+
   // --- Audit retention functions ---
 
   const saveAuditRetention = useCallback(async (days) => {
@@ -227,6 +272,8 @@ export function useSettings(token, clearToken) {
     loadTokens, createToken, revokeToken,
     // Audit retention
     auditRetentionDays, setAuditRetentionDays, auditBusy,
-    saveAuditRetention, exportActivityCSV
+    saveAuditRetention, exportActivityCSV,
+    // OIDC (SSO)
+    oidcSettings, setOidcSettings, oidcBusy, saveOidcSettings
   }
 }
