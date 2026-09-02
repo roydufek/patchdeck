@@ -26,6 +26,25 @@ Keeping a homelab patched is death by a thousand `ssh box && sudo apt update && 
 
 It's **agentless**: nothing to install on your hosts, no daemon phoning home. Patchdeck connects out over SSH, checks `apt`, and streams the output back live. It runs as a **single container** right next to the rest of your self-hosted stack, encrypts every credential at rest, and has **no cloud, no telemetry, and no account** — your fleet's details never leave the box.
 
+<p align="center">
+  <img src="docs/screenshots/dashboard-dark-desktop.png" alt="Patchdeck dashboard" width="840" />
+</p>
+
+<details>
+<summary align="center"><strong>More screenshots — host detail, settings, schedules, activity, light &amp; mobile</strong></summary>
+<br>
+<p align="center"><em>Dashboard — light</em><br><img src="docs/screenshots/dashboard-light-desktop.png" alt="Dashboard (light)" width="820" /></p>
+<p align="center"><em>Host detail — packages, reboot/restart, per-host settings</em><br><img src="docs/screenshots/host-detail-dark-desktop.png" alt="Host detail" width="820" /></p>
+<p align="center"><em>Settings — notifications, SSO, tokens, 2FA</em><br><img src="docs/screenshots/settings-dark-desktop.png" alt="Settings" width="820" /></p>
+<p align="center"><em>Schedules — cron scan/apply per host, tag, or fleet</em><br><img src="docs/screenshots/schedules-dark-desktop.png" alt="Schedules" width="820" /></p>
+<p align="center"><em>Activity log</em><br><img src="docs/screenshots/activity-dark-desktop.png" alt="Activity log" width="820" /></p>
+<p align="center"><em>Mobile</em><br>
+  <img src="docs/screenshots/dashboard-dark-mobile.png" alt="Dashboard (mobile)" width="260" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/host-detail-light-mobile.png" alt="Host detail (mobile)" width="260" />
+</p>
+</details>
+
 ### Fits the way you already run things
 
 - **Point it at your fleet over SSH** — password or key auth, per host. First connection to a host pauses so **you review and approve its SSH key** before Patchdeck ever uses it.
