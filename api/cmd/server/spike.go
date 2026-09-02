@@ -9,7 +9,6 @@ import (
 	"html/template"
 	"log"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -349,69 +348,29 @@ func buildSummary(views []nextHostView) (nextSummary, []nextHostView, []nextHost
 	return s, attention, healthy
 }
 
-// tagGroup is a dashboard section for one tag (or "Healthy"/"Ungrouped").
-type tagGroup struct {
-	Tag   string
-	Hosts []nextHostView
-}
-
-// groupHealthyByTag groups the healthy (non-attention) hosts into per-tag sections. With no
-// tags anywhere it collapses to a single "Healthy" section; otherwise each tag gets a section
-// (a multi-tag host appears under each), and untagged hosts fall into "Ungrouped" last.
-func groupHealthyByTag(healthy []nextHostView) []tagGroup {
-	anyTag := false
-	for _, v := range healthy {
-		if len(v.Tags) > 0 {
-			anyTag = true
-			break
-		}
-	}
-	if !anyTag {
-		if len(healthy) == 0 {
-			return nil
-		}
-		return []tagGroup{{Tag: "Healthy", Hosts: healthy}}
-	}
-	byTag := map[string][]nextHostView{}
-	var untagged []nextHostView
-	for _, v := range healthy {
-		if len(v.Tags) == 0 {
-			untagged = append(untagged, v)
-			continue
-		}
-		for _, t := range v.Tags {
-			byTag[t] = append(byTag[t], v)
-		}
-	}
-	tags := make([]string, 0, len(byTag))
-	for t := range byTag {
-		tags = append(tags, t)
-	}
-	sort.Strings(tags)
-	groups := make([]tagGroup, 0, len(tags)+1)
-	for _, t := range tags {
-		groups = append(groups, tagGroup{Tag: t, Hosts: byTag[t]})
-	}
-	if len(untagged) > 0 {
-		groups = append(groups, tagGroup{Tag: "Ungrouped", Hosts: untagged})
-	}
-	return groups
-}
-
 func (a *app) nextDashboard(w http.ResponseWriter, r *http.Request) {
 	views, err := a.nextHostViews()
 	if err != nil {
 		http.Error(w, "failed to load hosts", http.StatusInternalServerError)
 		return
 	}
-	summary, attention, healthy := buildSummary(views)
+	summary, _, _ := buildSummary(views)
+	// Cards render into a flat pool; the client groups + sorts + filters them live (so a host
+	// re-files itself the instant a scan finishes, no reload). HasTags gates the Group-by control.
+	hasTags := false
+	for _, v := range views {
+		if len(v.Tags) > 0 {
+			hasTags = true
+			break
+		}
+	}
 	// Fan-out watchdog: how long a host may hold a concurrency slot before it's force-freed, so a
 	// severed SSE stream (proxy idle-timeout, server restart) can never permanently stall the
 	// remaining hosts. A generous ceiling — the exec timeout plus a minute — since a real scan can
 	// legitimately run that long; it's a failsafe, not the normal completion path.
 	watchdogMs := a.cfg.ExecTimeout.Milliseconds() + 60000
 	a.renderNext(w, "dashboard.html", map[string]any{
-		"Summary": summary, "Attention": attention, "Groups": groupHealthyByTag(healthy),
+		"Summary": summary, "AllHosts": views, "HasTags": hasTags,
 		"BulkConcurrency": a.cfg.BulkConcurrency, "ApplyStagger": a.cfg.ApplyStaggerSeconds,
 		"WatchdogMs": watchdogMs,
 	})

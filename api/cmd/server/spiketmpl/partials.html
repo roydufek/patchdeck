@@ -164,6 +164,8 @@
   .search{flex:1;min-width:150px;font-family:var(--fsans);font-size:14px;color:var(--ink);background:var(--surface);border:1px solid var(--border-2);border-radius:11px;padding:9px 13px;outline:none;-webkit-appearance:none;appearance:none}
   .search:focus{border-color:var(--accent)}
   .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .grpby{display:flex;align-items:center;gap:6px}
+  .grpby .grplabel{font-size:10.5px;font-weight:600;color:var(--faint);text-transform:uppercase;letter-spacing:.05em}
   .chip{font-family:var(--fsans);font-size:12.5px;font-weight:500;color:var(--muted);background:var(--surface-2);border:1px solid var(--border);border-radius:999px;padding:6px 12px;cursor:pointer;transition:border-color .15s}
   .chip:hover{border-color:var(--accent)}
   .chip.active{background:var(--accent-bg);color:var(--accent-2);border-color:var(--accent)}
@@ -346,7 +348,7 @@
 
 {{define "dot"}}<span id="dot-{{.HostID}}" class="dot {{if .Connected}}dot-up{{else}}dot-down{{end}}" title="{{if .Connected}}reachable{{else}}unreachable{{end}}" aria-label="{{if .Connected}}reachable{{else}}unreachable{{end}}"></span>{{end}}
 
-{{define "card"}}<article id="card-{{.ID}}" class="card {{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}attn{{else}}calm{{end}}" data-name="{{.Name}}" data-addr="{{.Address}}" data-tags="{{range .Tags}}{{.}} {{end}}" data-attn="{{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}1{{else}}0{{end}}" data-updates="{{if gt .UpdateCount 0}}1{{else}}0{{end}}">
+{{define "card"}}<article id="card-{{.ID}}" class="card {{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}attn{{else}}calm{{end}}" data-name="{{.Name}}" data-addr="{{.Address}}" data-tags="{{range .Tags}}{{.}} {{end}}" data-attn="{{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}1{{else}}0{{end}}" data-updates="{{if gt .UpdateCount 0}}1{{else}}0{{end}}" data-reboot="{{if or .NeedsReboot (gt .RestartCount 0)}}1{{else}}0{{end}}" data-updcount="{{.UpdateCount}}" data-seccount="{{.SecurityCount}}">
   <div class="c-top">
     <span class="host">
       <span id="dot-{{.ID}}" class="dot dot-checking" hx-get="/hosts/{{.ID}}/dot" hx-trigger="load" hx-swap="outerHTML" aria-label="checking connectivity"></span>
@@ -428,18 +430,88 @@
 })();
 </script>{{end}}
 
+{{/* pddash — the dashboard's live grouping/filtering. Cards render into a hidden flat pool;
+     this groups them (by Status or Tag), sorts attention-first, applies the facet + search
+     filter, and updates the summary counts — re-running whenever a card is swapped in after a
+     scan/apply/reboot, so a host re-files itself with no reload. While any card is still
+     streaming it filters in place (no reparenting) to avoid disturbing a live SSE panel. */}}
+{{define "pddash"}}<script>
+(function(){
+  var POOL=document.getElementById('hostpool'), GROUPS=document.getElementById('hostgroups'), EMPTY=document.getElementById('emptymsg');
+  if(!POOL||!GROUPS) return;
+  function readState(){
+    var fc=document.querySelector('#facetchips .chip.active'), gc=document.querySelector('#groupchips .chip.active'), s=document.getElementById('hostsearch');
+    return { f: fc?fc.getAttribute('data-f'):'all', g: gc?gc.getAttribute('data-g'):'status', q: ((s&&s.value)||'').toLowerCase().trim() };
+  }
+  function num(c,a){ return parseInt(c.getAttribute(a)||'0',10)||0; }
+  function matches(c,f,q){
+    if(q){ var hay=((c.getAttribute('data-name')||'')+' '+(c.getAttribute('data-addr')||'')+' '+(c.getAttribute('data-tags')||'')).toLowerCase(); if(hay.indexOf(q)<0) return false; }
+    var attn=c.getAttribute('data-attn')==='1';
+    if(f==='updates') return c.getAttribute('data-updates')==='1';
+    if(f==='reboot')  return c.getAttribute('data-reboot')==='1';
+    if(f==='healthy') return !attn;
+    return true;
+  }
+  function cmp(a,b){
+    var d=(a.getAttribute('data-attn')==='1'?0:1)-(b.getAttribute('data-attn')==='1'?0:1); if(d) return d;
+    d=(num(a,'data-seccount')>0?0:1)-(num(b,'data-seccount')>0?0:1); if(d) return d;
+    d=num(b,'data-updcount')-num(a,'data-updcount'); if(d) return d;
+    return (a.getAttribute('data-name')||'').toLowerCase()<(b.getAttribute('data-name')||'').toLowerCase()?-1:1;
+  }
+  function groupKey(c,g){ if(g==='tags'){ var t=(c.getAttribute('data-tags')||'').trim(); return t?t.split(/\s+/)[0]:'Untagged'; } return c.getAttribute('data-attn')==='1'?'Needs attention':'Healthy'; }
+  function streaming(){ return !!document.querySelector('.scanpanel'); }
+  function updateSummary(cards){
+    var attn=0,upd=0,sec=0,e;
+    cards.forEach(function(c){ if(c.getAttribute('data-attn')==='1') attn++; upd+=num(c,'data-updcount'); sec+=num(c,'data-seccount'); });
+    if(e=document.getElementById('sumAttn')) e.textContent=attn;
+    if(e=document.getElementById('sumAttnLabel')) e.textContent='host'+(attn===1?'':'s')+' need'+(attn===1?'s':'')+' attention';
+    if(e=document.getElementById('statUpdates')) e.textContent=upd;
+    if(e=document.getElementById('statSecurity')) e.textContent=sec;
+  }
+  function render(){
+    var st=readState(), all=[].slice.call(document.querySelectorAll('article.card'));
+    updateSummary(all);
+    if(streaming()){ all.forEach(function(c){ c.hidden=!matches(c,st.f,st.q); }); return; }
+    all.forEach(function(c){ c.hidden=false; POOL.appendChild(c); });
+    GROUPS.textContent='';
+    var buckets={}, keys=[];
+    all.forEach(function(c){ if(!matches(c,st.f,st.q)) return; var k=groupKey(c,st.g); if(!buckets[k]){ buckets[k]=[]; keys.push(k); } buckets[k].push(c); });
+    if(st.g==='tags'){ keys.sort(function(a,b){ if(a==='Untagged')return 1; if(b==='Untagged')return -1; return a.toLowerCase()<b.toLowerCase()?-1:1; }); }
+    else { keys.sort(function(a,b){ return a==='Needs attention'?-1:(b==='Needs attention'?1:0); }); }
+    var shown=0;
+    keys.forEach(function(k){
+      var list=buckets[k]; list.sort(cmp); shown+=list.length;
+      var quiet=(st.g==='status'&&k!=='Needs attention');
+      var sec=document.createElement('div'); sec.className='sec'+(quiet?' quiet':'');
+      var h=document.createElement('h2'); h.textContent=k; sec.appendChild(h);
+      var cnt=document.createElement('span'); cnt.className='cnt'+(quiet?' cnt-q':''); cnt.textContent=list.length; sec.appendChild(cnt);
+      var rule=document.createElement('span'); rule.className='rule'; sec.appendChild(rule);
+      GROUPS.appendChild(sec);
+      var grid=document.createElement('div'); grid.className='cards';
+      list.forEach(function(c){ grid.appendChild(c); });
+      GROUPS.appendChild(grid);
+    });
+    if(EMPTY) EMPTY.hidden = shown>0;
+  }
+  window.pdApply=render;
+  window.pdChip=function(b){ var g=b.parentNode; g.querySelectorAll('.chip').forEach(function(c){c.classList.remove('active');}); b.classList.add('active'); render(); };
+  document.addEventListener('htmx:afterSettle',function(e){ var t=e.target; if(t&&t.classList&&t.classList.contains('card')) render(); });
+  render();
+})();
+</script>{{end}}
+
 {{define "applypanel"}}<div class="scanpanel" hx-ext="sse" sse-connect="/hosts/{{.ID}}/apply/stream" sse-close="done">
   <div class="scanhead"><span class="spinner"></span> Applying updates on {{.Name}}&hellip;</div>
   <div class="scanlog" sse-swap="line" hx-swap="beforeend" hx-on::after-swap="this.scrollTop = this.scrollHeight"></div>
   {{if eq .Ctx "detail"}}<div hidden hx-get="/hosts/{{.ID}}" hx-trigger="sse:done" hx-target="body" hx-swap="outerHTML"></div>
-  {{else}}<div hidden hx-get="/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML"></div>{{end}}
+  {{else}}<div hidden hx-get="/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML transition:true"></div>{{end}}
 </div>{{end}}
 
 {{define "scanpanel"}}<div class="scanpanel" hx-ext="sse" sse-connect="/hosts/{{.ID}}/scan/stream" sse-close="done">
   <div class="scanhead"><span class="spinner"></span> Scanning {{.Name}}&hellip;</div>
   <div class="scanlog" sse-swap="line" hx-swap="beforeend" hx-on::after-swap="this.scrollTop = this.scrollHeight"></div>
   {{if eq .Ctx "detail"}}<div hidden hx-get="/hosts/{{.ID}}" hx-trigger="sse:done" hx-target="body" hx-swap="outerHTML"></div>
-  {{else}}<div hidden hx-get="/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML"></div>{{end}}
+  {{else}}<div hidden hx-get="/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML transition:true"></div>{{end}}
 </div>{{end}}
 
 {{define "smartrestartconfirm"}}<div class="applyconfirm">

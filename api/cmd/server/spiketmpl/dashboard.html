@@ -30,19 +30,19 @@
   <div class="summary">
     <div class="sum-head">
       <div class="sum-lead">
-        <span class="n">{{.Summary.NeedAttention}}</span>
-        <span class="t">host{{if ne .Summary.NeedAttention 1}}s{{end}} need{{if eq .Summary.NeedAttention 1}}s{{end}} attention</span>
+        <span class="n" id="sumAttn">{{.Summary.NeedAttention}}</span>
+        <span class="t" id="sumAttnLabel">host{{if ne .Summary.NeedAttention 1}}s{{end}} need{{if eq .Summary.NeedAttention 1}}s{{end}} attention</span>
       </div>
       <div class="sum-sub">{{.Summary.UpToDate}} up to date{{if .Summary.LastScan}} &middot; last scan {{.Summary.LastScan}}{{end}}</div>
     </div>
     <div class="stats">
       <div class="stat"><div class="v">{{.Summary.Total}}</div><div class="k">host{{if ne .Summary.Total 1}}s{{end}}</div></div>
-      <div class="stat"><div class="v">{{.Summary.Updates}}</div><div class="k">updates</div></div>
-      <div class="stat stat-sec"><div class="v">{{.Summary.Security}}</div><div class="k">security</div></div>
+      <div class="stat"><div class="v" id="statUpdates">{{.Summary.Updates}}</div><div class="k">updates</div></div>
+      <div class="stat stat-sec"><div class="v" id="statSecurity">{{.Summary.Security}}</div><div class="k">security</div></div>
     </div>
   </div>
 
-  {{if or .Attention .Groups}}
+  {{if .AllHosts}}
   <div class="bulkbar">
     <button class="btn ghost" onclick="pdBulk('scan',{{.BulkConcurrency}},0,{{.WatchdogMs}})">{{template "i-scanall"}} Scan all</button>
     {{if gt .Summary.Updates 0}}<button class="btn primary" onclick="document.getElementById('bulkconfirm').hidden=false;this.hidden=true">Apply all updates</button>{{end}}
@@ -68,52 +68,28 @@
   {{end}}
 
   <div class="filters">
-    <input class="search" id="hostsearch" type="search" placeholder="Search name or tag&hellip;" oninput="pdFilter()" autocomplete="off">
-    <div class="chips">
+    <input class="search" id="hostsearch" type="search" placeholder="Search name or tag&hellip;" oninput="pdApply()" autocomplete="off">
+    <div class="chips" id="facetchips">
       <button class="chip active" data-f="all" onclick="pdChip(this)">All</button>
-      <button class="chip" data-f="attention" onclick="pdChip(this)">Attention</button>
       <button class="chip" data-f="updates" onclick="pdChip(this)">Updates</button>
+      <button class="chip" data-f="reboot" onclick="pdChip(this)">Reboot / restart</button>
       <button class="chip" data-f="healthy" onclick="pdChip(this)">Healthy</button>
     </div>
+    {{if .HasTags}}<div class="grpby" id="groupchips">
+      <span class="grplabel">Group</span>
+      <button class="chip active" data-g="status" onclick="pdChip(this)">Status</button>
+      <button class="chip" data-g="tags" onclick="pdChip(this)">Tags</button>
+    </div>{{end}}
     <button class="iconbtn" onclick="location.reload()" title="Refresh" aria-label="Refresh" style="width:36px;height:36px">{{template "i-refresh"}}</button>
   </div>
-  {{end}}
 
-  {{if .Attention}}
-  <div class="sec"><h2>Needs attention</h2><span class="cnt">{{len .Attention}}</span><span class="rule"></span></div>
-  <div class="cards">{{range .Attention}}{{template "card" .}}{{end}}</div>
-  {{end}}
-
-  {{range .Groups}}
-  <div class="sec quiet"><h2>{{.Tag}}</h2><span class="cnt cnt-q">{{len .Hosts}}</span><span class="rule"></span></div>
-  <div class="cards">{{range .Hosts}}{{template "card" .}}{{end}}</div>
-  {{end}}
-
-  {{if and (not .Attention) (not .Groups)}}
+  <div id="hostpool" hidden>{{range .AllHosts}}{{template "card" .}}{{end}}</div>
+  <div id="hostgroups"></div>
+  <p class="empty" id="emptymsg" hidden>No hosts match your filter.</p>
+  {{else}}
   <p class="empty">No hosts yet — hit the + to add your first one.</p>
   {{end}}
 </div>
-<script>
-  function pdActiveFilter(){var c=document.querySelector('.chip.active');return c?c.getAttribute('data-f'):'all';}
-  function pdChip(b){document.querySelectorAll('.chip').forEach(function(c){c.classList.remove('active');});b.classList.add('active');pdFilter();}
-  function pdFilter(){
-    var el=document.getElementById('hostsearch');var q=((el&&el.value)||'').toLowerCase().trim();var f=pdActiveFilter();
-    document.querySelectorAll('article.card').forEach(function(card){
-      var name=(card.getAttribute('data-name')||'').toLowerCase();
-      var addr=(card.getAttribute('data-addr')||'').toLowerCase();
-      var tags=(card.getAttribute('data-tags')||'').toLowerCase();
-      var attn=card.getAttribute('data-attn')==='1';
-      var upd=card.getAttribute('data-updates')==='1';
-      var mText=!q||name.indexOf(q)>=0||addr.indexOf(q)>=0||tags.indexOf(q)>=0;
-      var mF=f==='all'||(f==='attention'&&attn)||(f==='updates'&&upd)||(f==='healthy'&&!attn);
-      card.hidden=!(mText&&mF);
-    });
-    document.querySelectorAll('.cards').forEach(function(cards){
-      var any=Array.prototype.some.call(cards.querySelectorAll('article.card'),function(c){return !c.hidden;});
-      cards.hidden=!any;var sec=cards.previousElementSibling;
-      if(sec&&sec.classList.contains('sec'))sec.hidden=!any;
-    });
-  }
-</script>
+{{template "pddash"}}
 </body>
 </html>
