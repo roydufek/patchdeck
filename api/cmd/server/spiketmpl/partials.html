@@ -472,34 +472,66 @@
     if(e=document.getElementById('statUpdates')) e.textContent=upd;
     if(e=document.getElementById('statSecurity')) e.textContent=sec;
   }
+  function keyBefore(k,other){ // should section k sort before section `other`?
+    var st=readState();
+    if(st.g==='status') return k==='Needs attention' && other!=='Needs attention';
+    if(k==='Untagged') return false; if(other==='Untagged') return true;
+    return k.toLowerCase()<other.toLowerCase();
+  }
+  // The grid for a group key — creating its section header in the correct order if it's new.
+  function gridForKey(k){
+    var secs=[].slice.call(GROUPS.querySelectorAll('.sec')), i;
+    for(i=0;i<secs.length;i++){ if(secs[i].querySelector('h2').textContent===k) return secs[i].nextElementSibling; }
+    var quiet=(readState().g==='status'&&k!=='Needs attention');
+    var sec=document.createElement('div'); sec.className='sec'+(quiet?' quiet':'');
+    var h=document.createElement('h2'); h.textContent=k; sec.appendChild(h);
+    var cnt=document.createElement('span'); cnt.className='cnt'+(quiet?' cnt-q':''); sec.appendChild(cnt);
+    var rule=document.createElement('span'); rule.className='rule'; sec.appendChild(rule);
+    var grid=document.createElement('div'); grid.className='cards';
+    var before=null;
+    for(i=0;i<secs.length;i++){ if(keyBefore(k, secs[i].querySelector('h2').textContent)){ before=secs[i]; break; } }
+    if(before){ GROUPS.insertBefore(sec, before); GROUPS.insertBefore(grid, before); }
+    else { GROUPS.appendChild(sec); GROUPS.appendChild(grid); }
+    return grid;
+  }
+  // Refresh section counts, drop now-empty sections, update the summary + empty message.
+  function tidy(){
+    [].slice.call(GROUPS.querySelectorAll('.cards')).forEach(function(grid){
+      var n=grid.querySelectorAll('article.card').length, sec=grid.previousElementSibling;
+      if(!n){ grid.remove(); if(sec&&sec.classList.contains('sec')) sec.remove(); }
+      else if(sec){ var c=sec.querySelector('.cnt'); if(c) c.textContent=n; }
+    });
+    updateSummary([].slice.call(document.querySelectorAll('article.card')));
+    if(EMPTY) EMPTY.hidden = !!GROUPS.querySelector('article.card');
+  }
+  // Move ONE card into its correct group, in sorted position — never touches any other card, so a
+  // card can re-file the instant it finishes while its row-mates are still streaming.
+  function placeCard(c){
+    var st=readState();
+    if(!matches(c, st.f, st.q)){ c.hidden=false; POOL.appendChild(c); return; }
+    var grid=gridForKey(groupKey(c, st.g)), sibs=[].slice.call(grid.querySelectorAll('article.card')), placed=false, i;
+    for(i=0;i<sibs.length;i++){ if(sibs[i]!==c && cmp(c, sibs[i])<0){ grid.insertBefore(c, sibs[i]); placed=true; break; } }
+    if(!placed && c.parentNode!==grid) grid.appendChild(c);
+    c.hidden=false;
+  }
   function render(){
-    var st=readState(), all=[].slice.call(document.querySelectorAll('article.card'));
-    updateSummary(all);
-    if(streaming()){ all.forEach(function(c){ c.hidden=!matches(c,st.f,st.q); }); return; }
+    var st=readState();
+    if(streaming()){ [].slice.call(document.querySelectorAll('article.card')).forEach(function(c){ c.hidden=!matches(c,st.f,st.q); }); tidy(); return; }
+    var all=[].slice.call(document.querySelectorAll('article.card'));
     all.forEach(function(c){ c.hidden=false; POOL.appendChild(c); });
     GROUPS.textContent='';
-    var buckets={}, keys=[];
-    all.forEach(function(c){ if(!matches(c,st.f,st.q)) return; var k=groupKey(c,st.g); if(!buckets[k]){ buckets[k]=[]; keys.push(k); } buckets[k].push(c); });
-    if(st.g==='tags'){ keys.sort(function(a,b){ if(a==='Untagged')return 1; if(b==='Untagged')return -1; return a.toLowerCase()<b.toLowerCase()?-1:1; }); }
-    else { keys.sort(function(a,b){ return a==='Needs attention'?-1:(b==='Needs attention'?1:0); }); }
-    var shown=0;
-    keys.forEach(function(k){
-      var list=buckets[k]; list.sort(cmp); shown+=list.length;
-      var quiet=(st.g==='status'&&k!=='Needs attention');
-      var sec=document.createElement('div'); sec.className='sec'+(quiet?' quiet':'');
-      var h=document.createElement('h2'); h.textContent=k; sec.appendChild(h);
-      var cnt=document.createElement('span'); cnt.className='cnt'+(quiet?' cnt-q':''); cnt.textContent=list.length; sec.appendChild(cnt);
-      var rule=document.createElement('span'); rule.className='rule'; sec.appendChild(rule);
-      GROUPS.appendChild(sec);
-      var grid=document.createElement('div'); grid.className='cards';
-      list.forEach(function(c){ grid.appendChild(c); });
-      GROUPS.appendChild(grid);
-    });
-    if(EMPTY) EMPTY.hidden = shown>0;
+    all.forEach(function(c){ if(matches(c,st.f,st.q)) placeCard(c); });
+    tidy();
   }
   window.pdApply=render;
   window.pdChip=function(b){ var g=b.parentNode; g.querySelectorAll('.chip').forEach(function(c){c.classList.remove('active');}); b.classList.add('active'); render(); };
-  document.addEventListener('htmx:afterSettle',function(e){ var t=e.target; if(t&&t.classList&&t.classList.contains('card')) render(); });
+  // Each card is swapped in when its scan/apply finishes; re-file just that card (its panel is
+  // gone, so moving it is safe) while any row-mates still stream. Once the fleet is idle, a full
+  // render tidies ordering. (Reboot leaves its card in place for the recovery watch — exempt.)
+  document.addEventListener('htmx:afterSettle',function(e){
+    var t=e.target; if(!(t&&t.classList&&t.classList.contains('card'))) return;
+    if(streaming()){ placeCard(t); tidy(); } else render();
+  });
   render();
 })();
 </script>{{end}}
