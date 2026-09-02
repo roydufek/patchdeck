@@ -283,6 +283,10 @@
     .summary .stats{flex:none;grid-template-columns:repeat(3,112px)}
     .bulkbar{margin-top:16px}
     .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-items:stretch}
+    /* Cards in a row are equal-height at rest — but while any card in the row is scanning (a tall
+       streaming log), stop stretching them, or the quiet neighbours balloon into big empty cards
+       to match it. They snap back to equal height once the scan panel is gone. */
+    .cards:has(.scanpanel) .card{align-self:start}
   }
 </style>{{template "errtoast"}}{{end}}
 
