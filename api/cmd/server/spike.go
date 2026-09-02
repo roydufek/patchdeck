@@ -405,9 +405,15 @@ func (a *app) nextDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	summary, attention, healthy := buildSummary(views)
+	// Fan-out watchdog: how long a host may hold a concurrency slot before it's force-freed, so a
+	// severed SSE stream (proxy idle-timeout, server restart) can never permanently stall the
+	// remaining hosts. A generous ceiling — the exec timeout plus a minute — since a real scan can
+	// legitimately run that long; it's a failsafe, not the normal completion path.
+	watchdogMs := a.cfg.ExecTimeout.Milliseconds() + 60000
 	a.renderNext(w, "dashboard.html", map[string]any{
 		"Summary": summary, "Attention": attention, "Groups": groupHealthyByTag(healthy),
 		"BulkConcurrency": a.cfg.BulkConcurrency, "ApplyStagger": a.cfg.ApplyStaggerSeconds,
+		"WatchdogMs": watchdogMs,
 	})
 }
 

@@ -394,6 +394,7 @@
   var active=null;
   function markDone(h){
     if(!active||!h||!active.inflight[h]) return;
+    if(active.timers[h]){ clearTimeout(active.timers[h]); delete active.timers[h]; }
     delete active.inflight[h]; active.finished++;
     if(active.finished>=active.total){ active=null; return; }
     active.schedule();
@@ -403,11 +404,11 @@
   });
   // Listen on document (not document.body — this script runs in <head> where body is still null).
   document.addEventListener('pd:done',function(e){ if(e.detail&&e.detail.h) markDone(e.detail.h); });
-  window.pdBulk=function(kind,cap,staggerMs){
+  window.pdBulk=function(kind,cap,staggerMs,watchdogMs){
     var els=[].slice.call(document.querySelectorAll('[data-pdbulk="'+kind+'"]'));
     if(!els.length) return;
-    cap=(cap&&cap>0)?cap:els.length; staggerMs=staggerMs||0;
-    var s={inflight:{},pending:els.slice(),total:els.length,finished:0,last:0,timer:null};
+    cap=(cap&&cap>0)?cap:els.length; staggerMs=staggerMs||0; watchdogMs=watchdogMs||0;
+    var s={inflight:{},timers:{},pending:els.slice(),total:els.length,finished:0,last:0,timer:null};
     s.count=function(){var n=0;for(var k in s.inflight){n++;} return n;};
     s.schedule=function(){
       if(s.timer) return;
@@ -416,6 +417,9 @@
         if(staggerMs>0 && wait>0){ s.timer=setTimeout(function(){s.timer=null;s.schedule();},wait); return; }
         var el=s.pending.shift(), h=el.getAttribute('data-host');
         s.inflight[h]=1; s.last=Date.now();
+        // Failsafe: if a host never reports done (severed SSE), free its slot after watchdogMs so
+        // the rest of the fleet still runs. Cleared the moment the host completes normally.
+        if(watchdogMs>0){ s.timers[h]=setTimeout((function(hid){return function(){markDone(hid);};})(h),watchdogMs); }
         if(window.htmx) htmx.trigger(el,'pdrun');
       }
     };

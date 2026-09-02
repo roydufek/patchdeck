@@ -391,6 +391,9 @@ func DeleteHost(db *sql.DB, id string) error {
 	if _, err := tx.Exec(`DELETE FROM host_key_audit WHERE host_id=?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`DELETE FROM restart_marks WHERE host_id=?`, id); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -876,33 +879,60 @@ func ListScanSnapshots(db *sql.DB) ([]models.ScanSnapshot, error) {
 
 	out := []models.ScanSnapshot{}
 	for rows.Next() {
-		var snap models.ScanSnapshot
-		var pkgJSON string
-		var deferredJSON string
-		var needsRestartJSON, restartJSON, rebootJSON string
-		var needsReboot int
-		var needrestartFound int
-		if err := rows.Scan(&snap.HostID, &snap.HostName, &pkgJSON, &deferredJSON, &needsReboot, &snap.RebootReason, &needsRestartJSON, &needrestartFound, &snap.OsName, &snap.OsVersion, &snap.Uptime, &snap.Kernel, &snap.BootID, &restartJSON, &rebootJSON, &snap.UpdatedAt); err != nil {
+		snap, err := scanSnapshotFromRow(rows)
+		if err != nil {
 			return nil, err
-		}
-		snap.NeedsReboot = needsReboot == 1
-		snap.NeedrestartFound = needrestartFound == 1
-		snap.Packages = unmarshalPackages(pkgJSON)
-		snap.DeferredPackages = unmarshalPackages(deferredJSON)
-		if strings.TrimSpace(needsRestartJSON) != "" {
-			if err := json.Unmarshal([]byte(needsRestartJSON), &snap.NeedsRestart); err != nil {
-				return nil, err
-			}
-		}
-		if strings.TrimSpace(restartJSON) != "" {
-			_ = json.Unmarshal([]byte(restartJSON), &snap.RestartServices)
-		}
-		if strings.TrimSpace(rebootJSON) != "" {
-			_ = json.Unmarshal([]byte(rebootJSON), &snap.RebootServices)
 		}
 		out = append(out, snap)
 	}
 	return out, rows.Err()
+}
+
+// scanSnapColumns is the fixed SELECT list (joined to hosts for the name) that
+// scanSnapshotFromRow expects — kept in one place so the list and single-host getters agree.
+const scanSnapColumns = `s.host_id, h.name, s.packages_json, s.deferred_packages_json, s.needs_reboot, s.reboot_reason, s.needs_restart_json, s.needrestart_found, s.os_name, s.os_version, s.uptime, s.kernel, s.boot_id, s.restart_services_json, s.reboot_services_json, s.updated_at`
+
+// rowScanner is satisfied by both *sql.Row and *sql.Rows.
+type rowScanner interface{ Scan(dest ...any) error }
+
+// scanSnapshotFromRow decodes one scans-joined-hosts row (see scanSnapColumns) into a snapshot.
+func scanSnapshotFromRow(r rowScanner) (models.ScanSnapshot, error) {
+	var snap models.ScanSnapshot
+	var pkgJSON, deferredJSON, needsRestartJSON, restartJSON, rebootJSON string
+	var needsReboot, needrestartFound int
+	if err := r.Scan(&snap.HostID, &snap.HostName, &pkgJSON, &deferredJSON, &needsReboot, &snap.RebootReason, &needsRestartJSON, &needrestartFound, &snap.OsName, &snap.OsVersion, &snap.Uptime, &snap.Kernel, &snap.BootID, &restartJSON, &rebootJSON, &snap.UpdatedAt); err != nil {
+		return snap, err
+	}
+	snap.NeedsReboot = needsReboot == 1
+	snap.NeedrestartFound = needrestartFound == 1
+	snap.Packages = unmarshalPackages(pkgJSON)
+	snap.DeferredPackages = unmarshalPackages(deferredJSON)
+	if strings.TrimSpace(needsRestartJSON) != "" {
+		if err := json.Unmarshal([]byte(needsRestartJSON), &snap.NeedsRestart); err != nil {
+			return snap, err
+		}
+	}
+	if strings.TrimSpace(restartJSON) != "" {
+		_ = json.Unmarshal([]byte(restartJSON), &snap.RestartServices)
+	}
+	if strings.TrimSpace(rebootJSON) != "" {
+		_ = json.Unmarshal([]byte(rebootJSON), &snap.RebootServices)
+	}
+	return snap, nil
+}
+
+// GetScanSnapshot returns the latest scan snapshot for a single host (ok=false if it has no
+// scan yet). Lets a handler fetch one host's snapshot without loading the whole fleet's.
+func GetScanSnapshot(db *sql.DB, hostID string) (models.ScanSnapshot, bool, error) {
+	row := db.QueryRow(`SELECT `+scanSnapColumns+` FROM scans s JOIN hosts h ON h.id = s.host_id WHERE s.host_id=?`, hostID)
+	snap, err := scanSnapshotFromRow(row)
+	if err == sql.ErrNoRows {
+		return models.ScanSnapshot{}, false, nil
+	}
+	if err != nil {
+		return models.ScanSnapshot{}, false, err
+	}
+	return snap, true, nil
 }
 
 func ListScanHistory(db *sql.DB, hostID string) ([]models.ScanHistoryEntry, error) {
@@ -1327,7 +1357,7 @@ func GetPrimaryAdmin(db *sql.DB) (models.User, error) {
 	err := db.QueryRow(cols+` WHERE lower(role)='admin' ORDER BY created_at ASC LIMIT 1`).
 		Scan(&u.ID, &u.Username, &u.Role, &u.PasswordHash, &u.TOTPSecret, &u.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		err = db.QueryRow(cols + ` ORDER BY created_at ASC LIMIT 1`).
+		err = db.QueryRow(cols+` ORDER BY created_at ASC LIMIT 1`).
 			Scan(&u.ID, &u.Username, &u.Role, &u.PasswordHash, &u.TOTPSecret, &u.CreatedAt)
 	}
 	if u.Role == "" {

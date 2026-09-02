@@ -65,9 +65,9 @@ func (a *app) nextRestartSmart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host not found", http.StatusNotFound)
 		return
 	}
-	_, snap, err := a.nextHostView(id)
+	snap, _, err := db.GetScanSnapshot(a.db, id)
 	if err != nil {
-		http.Error(w, "host not found", http.StatusNotFound)
+		http.Error(w, "failed to load scan", http.StatusInternalServerError)
 		return
 	}
 	restartable, _ := resolveRestartBuckets(snap)
@@ -102,10 +102,11 @@ func (a *app) nextRestartSmart(w http.ResponseWriter, r *http.Request) {
 			marked++
 		}
 	}
-	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", fmt.Sprintf("Smart restart of %d service(s); %d watched for reboot-resistance", marked, marked))
+	restarted := len(restartable) - len(res.RebootRequired)
+	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", fmt.Sprintf("Smart restart of %d service(s); %d watched for reboot-resistance", restarted, marked))
 	a.renderNext(w, "actionresult", map[string]any{
 		"ID": host.ID, "Title": "Services restarted",
-		"OK":             fmt.Sprintf("Restarted %d service(s). Re-scan to confirm — any that come back flagged move to “reboot required”.", len(restartable)-len(res.RebootRequired)),
+		"OK":             fmt.Sprintf("Restarted %d service(s). Re-scan to confirm — any that come back flagged move to “reboot required”.", restarted),
 		"RebootRequired": res.RebootRequired,
 		"Rescan":         true,
 	})
@@ -131,7 +132,7 @@ func (a *app) nextToggleExcludeBulk(w http.ResponseWriter, r *http.Request) {
 		verb = "returned to fleet reboots"
 	}
 	_ = db.RecordActivity(a.db, id, host.Name, "host_updated", fmt.Sprintf("%s %s", host.Name, verb))
-	_, snap, _ := a.nextHostView(id)
+	snap, _, _ := db.GetScanSnapshot(a.db, id)
 	a.renderNext(w, "bulkprotect", map[string]any{
 		"ID": id, "ExcludeFromBulk": want, "IsSelf": a.isSelfHost(snap),
 	})

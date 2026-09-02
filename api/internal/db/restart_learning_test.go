@@ -110,3 +110,50 @@ func TestExcludeFromBulkRoundTrips(t *testing.T) {
 		t.Error("ExcludeFromBulk should be false after unset")
 	}
 }
+
+// TestDeleteHostClearsRestartMarks confirms restart_marks is part of the host delete cascade.
+func TestDeleteHostClearsRestartMarks(t *testing.T) {
+	d := newTestDB(t)
+	defer d.Close()
+	h := mkHost(t, d, "del")
+	if err := SetRestartMark(d, h, "cron.service", "boot1"); err != nil {
+		t.Fatalf("SetRestartMark: %v", err)
+	}
+	if err := DeleteHost(d, h); err != nil {
+		t.Fatalf("DeleteHost: %v", err)
+	}
+	var n int
+	if err := d.QueryRow(`SELECT count(*) FROM restart_marks WHERE host_id=?`, h).Scan(&n); err != nil {
+		t.Fatalf("count restart_marks: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("restart_marks not cleared on host delete: %d row(s) remain", n)
+	}
+}
+
+// TestGetScanSnapshot covers the single-host snapshot getter: absent before a scan, present with
+// its buckets after, and ok=false for an unknown host.
+func TestGetScanSnapshot(t *testing.T) {
+	d := newTestDB(t)
+	defer d.Close()
+	h := mkHost(t, d, "snap")
+	if _, ok, err := GetScanSnapshot(d, h); err != nil || ok {
+		t.Fatalf("expected no snapshot before scan (ok=%v err=%v)", ok, err)
+	}
+	if err := UpsertScanResult(d, h, mkScan([]string{"cron.service"}, nil, "boot1")); err != nil {
+		t.Fatalf("UpsertScanResult: %v", err)
+	}
+	snap, ok, err := GetScanSnapshot(d, h)
+	if err != nil || !ok {
+		t.Fatalf("expected a snapshot after scan (ok=%v err=%v)", ok, err)
+	}
+	if snap.HostID != h {
+		t.Errorf("wrong host id %q", snap.HostID)
+	}
+	if len(snap.RestartServices) != 1 || snap.RestartServices[0] != "cron.service" {
+		t.Errorf("restart bucket not loaded: %v", snap.RestartServices)
+	}
+	if _, ok, _ := GetScanSnapshot(d, "does-not-exist"); ok {
+		t.Error("expected ok=false for unknown host")
+	}
+}

@@ -44,7 +44,7 @@
 
   {{if or .Attention .Groups}}
   <div class="bulkbar">
-    <button class="btn ghost" onclick="pdBulk('scan',{{.BulkConcurrency}},0)">{{template "i-scanall"}} Scan all</button>
+    <button class="btn ghost" onclick="pdBulk('scan',{{.BulkConcurrency}},0,{{.WatchdogMs}})">{{template "i-scanall"}} Scan all</button>
     {{if gt .Summary.Updates 0}}<button class="btn primary" onclick="document.getElementById('bulkconfirm').hidden=false;this.hidden=true">Apply all updates</button>{{end}}
     {{if gt .Summary.RebootHosts 0}}<button class="btn ghost" onclick="document.getElementById('rebootconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Reboot all ({{.Summary.RebootHosts}})</button>{{end}}
   </div>
@@ -52,7 +52,7 @@
   <div id="bulkconfirm" class="applyconfirm" hidden style="margin-top:12px">
     <p class="confirm-q">Apply updates on the <b>{{.Summary.NeedAttention}} host{{if ne .Summary.NeedAttention 1}}s{{end}}</b> that need them ({{.Summary.Updates}} update{{if ne .Summary.Updates 1}}s{{end}} total)? Each host runs <span class="mono">apt upgrade</span> independently and streams on its own card{{if gt .BulkConcurrency 0}}, up to {{.BulkConcurrency}} at a time{{end}}{{if gt .ApplyStagger 0}}, staggered {{.ApplyStagger}}s apart{{end}}.</p>
     <div class="c-actions">
-      <button class="btn danger" onclick="pdBulk('apply',{{.BulkConcurrency}},{{.ApplyStagger}}*1000);document.getElementById('bulkconfirm').hidden=true">Apply all now</button>
+      <button class="btn danger" onclick="pdBulk('apply',{{.BulkConcurrency}},{{.ApplyStagger}}*1000,{{.WatchdogMs}});document.getElementById('bulkconfirm').hidden=true">Apply all now</button>
       <button class="btn ghost" onclick="document.getElementById('bulkconfirm').hidden=true">Cancel</button>
     </div>
   </div>
@@ -61,7 +61,7 @@
   <div id="rebootconfirm" class="applyconfirm" hidden style="margin-top:12px">
     <p class="confirm-q">Reboot the <b>{{.Summary.RebootHosts}} host{{if ne .Summary.RebootHosts 1}}s{{end}}</b> that need it? Each reboots independently and shows its own recovery watch{{if gt .BulkConcurrency 0}}, up to {{.BulkConcurrency}} at a time{{end}}.{{if gt .Summary.RebootExcluded 0}} <b>{{.Summary.RebootExcluded}}</b> host{{if ne .Summary.RebootExcluded 1}}s are{{else}} is{{end}} held back (the Patchdeck host and any you&rsquo;ve protected).{{end}}</p>
     <div class="c-actions">
-      <button class="btn danger" onclick="pdBulk('reboot',{{.BulkConcurrency}},0);document.getElementById('rebootconfirm').hidden=true">Reboot all now</button>
+      <button class="btn danger" onclick="pdBulk('reboot',{{.BulkConcurrency}},0,{{.WatchdogMs}});document.getElementById('rebootconfirm').hidden=true">Reboot all now</button>
       <button class="btn ghost" onclick="document.getElementById('rebootconfirm').hidden=true">Cancel</button>
     </div>
   </div>
