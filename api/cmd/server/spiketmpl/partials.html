@@ -50,7 +50,7 @@
   .brand{display:flex;align-items:center;gap:11px}
   /* Brand mark = the original Patchdeck logo, recolored to the scheme's accent teal via an
      alpha mask (theme-aware: it brightens to the lighter teal in dark mode). */
-  .mark{width:34px;height:34px;flex:none;background:var(--accent);-webkit-mask:url(/next/assets/logo.png) center/contain no-repeat;mask:url(/next/assets/logo.png) center/contain no-repeat}
+  .mark{width:34px;height:34px;flex:none;background:var(--accent);-webkit-mask:url(/assets/logo.png) center/contain no-repeat;mask:url(/assets/logo.png) center/contain no-repeat}
   .brand b{font-weight:600;font-size:19px;letter-spacing:-.015em}
   .badge{font-family:var(--fmono);font-size:11px;color:var(--accent);border:1px solid var(--border);border-radius:999px;padding:3px 10px}
 
@@ -261,7 +261,7 @@
 
   .authpage{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 16px;gap:18px}
   .authbrand{display:flex;align-items:center;gap:11px}
-  .authbrand .mark{width:34px;height:34px;flex:none;background:var(--accent);-webkit-mask:url(/next/assets/logo.png) center/contain no-repeat;mask:url(/next/assets/logo.png) center/contain no-repeat}
+  .authbrand .mark{width:34px;height:34px;flex:none;background:var(--accent);-webkit-mask:url(/assets/logo.png) center/contain no-repeat;mask:url(/assets/logo.png) center/contain no-repeat}
   .authbrand b{font-size:22px;font-weight:600;letter-spacing:-.015em}
   .authcard{width:100%;max-width:384px}
   .authdiv{display:flex;align-items:center;gap:11px;color:var(--faint);font-size:12px;margin:16px 0}
@@ -334,7 +334,7 @@
 {{define "deleteconfirm"}}<div class="applyconfirm">
   <p class="confirm-q">Delete <b>{{.Name}}</b> from Patchdeck? This removes the host and its stored credentials and scan history. This cannot be undone.</p>
   <div class="c-actions">
-    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/delete">Delete host</button>
+    <button class="btn danger" hx-post="/hosts/{{.ID}}/delete">Delete host</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
   </div>
 </div>{{end}}
@@ -349,30 +349,30 @@
 {{define "card"}}<article id="card-{{.ID}}" class="card {{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}attn{{else}}calm{{end}}" data-name="{{.Name}}" data-addr="{{.Address}}" data-tags="{{range .Tags}}{{.}} {{end}}" data-attn="{{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}1{{else}}0{{end}}" data-updates="{{if gt .UpdateCount 0}}1{{else}}0{{end}}">
   <div class="c-top">
     <span class="host">
-      <span id="dot-{{.ID}}" class="dot dot-checking" hx-get="/next/hosts/{{.ID}}/dot" hx-trigger="load" hx-swap="outerHTML" aria-label="checking connectivity"></span>
-      <a class="hn" href="/next/hosts/{{.ID}}">{{.Name}}</a>
+      <span id="dot-{{.ID}}" class="dot dot-checking" hx-get="/hosts/{{.ID}}/dot" hx-trigger="load" hx-swap="outerHTML" aria-label="checking connectivity"></span>
+      <a class="hn" href="/hosts/{{.ID}}">{{.Name}}</a>
     </span>
     <span class="os">{{if .OSShort}}{{.OSShort}}{{else}}{{.Address}}{{end}}</span>
   </div>
   {{if .Tags}}<div class="tags">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</div>{{end}}
   <div class="signal">{{if or .Unverified .PendingKey}}<span class="pill warn">{{template "i-shield"}} {{if .PendingKey}}Key awaiting approval{{else}}Awaiting approval{{end}}</span>{{else}}{{template "signal" .}}{{end}}</div>
   <div class="c-actions">
-    {{if or .Unverified .PendingKey}}<a class="btn primary" href="/next/hosts/{{.ID}}">Review &amp; approve</a>
-    {{else}}{{if gt .UpdateCount 0}}<button class="btn primary" hx-get="/next/hosts/{{.ID}}/apply-confirm" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Apply {{.UpdateCount}}</button>
-    {{else}}<button class="btn primary" hx-get="/next/hosts/{{.ID}}/scanpanel" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Scan</button>{{end}}
-    <a class="btn ghost" href="/next/hosts/{{.ID}}">Details</a>
+    {{if or .Unverified .PendingKey}}<a class="btn primary" href="/hosts/{{.ID}}">Review &amp; approve</a>
+    {{else}}{{if gt .UpdateCount 0}}<button class="btn primary" hx-get="/hosts/{{.ID}}/apply-confirm" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Apply {{.UpdateCount}}</button>
+    {{else}}<button class="btn primary" hx-get="/hosts/{{.ID}}/scanpanel" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Scan</button>{{end}}
+    <a class="btn ghost" href="/hosts/{{.ID}}">Details</a>
     {{if .HasScan}}<span class="age">scanned {{.ScanAge}}</span>{{end}}{{end}}
   </div>
   <div id="scanarea-{{.ID}}"></div>
-  {{if not .Unverified}}<div hidden data-pdbulk="scan" data-host="{{.ID}}" hx-get="/next/hosts/{{.ID}}/scanpanel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>
-  {{if gt .UpdateCount 0}}<div hidden data-pdbulk="apply" data-host="{{.ID}}" hx-get="/next/hosts/{{.ID}}/apply/panel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}
-  {{if and .RebootAny (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="reboot" data-host="{{.ID}}" hx-post="/next/hosts/{{.ID}}/reboot" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::after-request="document.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}{{end}}
+  {{if not .Unverified}}<div hidden data-pdbulk="scan" data-host="{{.ID}}" hx-get="/hosts/{{.ID}}/scanpanel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>
+  {{if gt .UpdateCount 0}}<div hidden data-pdbulk="apply" data-host="{{.ID}}" hx-get="/hosts/{{.ID}}/apply/panel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}
+  {{if and .RebootAny (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="reboot" data-host="{{.ID}}" hx-post="/hosts/{{.ID}}/reboot" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::after-request="document.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}{{end}}
 </article>{{end}}
 
 {{define "applyconfirm"}}<div class="applyconfirm">
   <p class="confirm-q">Apply <b>{{.Count}}</b> update{{if ne .Count 1}}s{{end}} to <b>{{.Name}}</b>? This runs <span class="mono">apt upgrade</span> and may restart services.</p>
   <div class="c-actions">
-    <button class="btn danger" hx-get="/next/hosts/{{.ID}}/apply/panel?ctx={{.Ctx}}" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Apply now</button>
+    <button class="btn danger" hx-get="/hosts/{{.ID}}/apply/panel?ctx={{.Ctx}}" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Apply now</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
   </div>
 </div>{{end}}
@@ -424,18 +424,18 @@
 })();
 </script>{{end}}
 
-{{define "applypanel"}}<div class="scanpanel" hx-ext="sse" sse-connect="/next/hosts/{{.ID}}/apply/stream" sse-close="done">
+{{define "applypanel"}}<div class="scanpanel" hx-ext="sse" sse-connect="/hosts/{{.ID}}/apply/stream" sse-close="done">
   <div class="scanhead"><span class="spinner"></span> Applying updates on {{.Name}}&hellip;</div>
   <div class="scanlog" sse-swap="line" hx-swap="beforeend" hx-on::after-swap="this.scrollTop = this.scrollHeight"></div>
-  {{if eq .Ctx "detail"}}<div hidden hx-get="/next/hosts/{{.ID}}" hx-trigger="sse:done" hx-target="body" hx-swap="outerHTML"></div>
-  {{else}}<div hidden hx-get="/next/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML"></div>{{end}}
+  {{if eq .Ctx "detail"}}<div hidden hx-get="/hosts/{{.ID}}" hx-trigger="sse:done" hx-target="body" hx-swap="outerHTML"></div>
+  {{else}}<div hidden hx-get="/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML"></div>{{end}}
 </div>{{end}}
 
-{{define "scanpanel"}}<div class="scanpanel" hx-ext="sse" sse-connect="/next/hosts/{{.ID}}/scan/stream" sse-close="done">
+{{define "scanpanel"}}<div class="scanpanel" hx-ext="sse" sse-connect="/hosts/{{.ID}}/scan/stream" sse-close="done">
   <div class="scanhead"><span class="spinner"></span> Scanning {{.Name}}&hellip;</div>
   <div class="scanlog" sse-swap="line" hx-swap="beforeend" hx-on::after-swap="this.scrollTop = this.scrollHeight"></div>
-  {{if eq .Ctx "detail"}}<div hidden hx-get="/next/hosts/{{.ID}}" hx-trigger="sse:done" hx-target="body" hx-swap="outerHTML"></div>
-  {{else}}<div hidden hx-get="/next/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML"></div>{{end}}
+  {{if eq .Ctx "detail"}}<div hidden hx-get="/hosts/{{.ID}}" hx-trigger="sse:done" hx-target="body" hx-swap="outerHTML"></div>
+  {{else}}<div hidden hx-get="/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML"></div>{{end}}
 </div>{{end}}
 
 {{define "smartrestartconfirm"}}<div class="applyconfirm">
@@ -443,19 +443,19 @@
   {{if .Disruptive}}<p class="confirm-q" style="color:var(--warn)">Heads up &mdash; {{len .Disruptive}} of these may briefly drop your SSH session or bounce containers as they restart: <b>{{range $i, $s := .Disruptive}}{{if $i}}, {{end}}{{$s}}{{end}}</b>. They&rsquo;re restarted detached so a connection flap can&rsquo;t interrupt them.</p>{{end}}
   <p class="formsub">Anything that comes back still flagged after this moves to &ldquo;reboot required&rdquo; automatically &mdash; you won&rsquo;t have to guess which need a reboot.</p>
   <div class="c-actions">
-    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/restart" hx-target="#{{.Out}}" hx-swap="innerHTML" hx-disabled-elt="this">Restart services</button>
+    <button class="btn danger" hx-post="/hosts/{{.ID}}/restart" hx-target="#{{.Out}}" hx-swap="innerHTML" hx-disabled-elt="this">Restart services</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
   </div>
 </div>{{end}}
 
 {{define "bulkprotect"}}<div id="bulkprotect-{{.ID}}" class="bulkprotect">
   {{if .IsSelf}}<span class="pill">{{template "i-shield"}} Auto-excluded from &ldquo;Reboot all&rdquo; &mdash; this is the Patchdeck host</span>
-  {{else}}<label class="checkrow"><input type="checkbox"{{if .ExcludeFromBulk}} checked{{end}} hx-post="/next/hosts/{{.ID}}/exclude-bulk" hx-target="#bulkprotect-{{.ID}}" hx-swap="outerHTML"><span class="ctext"><b>Protect from &ldquo;Reboot all&rdquo;</b> &mdash; keep this host out of fleet-wide reboots.</span></label>{{end}}
+  {{else}}<label class="checkrow"><input type="checkbox"{{if .ExcludeFromBulk}} checked{{end}} hx-post="/hosts/{{.ID}}/exclude-bulk" hx-target="#bulkprotect-{{.ID}}" hx-swap="outerHTML"><span class="ctext"><b>Protect from &ldquo;Reboot all&rdquo;</b> &mdash; keep this host out of fleet-wide reboots.</span></label>{{end}}
 </div>{{end}}
 
 {{define "hostnotif"}}<div id="hostnotif-{{.ID}}">
   {{if .Flash}}<div class="flash ok" style="margin-bottom:11px">{{.Flash}}</div>{{end}}
-  <form class="form" hx-post="/next/hosts/{{.ID}}/notifications" hx-target="#hostnotif-{{.ID}}" hx-swap="outerHTML">
+  <form class="form" hx-post="/hosts/{{.ID}}/notifications" hx-target="#hostnotif-{{.ID}}" hx-swap="outerHTML">
     <label class="checkrow"><input type="checkbox" name="updates_available" value="1"{{if .P.UpdatesAvailable}} checked{{end}}><span class="ctext"><b>Updates available</b></span></label>
     <label class="checkrow"><input type="checkbox" name="auto_apply_success" value="1"{{if .P.AutoApplySuccess}} checked{{end}}><span class="ctext"><b>Apply succeeded</b></span></label>
     <label class="checkrow"><input type="checkbox" name="auto_apply_failure" value="1"{{if .P.AutoApplyFailure}} checked{{end}}><span class="ctext"><b>Apply failed</b></span></label>
@@ -464,13 +464,13 @@
   </form>
 </div>{{end}}
 
-{{define "connline"}}<span class="dot {{if .Connected}}dot-up{{else}}dot-down{{end}}"></span>{{if .Connected}}<span class="conntext">reachable{{if .Uptime}} &middot; up {{.Uptime}}{{end}}</span>{{else}}<span class="conntext down">unreachable{{if .Reason}} &middot; {{.Reason}}{{end}}</span>{{end}}<button class="btn ghost btn-xs" hx-get="/next/hosts/{{.ID}}/connline" hx-target="#conn-{{.ID}}" hx-swap="innerHTML">Recheck</button>{{end}}
+{{define "connline"}}<span class="dot {{if .Connected}}dot-up{{else}}dot-down{{end}}"></span>{{if .Connected}}<span class="conntext">reachable{{if .Uptime}} &middot; up {{.Uptime}}{{end}}</span>{{else}}<span class="conntext down">unreachable{{if .Reason}} &middot; {{.Reason}}{{end}}</span>{{end}}<button class="btn ghost btn-xs" hx-get="/hosts/{{.ID}}/connline" hx-target="#conn-{{.ID}}" hx-swap="innerHTML">Recheck</button>{{end}}
 
 {{define "shutdownconfirm"}}<div class="applyconfirm">
   <p class="confirm-q">Power off <b>{{.Name}}</b>? It will shut down and <b>won&rsquo;t come back</b> until it&rsquo;s powered on again by other means.</p>
   {{if .Self}}<p class="confirm-q" style="color:var(--warn)">This is the host Patchdeck runs on &mdash; powering it off takes Patchdeck down with it until the machine is powered back on.</p>{{end}}
   <div class="c-actions">
-    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/shutdown" hx-target="#{{.Out}}" hx-swap="innerHTML">Shut down</button>
+    <button class="btn danger" hx-post="/hosts/{{.ID}}/shutdown" hx-target="#{{.Out}}" hx-swap="innerHTML">Shut down</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
   </div>
 </div>{{end}}
@@ -479,7 +479,7 @@
   <p class="confirm-q">Reboot <b>{{.Name}}</b> now? The host drops offline for a minute or two while it restarts. Patchdeck will watch for it to come back.</p>
   {{if .Self}}<p class="confirm-q" style="color:var(--warn)">This is the host Patchdeck runs on &mdash; rebooting it restarts Patchdeck too. It can&rsquo;t watch its own recovery; reconnect once it&rsquo;s back.</p>{{end}}
   <div class="c-actions">
-    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/reboot" hx-target="#{{.Out}}" hx-swap="innerHTML">Reboot host</button>
+    <button class="btn danger" hx-post="/hosts/{{.ID}}/reboot" hx-target="#{{.Out}}" hx-swap="innerHTML">Reboot host</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
   </div>
 </div>{{end}}
@@ -490,12 +490,12 @@
     {{if .Err}}<div class="ln err">{{.Err}}</div>
     {{else}}<div class="ln ok">{{.OK}}</div>{{if .RebootRequired}}<div class="ln">{{len .RebootRequired}} unit(s) still need a reboot to fully apply:</div>{{range .RebootRequired}}<div class="ln">&bull; {{.}}</div>{{end}}{{end}}{{end}}
   </div>
-  {{if .Rescan}}<div class="actionrow"><button class="btn primary" hx-get="/next/hosts/{{.ID}}/scanpanel?ctx=detail" hx-target="#actionarea-{{.ID}}" hx-swap="innerHTML">Re-scan to refresh</button></div>{{end}}
+  {{if .Rescan}}<div class="actionrow"><button class="btn primary" hx-get="/hosts/{{.ID}}/scanpanel?ctx=detail" hx-target="#actionarea-{{.ID}}" hx-swap="innerHTML">Re-scan to refresh</button></div>{{end}}
 </div>{{end}}
 
 {{define "rebootpanel"}}<div class="scanpanel">
   <div class="scanhead"><span class="spinner"></span> Reboot initiated on {{.Name}} &mdash; waiting for it to come back&hellip;</div>
-  <div id="rbw-{{.ID}}" hx-get="/next/hosts/{{.ID}}/reboot-watch" hx-trigger="load delay:12s" hx-swap="outerHTML"></div>
+  <div id="rbw-{{.ID}}" hx-get="/hosts/{{.ID}}/reboot-watch" hx-trigger="load delay:12s" hx-swap="outerHTML"></div>
 </div>{{end}}
 
 {{define "jobcard"}}<div id="job-{{.ID}}" class="job{{if not .Enabled}} off{{end}}">
@@ -511,10 +511,10 @@
     {{if not .Enabled}}<span>paused</span>{{end}}
   </div>
   <div class="c-actions">
-    {{if .Enabled}}<button class="btn ghost" hx-post="/next/schedules/{{.ID}}/toggle" hx-vals='{"enabled":"0"}' hx-target="#job-{{.ID}}" hx-swap="outerHTML">Pause</button>
-    {{else}}<button class="btn primary" hx-post="/next/schedules/{{.ID}}/toggle" hx-vals='{"enabled":"1"}' hx-target="#job-{{.ID}}" hx-swap="outerHTML">Resume</button>{{end}}
-    <button class="btn ghost" hx-get="/next/schedules/{{.ID}}/runs" hx-target="#runs-{{.ID}}" hx-swap="innerHTML">Runs</button>
-    <button class="btn danger" hx-post="/next/schedules/{{.ID}}/delete" hx-confirm="Delete this schedule?">Delete</button>
+    {{if .Enabled}}<button class="btn ghost" hx-post="/schedules/{{.ID}}/toggle" hx-vals='{"enabled":"0"}' hx-target="#job-{{.ID}}" hx-swap="outerHTML">Pause</button>
+    {{else}}<button class="btn primary" hx-post="/schedules/{{.ID}}/toggle" hx-vals='{"enabled":"1"}' hx-target="#job-{{.ID}}" hx-swap="outerHTML">Resume</button>{{end}}
+    <button class="btn ghost" hx-get="/schedules/{{.ID}}/runs" hx-target="#runs-{{.ID}}" hx-swap="innerHTML">Runs</button>
+    <button class="btn danger" hx-post="/schedules/{{.ID}}/delete" hx-confirm="Delete this schedule?">Delete</button>
   </div>
   <div id="runs-{{.ID}}"></div>
 </div>{{end}}
@@ -533,13 +533,13 @@
     <div class="acthead"><span class="actlabel">{{evtLabel .EventType}}</span>{{if .HostName}}<span class="acthost">{{.HostName}}</span>{{end}}<span class="acttime">{{.CreatedAt.Format "Jan 2 15:04"}}</span></div>
     {{if .Summary}}<div class="actsum">{{.Summary}}</div>{{end}}
   </div>
-</div>{{end}}{{if not .Entries}}<p class="empty">No activity yet — scans, applies, restarts and reboots will show up here.</p>{{end}}{{if .HasMore}}<button class="btn ghost block" style="margin-top:13px" hx-get="/next/activity/rows?offset={{.NextOffset}}{{if .Host}}&host={{.Host}}{{end}}" hx-swap="outerHTML">Load older</button>{{end}}{{end}}
+</div>{{end}}{{if not .Entries}}<p class="empty">No activity yet — scans, applies, restarts and reboots will show up here.</p>{{end}}{{if .HasMore}}<button class="btn ghost block" style="margin-top:13px" hx-get="/activity/rows?offset={{.NextOffset}}{{if .Host}}&host={{.Host}}{{end}}" hx-swap="outerHTML">Load older</button>{{end}}{{end}}
 
 {{define "rebootwatch"}}{{if .Connected}}<div id="rbw-{{.ID}}" class="reboot-watch">
   <span class="dot dot-up"></span>
   <span class="calm-line">Back online. Refresh to re-scan its posture.</span>
-  <button class="btn primary" style="margin-left:auto" hx-get="/next/hosts/{{.ID}}" hx-target="body" hx-swap="outerHTML">Refresh</button>
-</div>{{else}}<div id="rbw-{{.ID}}" class="reboot-watch" hx-get="/next/hosts/{{.ID}}/reboot-watch" hx-trigger="every 8s" hx-swap="outerHTML">
+  <button class="btn primary" style="margin-left:auto" hx-get="/hosts/{{.ID}}" hx-target="body" hx-swap="outerHTML">Refresh</button>
+</div>{{else}}<div id="rbw-{{.ID}}" class="reboot-watch" hx-get="/hosts/{{.ID}}/reboot-watch" hx-trigger="every 8s" hx-swap="outerHTML">
   <span class="dot dot-checking"></span>
   <span class="calm-line">Still offline &mdash; checking every 8s&hellip;</span>
 </div>{{end}}{{end}}

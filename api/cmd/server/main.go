@@ -41,11 +41,11 @@ import (
 )
 
 type app struct {
-	cfg       config.Config
-	db        *sql.DB
-	secrets   *crypto.SealBox
-	sshClient *sshx.Client
-	notifier  *notify.Dispatcher
+	cfg          config.Config
+	db           *sql.DB
+	secrets      *crypto.SealBox
+	sshClient    *sshx.Client
+	notifier     *notify.Dispatcher
 	sched        *scheduler.Engine
 	limiter      *ratelimit.HostLimiter
 	loginLimiter *ratelimit.LoginLimiter
@@ -101,11 +101,11 @@ func main() {
 	log.Printf("scheduler timezone: %s (local now %s) — set the TZ env var to change", tzName, time.Now().Format("2006-01-02 15:04:05 -0700"))
 
 	a := &app{
-		cfg:       cfg,
-		db:        database,
-		secrets:   seal,
-		sshClient: sshClient,
-		notifier:  notifier,
+		cfg:          cfg,
+		db:           database,
+		secrets:      seal,
+		sshClient:    sshClient,
+		notifier:     notifier,
 		limiter:      ratelimit.NewHostLimiter(30 * time.Second),
 		loginLimiter: ratelimit.NewLoginLimiter(8, 15*time.Minute),
 		startTime:    time.Now(),
@@ -197,18 +197,15 @@ func main() {
 		sr.Get("/api/hosts/{id}/await-recovery", a.awaitRecovery)
 	})
 
-	// /next — server-rendered HTMX dashboard (frontend-rebuild spike). Runs in parallel to
-	// the React SPA against the same data layer; adds no backend behavior. Cookie-gated.
-	r.Route("/next", func(nr chi.Router) {
-		// Public (pre-auth) surface: assets must load for the login page (its JS + logo),
-		// and login/bootstrap/logout run without a session.
-		nr.Get("/assets/{file}", a.nextAsset)
-		nr.Get("/login", a.nextLogin)
-		nr.Post("/login", a.nextLoginPost)
-		nr.Post("/bootstrap", a.nextBootstrapPost)
-		nr.Post("/logout", a.nextLogout)
-		// Authenticated app (nr is shadowed to the guarded sub-router).
-		nr.Group(func(nr chi.Router) {
+	// UI — server-rendered HTMX dashboard (Go html/template + HTMX + SSE), served at the root.
+	// Pre-auth surface (assets + login/bootstrap/logout need no session), then the cookie-gated
+	// app. The UI lived under /next through v2.2; the block after it redirects old links.
+	r.Get("/assets/{file}", a.nextAsset)
+	r.Get("/login", a.nextLogin)
+	r.Post("/login", a.nextLoginPost)
+	r.Post("/bootstrap", a.nextBootstrapPost)
+	r.Post("/logout", a.nextLogout)
+	r.Group(func(nr chi.Router) {
 		nr.Use(a.nextAuth)
 		nr.Get("/", a.nextDashboard)
 		nr.Get("/hosts/{id}", a.nextDetail)
@@ -255,13 +252,19 @@ func main() {
 		nr.Post("/schedules/{id}/toggle", a.nextScheduleToggle)
 		nr.Post("/schedules/{id}/delete", a.nextScheduleDelete)
 		nr.Get("/schedules/{id}/runs", a.nextScheduleRuns)
-		})
 	})
 
-	// The React SPA is retired (v2.0.0). The server-rendered app lives under /next; the root
-	// redirects there, and the favicon is served from the embedded logo so tabs get an icon.
-	r.Get("/", func(w http.ResponseWriter, req *http.Request) {
-		http.Redirect(w, req, "/next/", http.StatusFound)
+	// Back-compat: the UI lived under /next through v2.2 — send old bookmarks to the root.
+	r.Get("/next", func(w http.ResponseWriter, req *http.Request) { http.Redirect(w, req, "/", http.StatusFound) })
+	r.Get("/next/*", func(w http.ResponseWriter, req *http.Request) {
+		dst := strings.TrimPrefix(req.URL.Path, "/next")
+		if dst == "" {
+			dst = "/"
+		}
+		if req.URL.RawQuery != "" {
+			dst += "?" + req.URL.RawQuery
+		}
+		http.Redirect(w, req, dst, http.StatusFound)
 	})
 	r.Get("/favicon.ico", a.nextFavicon)
 
@@ -1402,7 +1405,7 @@ func (a *app) setupTOTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "TOTP is already enabled. Disable it before reconfiguring."})
 		return
 	}
-	var req struct{
+	var req struct {
 		Secret string `json:"secret"`
 	}
 	if r.ContentLength > 0 {

@@ -79,7 +79,7 @@ func formViewFromReq(mode, id string, req hostUpsertRequest, checks bool, policy
 	}
 }
 
-func formChecks(r *http.Request) bool  { return r.FormValue("checks_enabled") != "" }
+func formChecks(r *http.Request) bool { return r.FormValue("checks_enabled") != "" }
 func formPolicy(r *http.Request) string {
 	p := strings.TrimSpace(r.FormValue("auto_update_policy"))
 	if p == "" {
@@ -140,7 +140,7 @@ func (a *app) nextHostCreate(w http.ResponseWriter, r *http.Request) {
 	// rather than silently trusting it. Approving sets the pinned fingerprint.
 	_ = db.UpdateHostKeyPolicy(a.db, hostID, true, "pinned", "")
 	_ = db.RecordActivity(a.db, hostID, req.Name, "host_added", fmt.Sprintf("Host %s added (%s@%s:%d)", req.Name, req.SSHUser, req.Address, req.Port))
-	w.Header().Set("HX-Redirect", "/next")
+	w.Header().Set("HX-Redirect", "/")
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -257,7 +257,7 @@ func (a *app) nextHostUpdate(w http.ResponseWriter, r *http.Request) {
 	_ = db.UpdateHostOperationalControls(a.db, id, checks, policy)
 	_ = db.UpdateHostTags(a.db, id, req.Tags)
 	_ = db.RecordActivity(a.db, id, req.Name, "host_updated", fmt.Sprintf("Host %s updated", req.Name))
-	w.Header().Set("HX-Redirect", "/next/hosts/"+id)
+	w.Header().Set("HX-Redirect", "/hosts/"+id)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -280,7 +280,7 @@ func (a *app) nextHostDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = db.RecordActivity(a.db, id, host.Name, "host_deleted", fmt.Sprintf("Host %s deleted", host.Name))
-	w.Header().Set("HX-Redirect", "/next")
+	w.Header().Set("HX-Redirect", "/")
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -313,7 +313,7 @@ func (a *app) nextHostVerify(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
 	_ = a.probeConnectivity(checker, id) // side effect: captures pending key (or verifies)
-	w.Header().Set("HX-Redirect", "/next/hosts/"+id)
+	w.Header().Set("HX-Redirect", "/hosts/"+id)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -327,10 +327,10 @@ func (a *app) nextHostKeyAccept(w http.ResponseWriter, r *http.Request) {
 	}
 	if pending := strings.TrimSpace(host.HostKeyPending); pending != "" {
 		if err := db.AcceptHostKeyPendingFingerprint(a.db, id); err == nil {
-			_ = db.RecordHostKeyAudit(a.db, id, "host_key_rotation_accepted", host.HostKeyTrusted, pending, "operator accepted new host key fingerprint (/next)")
+			_ = db.RecordHostKeyAudit(a.db, id, "host_key_rotation_accepted", host.HostKeyTrusted, pending, "operator accepted new host key fingerprint (web UI)")
 		}
 	}
-	w.Header().Set("HX-Redirect", "/next/hosts/"+id)
+	w.Header().Set("HX-Redirect", "/hosts/"+id)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -344,9 +344,9 @@ func (a *app) nextHostKeyDeny(w http.ResponseWriter, r *http.Request) {
 	}
 	if pending := strings.TrimSpace(host.HostKeyPending); pending != "" {
 		if err := db.ClearHostKeyPendingFingerprint(a.db, id); err == nil {
-			_ = db.RecordHostKeyAudit(a.db, id, "host_key_mismatch_denied", host.HostKeyTrusted, pending, "operator denied new host key fingerprint (/next)")
+			_ = db.RecordHostKeyAudit(a.db, id, "host_key_mismatch_denied", host.HostKeyTrusted, pending, "operator denied new host key fingerprint (web UI)")
 		}
 	}
-	w.Header().Set("HX-Redirect", "/next/hosts/"+id)
+	w.Header().Set("HX-Redirect", "/hosts/"+id)
 	w.WriteHeader(http.StatusOK)
 }

@@ -8,14 +8,14 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-<script src="/next/assets/htmx.min.js"></script>
+<script src="/assets/htmx.min.js"></script>
 {{template "themeinit"}}
 {{template "styles"}}
 </head>
 <body>
 <div class="app">
   <div class="detail-top">
-    <a class="back-btn" href="/next"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg> Dashboard</a>
+    <a class="back-btn" href="/"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg> Dashboard</a>
   </div>
   <h1 class="formhead" style="margin-bottom:14px">Schedules</h1>
 
@@ -23,7 +23,7 @@
     <div class="scard-h">{{template "i-clock"}}<h2>New schedule</h2></div>
     <p class="scard-sub">Run a scan (or apply) on a host on a cron schedule. Times use the server timezone.</p>
     {{if .Err}}<div class="formerr" style="margin-bottom:14px">{{.Err}}</div>{{end}}
-    <form class="form" hx-post="/next/schedules" hx-target="body" hx-swap="outerHTML">
+    <form class="form" hx-post="/schedules" hx-target="body" hx-swap="outerHTML">
       <div class="field">
         <label for="name">Name <span class="hint" style="font-weight:400">(optional)</span></label>
         <input id="name" name="name" value="{{.Form.name}}" placeholder="Nightly scan" autocomplete="off">

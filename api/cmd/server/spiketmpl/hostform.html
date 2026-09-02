@@ -8,13 +8,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-<script src="/next/assets/htmx.min.js"></script>
+<script src="/assets/htmx.min.js"></script>
 {{template "themeinit"}}
 {{template "styles"}}
 </head>
 <body>
 <div class="app">
-  <a class="back-btn" href="{{if eq .Mode "edit"}}/next/hosts/{{.ID}}{{else}}/next{{end}}"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg> {{if eq .Mode "edit"}}Cancel{{else}}All hosts{{end}}</a>
+  <a class="back-btn" href="{{if eq .Mode "edit"}}/hosts/{{.ID}}{{else}}/{{end}}"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg> {{if eq .Mode "edit"}}Cancel{{else}}All hosts{{end}}</a>
 
   <div class="formcard">
     <h1 class="formhead">{{if eq .Mode "edit"}}Edit host{{else}}Add a host{{end}}</h1>
@@ -22,7 +22,7 @@
 
     {{if .Err}}<div class="formerr" style="margin-bottom:14px">{{.Err}}</div>{{end}}
 
-    <form class="form" hx-post="{{if eq .Mode "edit"}}/next/hosts/{{.ID}}/edit{{else}}/next/hosts{{end}}" hx-target="body" hx-swap="outerHTML">
+    <form class="form" hx-post="{{if eq .Mode "edit"}}/hosts/{{.ID}}/edit{{else}}/hosts{{end}}" hx-target="body" hx-swap="outerHTML">
       <div class="field">
         <label for="name">Name</label>
         <input id="name" name="name" value="{{.Name}}" placeholder="web-01" autocomplete="off" required>
@@ -103,7 +103,7 @@
   <div class="danger-zone">
     <h3>Delete host</h3>
     <p>Remove {{.Name}} and its stored credentials and scan history.</p>
-    <button class="btn danger" hx-get="/next/hosts/{{.ID}}/delete-confirm" hx-target="#delarea" hx-swap="innerHTML">Delete host…</button>
+    <button class="btn danger" hx-get="/hosts/{{.ID}}/delete-confirm" hx-target="#delarea" hx-swap="innerHTML">Delete host…</button>
     <div id="delarea"></div>
   </div>
   {{end}}

@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-<script src="/next/assets/htmx.min.js"></script>
+<script src="/assets/htmx.min.js"></script>
 {{template "themeinit"}}
 {{template "styles"}}
 </head>
@@ -21,7 +21,7 @@
     <h1 class="formhead">Welcome</h1>
     <p class="formsub">Create the first admin account to get started.</p>
     {{if .Error}}<div class="formerr" style="margin-bottom:14px">{{.Error}}</div>{{end}}
-    <form class="form" hx-post="/next/bootstrap" hx-target="body" hx-swap="outerHTML">
+    <form class="form" hx-post="/bootstrap" hx-target="body" hx-swap="outerHTML">
       <div class="field">
         <label for="username">Admin username</label>
         <input id="username" name="username" value="{{.Username}}" autocomplete="username" autofocus required>
@@ -38,7 +38,7 @@
     {{if .TOTPRequired}}<p class="formsub">Enter the 6-digit code from your authenticator app (or a recovery code).</p>{{end}}
     {{if .SSOError}}<div class="formerr" style="margin-bottom:14px">{{.SSOError}}</div>{{end}}
     {{if .Error}}<div class="formerr" style="margin-bottom:14px">{{.Error}}</div>{{end}}
-    <form class="form" hx-post="/next/login" hx-target="body" hx-swap="outerHTML">
+    <form class="form" hx-post="/login" hx-target="body" hx-swap="outerHTML">
       {{if .TOTPRequired}}
         <input type="hidden" name="username" value="{{.Username}}">
         <input type="hidden" name="password" value="{{.Password}}">

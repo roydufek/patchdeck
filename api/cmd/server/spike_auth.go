@@ -62,7 +62,7 @@ func ssoErrorMessage(code string) string {
 func (a *app) nextLogin(w http.ResponseWriter, r *http.Request) {
 	// Already signed in? Go to the dashboard.
 	if claims := a.sessionClaims(r); claims != nil {
-		http.Redirect(w, r, "/next/", http.StatusFound)
+		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
 	v := a.loginData()
@@ -120,7 +120,7 @@ func (a *app) nextLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setSessionCookie(w, tok)
-	w.Header().Set("HX-Redirect", "/next/")
+	w.Header().Set("HX-Redirect", "/")
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -144,7 +144,7 @@ func (a *app) consumeRecoveryCode(userID, code string) bool {
 func (a *app) nextBootstrapPost(w http.ResponseWriter, r *http.Request) {
 	v := loginView{Bootstrap: true}
 	if db.HasUsers(a.db) { // already bootstrapped
-		http.Redirect(w, r, "/next/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusFound)
 		return
 	}
 	_ = r.ParseForm()
@@ -171,12 +171,12 @@ func (a *app) nextBootstrapPost(w http.ResponseWriter, r *http.Request) {
 	if user, uerr := db.GetUserByUsername(a.db, username); uerr == nil {
 		if tok, serr := db.CreateSession(a.db, user.ID, user.Username, user.Role, sessionTTL); serr == nil {
 			setSessionCookie(w, tok)
-			w.Header().Set("HX-Redirect", "/next/")
+			w.Header().Set("HX-Redirect", "/")
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 	}
-	w.Header().Set("HX-Redirect", "/next/login")
+	w.Header().Set("HX-Redirect", "/login")
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -185,7 +185,7 @@ func (a *app) nextLogout(w http.ResponseWriter, r *http.Request) {
 		_ = db.DeleteSession(a.db, c.Value)
 	}
 	clearSessionCookie(w)
-	w.Header().Set("HX-Redirect", "/next/login")
+	w.Header().Set("HX-Redirect", "/login")
 	w.WriteHeader(http.StatusOK)
 }
 

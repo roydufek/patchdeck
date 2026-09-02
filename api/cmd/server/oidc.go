@@ -101,7 +101,7 @@ func (a *app) oidcStatus(w http.ResponseWriter, _ *http.Request) {
 // non-sensitive reason code the login page can surface.
 func (a *app) oidcFail(w http.ResponseWriter, r *http.Request, reason string) {
 	clearOIDCTempCookies(w)
-	http.Redirect(w, r, "/next/login?sso_error="+reason, http.StatusFound)
+	http.Redirect(w, r, "/login?sso_error="+reason, http.StatusFound)
 }
 
 // oidcLogin (public) begins the Authorization Code + PKCE flow: discover the provider,
@@ -195,7 +195,7 @@ func (a *app) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	clearOIDCTempCookies(w)
 	setSessionCookie(w, sessTok)
 	_ = db.RecordActivity(a.db, "", "", "login_sso", fmt.Sprintf("SSO sign-in via OIDC (%s)", oidcIdentityLabel(claims)))
-	http.Redirect(w, r, "/next/", http.StatusFound)
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func oidcIdentityLabel(c *oidc.Claims) string {

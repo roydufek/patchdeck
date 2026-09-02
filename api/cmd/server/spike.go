@@ -21,10 +21,10 @@ import (
 	"patchdeck/api/internal/sshx"
 )
 
-// --- /next: a server-rendered (Go html/template + HTMX + SSE) dashboard, running in
-// parallel to the React SPA against the SAME data layer. This is the frontend-rebuild
-// spike; it adds no backend behavior (it reuses ListHosts / ListScanSnapshots /
-// ScanHostStreaming / probeConnectivity), and the SPA is untouched.
+// --- The server-rendered UI (Go html/template + HTMX + SSE), served at the root. It reuses
+// the same data layer as the JSON API (ListHosts / ListScanSnapshots / ScanHostStreaming /
+// probeConnectivity). Handlers are named nextXxx for historical reasons — the UI was first
+// built under a /next path prefix (v2.0–v2.2) before it took over the root in v2.3.
 
 //go:embed spikeassets/htmx.min.js spikeassets/sse.min.js spikeassets/logo.png
 var nextAssets embed.FS
@@ -250,7 +250,7 @@ func (a *app) nextAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(auth.WithClaims(r.Context(), claims)))
 			return
 		}
-		http.Redirect(w, r, "/next/login", http.StatusFound)
+		http.Redirect(w, r, "/login", http.StatusFound)
 	})
 }
 

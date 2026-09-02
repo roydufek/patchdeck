@@ -8,8 +8,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-<script src="/next/assets/htmx.min.js"></script>
-<script src="/next/assets/sse.min.js"></script>
+<script src="/assets/htmx.min.js"></script>
+<script src="/assets/sse.min.js"></script>
 {{template "themeinit"}}
 {{template "logscroll"}}
 {{template "styles"}}
@@ -17,23 +17,23 @@
 <body>
 <div class="app">
   <div class="detail-top">
-    <a class="back-btn" href="/next"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg> All hosts</a>
-    <a class="iconbtn" href="/next/hosts/{{.V.ID}}/edit" title="Edit host" aria-label="Edit host">{{template "i-pencil"}}</a>
+    <a class="back-btn" href="/"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg> All hosts</a>
+    <a class="iconbtn" href="/hosts/{{.V.ID}}/edit" title="Edit host" aria-label="Edit host">{{template "i-pencil"}}</a>
   </div>
 
   <div class="dhead">
     <div class="dtitle">{{.V.Name}}</div>
     <div class="dsub">{{.V.Address}}{{if .V.OsName}} &middot; {{.V.OsName}}{{end}}{{if .Snap.Kernel}} &middot; {{.Snap.Kernel}}{{end}}{{if .V.Uptime}} &middot; up {{.V.Uptime}}{{end}}</div>
     {{if .V.Tags}}<div class="tags" style="margin-top:9px">{{range .V.Tags}}<span class="tag">{{.}}</span>{{end}}</div>{{end}}
-    <div class="connrow" id="conn-{{.V.ID}}" hx-get="/next/hosts/{{.V.ID}}/connline" hx-trigger="load" hx-swap="innerHTML"><span class="dot dot-checking"></span> <span class="conntext">checking&hellip;</span></div>
+    <div class="connrow" id="conn-{{.V.ID}}" hx-get="/hosts/{{.V.ID}}/connline" hx-trigger="load" hx-swap="innerHTML"><span class="dot dot-checking"></span> <span class="conntext">checking&hellip;</span></div>
     <div class="signal" style="margin:13px 0 0">{{template "signal" .V}}</div>
     {{if .V.Unverified}}
     <div class="c-actions" style="margin-top:14px"><span class="pill warn">{{template "i-shield"}} Awaiting host-key approval</span></div>
     {{else}}
     <div class="c-actions" style="margin-top:14px">
-      {{if gt .V.UpdateCount 0}}<button class="btn primary" hx-get="/next/hosts/{{.V.ID}}/apply-confirm?ctx=detail" hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Apply {{.V.UpdateCount}}</button>
-      <button class="btn ghost" hx-get="/next/hosts/{{.V.ID}}/scanpanel?ctx=detail" hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Scan now</button>
-      {{else}}<button class="btn primary" hx-get="/next/hosts/{{.V.ID}}/scanpanel?ctx=detail" hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Scan now</button>{{end}}
+      {{if gt .V.UpdateCount 0}}<button class="btn primary" hx-get="/hosts/{{.V.ID}}/apply-confirm?ctx=detail" hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Apply {{.V.UpdateCount}}</button>
+      <button class="btn ghost" hx-get="/hosts/{{.V.ID}}/scanpanel?ctx=detail" hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Scan now</button>
+      {{else}}<button class="btn primary" hx-get="/hosts/{{.V.ID}}/scanpanel?ctx=detail" hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Scan now</button>{{end}}
       {{if .V.HasScan}}<span class="age">scanned {{.V.ScanAge}}</span>{{end}}
     </div>
     {{end}}
@@ -48,23 +48,23 @@
     <div class="field"><label>Approved fingerprint</label><div class="mono" style="word-break:break-all;padding:7px 9px">{{.Host.HostKeyTrusted}}</div></div>
     <div class="field" style="margin-top:9px"><label>Presented fingerprint</label><div class="mono" style="word-break:break-all;padding:7px 9px">{{.Host.HostKeyPending}}</div></div>
     <div class="actionrow">
-      <button class="btn danger" hx-post="/next/hosts/{{.V.ID}}/host-key/accept">Approve new key</button>
-      <button class="btn ghost" hx-post="/next/hosts/{{.V.ID}}/host-key/deny">Deny</button>
+      <button class="btn danger" hx-post="/hosts/{{.V.ID}}/host-key/accept">Approve new key</button>
+      <button class="btn ghost" hx-post="/hosts/{{.V.ID}}/host-key/deny">Deny</button>
     </div>
     {{else}}
     <div class="section-h">Approve host key</div>
     <div class="formsub" style="margin-bottom:11px">Review this SSH host key and approve it to let Patchdeck connect and scan. Only approve a fingerprint you trust.</div>
     <div class="field"><label>Presented fingerprint</label><div class="mono" style="word-break:break-all;padding:7px 9px">{{.Host.HostKeyPending}}</div></div>
     <div class="actionrow">
-      <button class="btn primary" hx-post="/next/hosts/{{.V.ID}}/host-key/accept">Approve &amp; enable</button>
-      <button class="btn ghost" hx-post="/next/hosts/{{.V.ID}}/host-key/deny">Reject</button>
+      <button class="btn primary" hx-post="/hosts/{{.V.ID}}/host-key/accept">Approve &amp; enable</button>
+      <button class="btn ghost" hx-post="/hosts/{{.V.ID}}/host-key/deny">Reject</button>
     </div>
     {{end}}
   {{else if .V.Unverified}}
     <div class="section-h">Awaiting approval</div>
     <div class="formsub" style="margin-bottom:11px">This host hasn&rsquo;t been verified yet. Fetch its SSH host key so you can review and approve the first connection before Patchdeck scans it.</div>
     <div class="actionrow">
-      <button class="btn primary" hx-post="/next/hosts/{{.V.ID}}/verify">Fetch host key</button>
+      <button class="btn primary" hx-post="/hosts/{{.V.ID}}/verify">Fetch host key</button>
     </div>
   {{end}}
 
@@ -80,7 +80,7 @@
   <div class="units">{{range .V.RebootServices}}<span class="pill warn">{{.}}</span>{{end}}</div>
   {{end}}
   <div class="actionrow">
-    <button class="btn danger" hx-get="/next/hosts/{{.V.ID}}/reboot-confirm?out=actionarea-{{.V.ID}}" hx-target="#actionarea-{{.V.ID}}" hx-swap="innerHTML">Reboot host</button>
+    <button class="btn danger" hx-get="/hosts/{{.V.ID}}/reboot-confirm?out=actionarea-{{.V.ID}}" hx-target="#actionarea-{{.V.ID}}" hx-swap="innerHTML">Reboot host</button>
   </div>
   {{end}}
 
@@ -88,7 +88,7 @@
   <div class="section-h">Services needing restart ({{len .V.RestartServices}})</div>
   <div class="units">{{range .V.RestartServices}}<span class="pill warn">{{.}}</span>{{end}}</div>
   <div class="actionrow">
-    <button class="btn primary" hx-get="/next/hosts/{{.V.ID}}/restart-confirm?out=actionarea-{{.V.ID}}" hx-target="#actionarea-{{.V.ID}}" hx-swap="innerHTML">Restart services</button>
+    <button class="btn primary" hx-get="/hosts/{{.V.ID}}/restart-confirm?out=actionarea-{{.V.ID}}" hx-target="#actionarea-{{.V.ID}}" hx-swap="innerHTML">Restart services</button>
   </div>
   {{end}}
 
@@ -120,8 +120,8 @@
   {{if not .V.Unverified}}
   <div class="section-h">Power</div>
   <div class="actionrow">
-    {{if not .Snap.NeedsReboot}}<button class="btn ghost" hx-get="/next/hosts/{{.V.ID}}/reboot-confirm?out=pwrarea-{{.V.ID}}" hx-target="#pwrarea-{{.V.ID}}" hx-swap="innerHTML">Reboot host</button>{{end}}
-    <button class="btn ghost" hx-get="/next/hosts/{{.V.ID}}/shutdown-confirm?out=pwrarea-{{.V.ID}}" hx-target="#pwrarea-{{.V.ID}}" hx-swap="innerHTML">Shut down</button>
+    {{if not .Snap.NeedsReboot}}<button class="btn ghost" hx-get="/hosts/{{.V.ID}}/reboot-confirm?out=pwrarea-{{.V.ID}}" hx-target="#pwrarea-{{.V.ID}}" hx-swap="innerHTML">Reboot host</button>{{end}}
+    <button class="btn ghost" hx-get="/hosts/{{.V.ID}}/shutdown-confirm?out=pwrarea-{{.V.ID}}" hx-target="#pwrarea-{{.V.ID}}" hx-swap="innerHTML">Shut down</button>
   </div>
   <div id="pwrarea-{{.V.ID}}"></div>
   {{template "bulkprotect" (dict "ID" .V.ID "ExcludeFromBulk" .V.ExcludeFromBulk "IsSelf" .V.IsSelf)}}

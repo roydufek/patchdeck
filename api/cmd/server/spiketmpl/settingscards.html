@@ -2,7 +2,7 @@
   <div class="scard-h">{{template "i-bell"}}<h2>Notifications</h2></div>
   <p class="scard-sub">Where Patchdeck sends alerts (an Apprise-style URL), and which events fire one.</p>
   {{if .Flash}}<div class="flash ok">{{.Flash}}</div>{{end}}{{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
-  <form class="form" hx-post="/next/settings/notifications" hx-target="#card-notif" hx-swap="outerHTML">
+  <form class="form" hx-post="/settings/notifications" hx-target="#card-notif" hx-swap="outerHTML">
     <div class="field">
       <label for="apprise_url">Destination URL</label>
       <input id="apprise_url" name="apprise_url" value="{{.S.AppriseURL}}" placeholder="gotify://host/token" autocomplete="off">
@@ -14,7 +14,7 @@
     <label class="checkrow"><input type="checkbox" name="scan_failure" value="1"{{if .S.ScanFailure}} checked{{end}}><span class="ctext"><b>Scan failed</b></span></label>
     <div class="actionrow">
       <button type="submit" class="btn primary">Save</button>
-      <button type="button" class="btn ghost" hx-post="/next/settings/notifications/test" hx-include="#apprise_url" hx-target="#card-notif" hx-swap="outerHTML">Send test</button>
+      <button type="button" class="btn ghost" hx-post="/settings/notifications/test" hx-include="#apprise_url" hx-target="#card-notif" hx-swap="outerHTML">Send test</button>
     </div>
   </form>
 </section>{{end}}
@@ -27,7 +27,7 @@
     <label>Redirect / callback URL <span class="hint" style="font-weight:400">— register this in your IdP</span></label>
     <div class="mono" style="word-break:break-all;padding:9px 11px">{{.CallbackURL}}</div>
   </div>
-  <form class="form" hx-post="/next/settings/oidc" hx-target="#card-oidc" hx-swap="outerHTML">
+  <form class="form" hx-post="/settings/oidc" hx-target="#card-oidc" hx-swap="outerHTML">
     <label class="checkrow"><input type="checkbox" name="enabled" value="1"{{if .Enabled}} checked{{end}}><span class="ctext"><b>Enable SSO</b><span class="hint">Show the SSO button on the login page.</span></span></label>
     <div class="field"><label for="oidc_issuer">Issuer URL</label><input id="oidc_issuer" name="issuer" value="{{.Issuer}}" placeholder="https://id.example.com" autocomplete="off"></div>
     <div class="field"><label for="oidc_client">Client ID</label><input id="oidc_client" name="client_id" value="{{.ClientID}}" autocomplete="off"></div>
@@ -46,8 +46,8 @@
   <p class="scard-sub">Bearer tokens for automation (the <span class="mono">pd_</span> prefix). A token is shown once, at creation.</p>
   {{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
   {{if .New}}<div class="tokenshow"><div class="lbl">New token — copy it now, it won&rsquo;t be shown again</div><code>{{.New}}</code></div>{{end}}
-  {{if .Tokens}}<div style="margin-bottom:13px">{{range .Tokens}}<div class="tokenrow"><div><div class="tn">{{.Name}}</div><div class="tm">created {{.CreatedAt.Format "2006-01-02"}}{{if .Revoked}} &middot; revoked{{end}}</div></div>{{if not .Revoked}}<button class="btn ghost" hx-post="/next/settings/tokens/{{.ID}}/revoke" hx-target="#card-tokens" hx-swap="outerHTML">Revoke</button>{{end}}</div>{{end}}</div>{{end}}
-  <form class="form-inline" hx-post="/next/settings/tokens" hx-target="#card-tokens" hx-swap="outerHTML">
+  {{if .Tokens}}<div style="margin-bottom:13px">{{range .Tokens}}<div class="tokenrow"><div><div class="tn">{{.Name}}</div><div class="tm">created {{.CreatedAt.Format "2006-01-02"}}{{if .Revoked}} &middot; revoked{{end}}</div></div>{{if not .Revoked}}<button class="btn ghost" hx-post="/settings/tokens/{{.ID}}/revoke" hx-target="#card-tokens" hx-swap="outerHTML">Revoke</button>{{end}}</div>{{end}}</div>{{end}}
+  <form class="form-inline" hx-post="/settings/tokens" hx-target="#card-tokens" hx-swap="outerHTML">
     <div class="field"><label for="tok_name">New token name</label><input id="tok_name" name="name" placeholder="ci-runner" autocomplete="off"></div>
     <button type="submit" class="btn primary">Create</button>
   </form>
@@ -62,20 +62,20 @@
   {{else if .Setup}}
     <p class="scard-sub">Scan the QR in your authenticator app (or enter the secret), then type the current 6-digit code to finish.</p>
     <div class="qrwrap"><img src="{{.QR}}" alt="TOTP QR code"><div class="mono" style="font-size:11px;word-break:break-all">{{.Secret}}</div></div>
-    <form class="form-inline" hx-post="/next/settings/totp/confirm" hx-target="#card-totp" hx-swap="outerHTML">
+    <form class="form-inline" hx-post="/settings/totp/confirm" hx-target="#card-totp" hx-swap="outerHTML">
       <input type="hidden" name="secret" value="{{.Secret}}">
       <div class="field"><label for="totp_code">6-digit code</label><input id="totp_code" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></div>
       <button type="submit" class="btn primary">Verify</button>
     </form>
   {{else if .Enabled}}
     <p class="scard-sub">Two-factor is <b>on</b> for your account. Disable it with your password.</p>
-    <form class="form-inline" hx-post="/next/settings/totp/disable" hx-target="#card-totp" hx-swap="outerHTML">
+    <form class="form-inline" hx-post="/settings/totp/disable" hx-target="#card-totp" hx-swap="outerHTML">
       <div class="field"><label for="totp_pw">Password</label><input id="totp_pw" name="password" type="password" autocomplete="current-password"></div>
       <button type="submit" class="btn danger">Disable</button>
     </form>
   {{else}}
     <p class="scard-sub">Add a time-based one-time code to your login as a second factor.</p>
-    <button class="btn primary" hx-post="/next/settings/totp/setup" hx-target="#card-totp" hx-swap="outerHTML">Set up 2FA</button>
+    <button class="btn primary" hx-post="/settings/totp/setup" hx-target="#card-totp" hx-swap="outerHTML">Set up 2FA</button>
   {{end}}
 </section>{{end}}
 
@@ -83,7 +83,7 @@
   <div class="scard-h">{{template "i-clock"}}<h2>Audit retention</h2></div>
   <p class="scard-sub">How long to keep activity-log entries. 0 keeps them forever; the minimum is 30 days.</p>
   {{if .Flash}}<div class="flash ok">{{.Flash}}</div>{{end}}{{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
-  <form class="form-inline" hx-post="/next/settings/audit" hx-target="#card-audit" hx-swap="outerHTML">
+  <form class="form-inline" hx-post="/settings/audit" hx-target="#card-audit" hx-swap="outerHTML">
     <div class="field"><label for="ret">Retention (days)</label><input id="ret" name="retention_days" type="number" min="0" value="{{.Days}}" inputmode="numeric"></div>
     <button type="submit" class="btn primary">Save</button>
   </form>

@@ -137,7 +137,7 @@ func (a *app) nextScheduleCreate(w http.ResponseWriter, r *http.Request) {
 		fail("Failed to create the schedule.")
 		return
 	}
-	w.Header().Set("HX-Redirect", "/next/schedules")
+	w.Header().Set("HX-Redirect", "/schedules")
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -145,7 +145,7 @@ func (a *app) nextScheduleToggle(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	_ = r.ParseForm()
 	if err := db.UpdateJobEnabled(a.db, id, r.FormValue("enabled") == "1"); err != nil {
-		w.Header().Set("HX-Redirect", "/next/schedules")
+		w.Header().Set("HX-Redirect", "/schedules")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -155,12 +155,12 @@ func (a *app) nextScheduleToggle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	w.Header().Set("HX-Redirect", "/next/schedules")
+	w.Header().Set("HX-Redirect", "/schedules")
 	w.WriteHeader(http.StatusOK)
 }
 
 func (a *app) nextScheduleDelete(w http.ResponseWriter, r *http.Request) {
 	_ = db.DeleteJob(a.db, chi.URLParam(r, "id"))
-	w.Header().Set("HX-Redirect", "/next/schedules")
+	w.Header().Set("HX-Redirect", "/schedules")
 	w.WriteHeader(http.StatusOK)
 }
