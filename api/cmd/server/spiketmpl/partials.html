@@ -341,7 +341,7 @@
   <div id="scanarea-{{.ID}}"></div>
   {{if not .Unverified}}<div hidden data-pdbulk="scan" data-host="{{.ID}}" hx-get="/next/hosts/{{.ID}}/scanpanel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>
   {{if gt .UpdateCount 0}}<div hidden data-pdbulk="apply" data-host="{{.ID}}" hx-get="/next/hosts/{{.ID}}/apply/panel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}
-  {{if and .RebootAny (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="reboot" data-host="{{.ID}}" hx-post="/next/hosts/{{.ID}}/reboot" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::after-request="document.body.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}{{end}}
+  {{if and .RebootAny (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="reboot" data-host="{{.ID}}" hx-post="/next/hosts/{{.ID}}/reboot" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::after-request="document.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}{{end}}
 </article>{{end}}
 
 {{define "applyconfirm"}}<div class="applyconfirm">
@@ -376,7 +376,8 @@
   document.addEventListener('htmx:afterSettle',function(e){
     var el=e.target; if(el&&el.id&&el.id.indexOf('card-')===0) markDone(el.id.slice(5));
   });
-  document.body.addEventListener('pd:done',function(e){ if(e.detail&&e.detail.h) markDone(e.detail.h); });
+  // Listen on document (not document.body — this script runs in <head> where body is still null).
+  document.addEventListener('pd:done',function(e){ if(e.detail&&e.detail.h) markDone(e.detail.h); });
   window.pdBulk=function(kind,cap,staggerMs){
     var els=[].slice.call(document.querySelectorAll('[data-pdbulk="'+kind+'"]'));
     if(!els.length) return;
