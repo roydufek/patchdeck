@@ -68,20 +68,27 @@
     </div>
   {{end}}
 
-  {{if .Snap.NeedsReboot}}
-  <div class="section-h">Reboot required</div>
-  <span class="pill warn">{{template "reboot"}} {{if .Snap.RebootReason}}{{.Snap.RebootReason}}{{else}}reboot to apply{{end}}</span>
+  {{if .V.IsSelf}}
+  <div class="selfnote">{{template "i-shield"}} <span>This host runs Patchdeck. It&rsquo;s kept out of &ldquo;Reboot all&rdquo; &mdash; rebooting it restarts Patchdeck itself, so it can&rsquo;t watch its own recovery (it reconnects on its own once it&rsquo;s back).</span></div>
+  {{end}}
+
+  {{if .V.RebootAny}}
+  <div class="section-h">Reboot required{{if .V.RebootServices}} ({{len .V.RebootServices}}){{end}}</div>
+  {{if .Snap.NeedsReboot}}<span class="pill warn">{{template "reboot"}} {{if .Snap.RebootReason}}{{.Snap.RebootReason}}{{else}}reboot to apply{{end}}</span>{{end}}
+  {{if .V.RebootServices}}
+  <p class="formsub" style="margin:9px 0 7px">A live restart can&rsquo;t clear these &mdash; they came back flagged after a restart on the same boot, so they need a reboot to apply:</p>
+  <div class="units">{{range .V.RebootServices}}<span class="pill warn">{{.}}</span>{{end}}</div>
+  {{end}}
   <div class="actionrow">
     <button class="btn danger" hx-get="/next/hosts/{{.V.ID}}/reboot-confirm?out=actionarea-{{.V.ID}}" hx-target="#actionarea-{{.V.ID}}" hx-swap="innerHTML">Reboot host</button>
   </div>
   {{end}}
 
-  {{if .Snap.NeedsRestart}}
-  <div class="section-h">Services needing restart ({{len .Snap.NeedsRestart}})</div>
-  <div class="units">{{range .Snap.NeedsRestart}}<span class="pill warn">{{.}}</span>{{end}}</div>
+  {{if .V.RestartServices}}
+  <div class="section-h">Services needing restart ({{len .V.RestartServices}})</div>
+  <div class="units">{{range .V.RestartServices}}<span class="pill warn">{{.}}</span>{{end}}</div>
   <div class="actionrow">
-    <button class="btn primary" hx-get="/next/hosts/{{.V.ID}}/restart-confirm?out=actionarea-{{.V.ID}}" hx-target="#actionarea-{{.V.ID}}" hx-swap="innerHTML">Restart services safely</button>
-    <button class="btn ghost" hx-get="/next/hosts/{{.V.ID}}/restart-deferred-confirm?out=actionarea-{{.V.ID}}" hx-target="#actionarea-{{.V.ID}}" hx-swap="innerHTML">Restart detached (avoid reboot)</button>
+    <button class="btn primary" hx-get="/next/hosts/{{.V.ID}}/restart-confirm?out=actionarea-{{.V.ID}}" hx-target="#actionarea-{{.V.ID}}" hx-swap="innerHTML">Restart services</button>
   </div>
   {{end}}
 
@@ -117,6 +124,7 @@
     <button class="btn ghost" hx-get="/next/hosts/{{.V.ID}}/shutdown-confirm?out=pwrarea-{{.V.ID}}" hx-target="#pwrarea-{{.V.ID}}" hx-swap="innerHTML">Shut down</button>
   </div>
   <div id="pwrarea-{{.V.ID}}"></div>
+  {{template "bulkprotect" (dict "ID" .V.ID "ExcludeFromBulk" .V.ExcludeFromBulk "IsSelf" .V.IsSelf)}}
   {{end}}
 </div>
 </body>

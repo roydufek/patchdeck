@@ -30,6 +30,10 @@ type Host struct {
 	HostKeyPending        string                `json:"host_key_pending_fingerprint,omitempty"`
 	HostKeyLastVerifiedAt *time.Time            `json:"host_key_last_verified_at,omitempty"`
 	Tags                  []string              `json:"tags"`
+	// ExcludeFromBulk keeps a host out of fleet-wide destructive actions (Reboot all). The
+	// self-host (where boot_id matches Patchdeck's own) is treated as excluded automatically;
+	// this flag lets the operator also protect any other must-not-sweep host.
+	ExcludeFromBulk bool `json:"exclude_from_bulk"`
 }
 
 // ScanHistoryEntry represents a historical scan snapshot for a host.
@@ -74,6 +78,15 @@ type ScanResult struct {
 	OsVersion        string        `json:"os_version,omitempty"`
 	Uptime           string        `json:"uptime,omitempty"`
 	Kernel           string        `json:"kernel,omitempty"`
+	// BootID is the host kernel's /proc/sys/kernel/random/boot_id — a UUID regenerated on every
+	// boot. It powers the restart→reboot-only learning (a reboot = a new boot_id, which clears
+	// the learned set) and self-host detection (a host whose boot_id equals Patchdeck's own is
+	// the machine Patchdeck runs on, so it's kept out of bulk reboots).
+	BootID string `json:"boot_id,omitempty"`
+	// RestartHandlers[svc] = the host has a needrestart coordinated handler
+	// (/etc/needrestart/restart.d/<svc>) for that flagged service. Drives the restart-vs-reboot
+	// bucketing of the needs-restart list.
+	RestartHandlers map[string]bool `json:"-"`
 }
 
 type ScanSnapshot struct {
@@ -89,7 +102,13 @@ type ScanSnapshot struct {
 	OsVersion        string        `json:"os_version,omitempty"`
 	Uptime           string        `json:"uptime,omitempty"`
 	Kernel           string        `json:"kernel,omitempty"`
-	UpdatedAt        time.Time     `json:"updated_at"`
+	BootID           string        `json:"boot_id,omitempty"`
+	// RestartServices / RebootServices split NeedsRestart into the units a smart restart can act
+	// on vs the units that need a reboot (learned-resistant, or dbus-with-no-handler). Empty on
+	// pre-v2.1 snapshots — callers fall back to the flat NeedsRestart list.
+	RestartServices []string `json:"restart_services,omitempty"`
+	RebootServices  []string `json:"reboot_services,omitempty"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type ApplyResult struct {

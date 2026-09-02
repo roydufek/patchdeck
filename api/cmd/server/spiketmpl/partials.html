@@ -72,7 +72,8 @@
   .sec.quiet h2{color:var(--muted)}
 
   .cards{display:flex;flex-direction:column;gap:12px}
-  .card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:15px 16px 14px;box-shadow:var(--card-shadow);position:relative}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:15px 16px 14px;box-shadow:var(--card-shadow);position:relative;display:flex;flex-direction:column}
+  .card>.c-actions{margin-top:auto}
   .card.attn{box-shadow:var(--lift-shadow)}
   .card.attn::before{content:"";position:absolute;left:0;top:17px;bottom:17px;width:3px;border-radius:0 3px 3px 0;background:var(--warn)}
   /* Healthy cards: still calmer than the elevated attention cards (no warm rail), but a real
@@ -146,6 +147,9 @@
   .tag-sec{color:var(--crit);font-size:11px}
   .ver{color:var(--muted)}
   .units{display:flex;flex-wrap:wrap;gap:6px}
+  .selfnote{display:flex;align-items:flex-start;gap:9px;margin:15px 0 4px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:11px 13px;font-size:13px;color:var(--muted);line-height:1.5}
+  .selfnote .ico{flex:none;width:16px;height:16px;margin-top:2px;color:var(--muted)}
+  .bulkprotect{margin-top:12px}
   .reboot-watch{display:flex;align-items:center;gap:9px;margin-top:10px;background:var(--surface-2);border-radius:12px;padding:11px 13px}
   .actionrow{display:flex;align-items:center;gap:8px;margin-top:11px;flex-wrap:wrap}
   .filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:18px 2px 2px}
@@ -268,7 +272,7 @@
     .sum-sub{margin-bottom:0}
     .summary .stats{flex:none;grid-template-columns:repeat(3,112px)}
     .bulkbar{margin-top:16px}
-    .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-items:start}
+    .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-items:stretch}
   }
 </style>{{end}}
 
@@ -333,8 +337,9 @@
     {{if .HasScan}}<span class="age">scanned {{.ScanAge}}</span>{{end}}{{end}}
   </div>
   <div id="scanarea-{{.ID}}"></div>
-  {{if not .Unverified}}<div hidden hx-get="/next/hosts/{{.ID}}/scanpanel" hx-trigger="pd:scanall from:body" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>
-  {{if gt .UpdateCount 0}}<div hidden hx-get="/next/hosts/{{.ID}}/apply/panel" hx-trigger="pd:applyall from:body" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}{{end}}
+  {{if not .Unverified}}<div hidden data-pdbulk="scan" data-host="{{.ID}}" hx-get="/next/hosts/{{.ID}}/scanpanel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>
+  {{if gt .UpdateCount 0}}<div hidden data-pdbulk="apply" data-host="{{.ID}}" hx-get="/next/hosts/{{.ID}}/apply/panel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}
+  {{if and .RebootAny (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="reboot" data-host="{{.ID}}" hx-post="/next/hosts/{{.ID}}/reboot" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::after-request="document.body.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}{{end}}
 </article>{{end}}
 
 {{define "applyconfirm"}}<div class="applyconfirm">
@@ -351,6 +356,46 @@
   document.addEventListener('htmx:sseMessage',function(){requestAnimationFrame(pdScrollLogs)});
 </script>{{end}}
 
+{{/* bulkjs — the fleet fan-out scheduler. A bulk action fires each host's hidden trigger div
+     (data-pdbulk=<kind>), but only cap-many at a time: a host frees its slot when it finishes,
+     so peak concurrency stays bounded on large fleets. scan/apply "finish" when their card
+     swaps back in (htmx:afterSettle on #card-<id>); reboot "finishes" when its dispatch returns
+     (a pd:done beacon), since the recovery watch then runs on its own. staggerMs adds a minimum
+     gap between successive starts (apply uses it to avoid bouncing services fleet-wide at once). */}}
+{{define "bulkjs"}}<script>
+(function(){
+  var active=null;
+  function markDone(h){
+    if(!active||!h||!active.inflight[h]) return;
+    delete active.inflight[h]; active.finished++;
+    if(active.finished>=active.total){ active=null; return; }
+    active.schedule();
+  }
+  document.addEventListener('htmx:afterSettle',function(e){
+    var el=e.target; if(el&&el.id&&el.id.indexOf('card-')===0) markDone(el.id.slice(5));
+  });
+  document.body.addEventListener('pd:done',function(e){ if(e.detail&&e.detail.h) markDone(e.detail.h); });
+  window.pdBulk=function(kind,cap,staggerMs){
+    var els=[].slice.call(document.querySelectorAll('[data-pdbulk="'+kind+'"]'));
+    if(!els.length) return;
+    cap=(cap&&cap>0)?cap:els.length; staggerMs=staggerMs||0;
+    var s={inflight:{},pending:els.slice(),total:els.length,finished:0,last:0,timer:null};
+    s.count=function(){var n=0;for(var k in s.inflight){n++;} return n;};
+    s.schedule=function(){
+      if(s.timer) return;
+      while(s.pending.length && s.count()<cap){
+        var wait=staggerMs-(Date.now()-s.last);
+        if(staggerMs>0 && wait>0){ s.timer=setTimeout(function(){s.timer=null;s.schedule();},wait); return; }
+        var el=s.pending.shift(), h=el.getAttribute('data-host');
+        s.inflight[h]=1; s.last=Date.now();
+        if(window.htmx) htmx.trigger(el,'pdrun');
+      }
+    };
+    active=s; s.schedule();
+  };
+})();
+</script>{{end}}
+
 {{define "applypanel"}}<div class="scanpanel" hx-ext="sse" sse-connect="/next/hosts/{{.ID}}/apply/stream" sse-close="done">
   <div class="scanhead"><span class="spinner"></span> Applying updates on {{.Name}}&hellip;</div>
   <div class="scanlog" sse-swap="line" hx-swap="beforeend" hx-on::after-swap="this.scrollTop = this.scrollHeight"></div>
@@ -365,20 +410,19 @@
   {{else}}<div hidden hx-get="/next/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML"></div>{{end}}
 </div>{{end}}
 
-{{define "restartconfirm"}}<div class="applyconfirm">
-  <p class="confirm-q">Restart the <b>{{.Count}}</b> service{{if ne .Count 1}}s{{end}} needrestart flagged on <b>{{.Name}}</b>? This runs needrestart&rsquo;s coordinated restart &mdash; safe services only. The kernel and session-critical units (dbus) stay flagged for a reboot instead of being bounced live.</p>
+{{define "smartrestartconfirm"}}<div class="applyconfirm">
+  <p class="confirm-q">Restart the <b>{{.Count}}</b> flagged service{{if ne .Count 1}}s{{end}} on <b>{{.Name}}</b>? Patchdeck picks the right method for each unit &mdash; a clean restart where it&rsquo;s safe, needrestart&rsquo;s coordinated handler where a naive restart would sever the session.</p>
+  {{if .Disruptive}}<p class="confirm-q" style="color:var(--warn)">Heads up &mdash; {{len .Disruptive}} of these may briefly drop your SSH session or bounce containers as they restart: <b>{{range $i, $s := .Disruptive}}{{if $i}}, {{end}}{{$s}}{{end}}</b>. They&rsquo;re restarted detached so a connection flap can&rsquo;t interrupt them.</p>{{end}}
+  <p class="formsub">Anything that comes back still flagged after this moves to &ldquo;reboot required&rdquo; automatically &mdash; you won&rsquo;t have to guess which need a reboot.</p>
   <div class="c-actions">
-    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/restart-all" hx-target="#{{.Out}}" hx-swap="innerHTML">Restart now</button>
+    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/restart" hx-target="#{{.Out}}" hx-swap="innerHTML">Restart services</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
   </div>
 </div>{{end}}
 
-{{define "deferredconfirm"}}<div class="applyconfirm">
-  <p class="confirm-q">Restart the <b>{{.Count}}</b> flagged service{{if ne .Count 1}}s{{end}} on <b>{{.Name}}</b> as a <b>detached</b> restart, to avoid a full reboot? Session-critical units (dbus) use needrestart&rsquo;s coordinated handler or stay reboot-required; everything else restarts detached so a connection flap can&rsquo;t interrupt it.</p>
-  <div class="c-actions">
-    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/restart-deferred" hx-target="#{{.Out}}" hx-swap="innerHTML">Restart detached</button>
-    <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
-  </div>
+{{define "bulkprotect"}}<div id="bulkprotect-{{.ID}}" class="bulkprotect">
+  {{if .IsSelf}}<span class="pill">{{template "i-shield"}} Auto-excluded from &ldquo;Reboot all&rdquo; &mdash; this is the Patchdeck host</span>
+  {{else}}<label class="checkrow"><input type="checkbox"{{if .ExcludeFromBulk}} checked{{end}} hx-post="/next/hosts/{{.ID}}/exclude-bulk" hx-target="#bulkprotect-{{.ID}}" hx-swap="outerHTML"><span class="ctext"><b>Protect from &ldquo;Reboot all&rdquo;</b> &mdash; keep this host out of fleet-wide reboots.</span></label>{{end}}
 </div>{{end}}
 
 {{define "hostnotif"}}<div id="hostnotif-{{.ID}}">
@@ -396,6 +440,7 @@
 
 {{define "shutdownconfirm"}}<div class="applyconfirm">
   <p class="confirm-q">Power off <b>{{.Name}}</b>? It will shut down and <b>won&rsquo;t come back</b> until it&rsquo;s powered on again by other means.</p>
+  {{if .Self}}<p class="confirm-q" style="color:var(--warn)">This is the host Patchdeck runs on &mdash; powering it off takes Patchdeck down with it until the machine is powered back on.</p>{{end}}
   <div class="c-actions">
     <button class="btn danger" hx-post="/next/hosts/{{.ID}}/shutdown" hx-target="#{{.Out}}" hx-swap="innerHTML">Shut down</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
@@ -404,6 +449,7 @@
 
 {{define "rebootconfirm"}}<div class="applyconfirm">
   <p class="confirm-q">Reboot <b>{{.Name}}</b> now? The host drops offline for a minute or two while it restarts. Patchdeck will watch for it to come back.</p>
+  {{if .Self}}<p class="confirm-q" style="color:var(--warn)">This is the host Patchdeck runs on &mdash; rebooting it restarts Patchdeck too. It can&rsquo;t watch its own recovery; reconnect once it&rsquo;s back.</p>{{end}}
   <div class="c-actions">
     <button class="btn danger" hx-post="/next/hosts/{{.ID}}/reboot" hx-target="#{{.Out}}" hx-swap="innerHTML">Reboot host</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>

@@ -17,6 +17,7 @@ import (
 
 	"patchdeck/api/internal/crypto"
 	"patchdeck/api/internal/models"
+	"patchdeck/api/internal/restartpolicy"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -149,6 +150,35 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 		}
 	}
 
+	// extractBlock returns the content between two markers and the input with that block removed
+	// (so its lines don't leak into the package/service parse below).
+	extractBlock := func(in, start, end string) (string, string) {
+		if a := strings.Index(in, start); a >= 0 {
+			if b := strings.Index(in, end); b >= 0 && b > a {
+				return in[a+len(start) : b], in[:a] + in[b+len(end):]
+			}
+		}
+		return "", in
+	}
+
+	// Kernel boot_id (stable per boot; new UUID on every reboot).
+	var bootID string
+	if content, rest := extractBlock(cleanRaw, "__BOOTID_START__", "__BOOTID_END__"); rest != cleanRaw {
+		bootID = strings.TrimSpace(content)
+		cleanRaw = rest
+	}
+
+	// Per-service needrestart-handler presence ("<svc>|0|1" lines).
+	restartHandlers := map[string]bool{}
+	if content, rest := extractBlock(cleanRaw, "__NRHANDLERS_START__", "__NRHANDLERS_END__"); rest != cleanRaw {
+		for _, ln := range strings.Split(content, "\n") {
+			if svc, val, ok := strings.Cut(strings.TrimSpace(ln), "|"); ok && svc != "" {
+				restartHandlers[svc] = strings.TrimSpace(val) == "1"
+			}
+		}
+		cleanRaw = rest
+	}
+
 	// Extract reboot reason packages
 	rebootReason := ""
 	if startIdx := strings.Index(cleanRaw, "__REBOOT_PKGS_START__"); startIdx >= 0 {
@@ -219,6 +249,8 @@ func parseScanOutput(raw string, hostID string) models.ScanResult {
 		OsVersion:        osVersion,
 		Uptime:           uptime,
 		Kernel:           kernel,
+		BootID:           bootID,
+		RestartHandlers:  restartHandlers,
 	}
 }
 
@@ -307,7 +339,8 @@ apt list --upgradable 2>/dev/null | tail -n +2
 echo "__DISTUPGRADE_SIM_START__"; apt-get -s dist-upgrade 2>/dev/null || true; echo "__DISTUPGRADE_SIM_END__"
 test -f /var/run/reboot-required && echo __REBOOT__ || true
 test -f /var/run/reboot-required.pkgs && { echo "__REBOOT_PKGS_START__"; cat /var/run/reboot-required.pkgs 2>/dev/null; echo "__REBOOT_PKGS_END__"; } || true
-if command -v needrestart >/dev/null 2>&1; then needrestart -b 2>/dev/null || true; else echo __NEEDRESTART_MISSING__; fi
+if command -v needrestart >/dev/null 2>&1; then NR=$(needrestart -b 2>/dev/null || true); echo "$NR"; echo "__NRHANDLERS_START__"; echo "$NR" | sed -n 's/^NEEDRESTART-SVC:[[:space:]]*//p' | while IFS= read -r nrsvc; do [ -n "$nrsvc" ] || continue; if [ -x "/etc/needrestart/restart.d/$nrsvc" ]; then echo "$nrsvc|1"; else echo "$nrsvc|0"; fi; done; echo "__NRHANDLERS_END__"; else echo __NEEDRESTART_MISSING__; fi
+echo "__BOOTID_START__"; cat /proc/sys/kernel/random/boot_id 2>/dev/null || true; echo "__BOOTID_END__"
 echo "__SYSINFO_START__"; cat /etc/os-release 2>/dev/null || true; echo "__SYSINFO_SEP__"; uptime -p 2>/dev/null || uptime 2>/dev/null || true; echo "__SYSINFO_SEP__"; uname -r 2>/dev/null || true; echo "__SYSINFO_END__"`
 
 // applyCmd installs all available upgrades. LANG=C keeps the "Setting up " markers
@@ -381,15 +414,7 @@ const needrestartHandlerAbsentMarker = "__NR_HANDLER_ABSENT__"
 // only recovery was a reboot.) These must be restarted via needrestart's coordinated handler
 // (which restarts the bus AND re-registers every bus client as a detached transient unit, so
 // the box recovers) or deferred to a reboot — never restarted directly.
-func isRiskyRestartUnit(svc string) bool {
-	switch strings.ToLower(strings.TrimSpace(svc)) {
-	case "dbus", "dbus.service", "dbus.socket",
-		"dbus-broker", "dbus-broker.service",
-		"systemd-logind", "systemd-logind.service":
-		return true
-	}
-	return false
-}
+func isRiskyRestartUnit(svc string) bool { return restartpolicy.IsRisky(svc) }
 
 // riskyRestartCmd builds the remote command for a risky unit: run the unit's needrestart
 // coordinated-restart handler (/etc/needrestart/restart.d/<unit>) non-interactively if the
@@ -411,13 +436,7 @@ func riskyRestartCmd(svc string) string {
 // restart of the bus severs it and strands its clients (logind etc.) → SSH lockout. They may be
 // restarted ONLY via needrestart's coordinated restart.d handler (which restarts the bus AND
 // re-registers its clients), never by a plain `systemctl restart`.
-func isDbusFamily(svc string) bool {
-	switch strings.ToLower(strings.TrimSpace(svc)) {
-	case "dbus", "dbus.service", "dbus.socket", "dbus-broker", "dbus-broker.service":
-		return true
-	}
-	return false
-}
+func isDbusFamily(svc string) bool { return restartpolicy.IsDbusFamily(svc) }
 
 // deferredRestartCmd builds the remote command to restart one needrestart-deferred (override_rc)
 // unit as an opt-in alternative to a reboot. Rule: use the unit's needrestart restart.d handler

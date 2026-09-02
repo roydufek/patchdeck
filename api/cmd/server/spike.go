@@ -75,6 +75,25 @@ type nextHostView struct {
 	Tags                       []string // host tags (for chips + grouping)
 	Unverified                 bool     // approval-required host whose first key isn't approved yet
 	PendingKey                 bool     // a host key is captured and awaiting operator approval
+	// restart-intel: NeedsRestart split into the units a smart restart can act on vs the ones
+	// that need a reboot (learned-resistant, or dbus with no coordinated handler). RebootAny is
+	// true when the host needs a reboot for any reason (kernel/needsreboot OR a reboot-only unit).
+	RestartServices []string
+	RebootServices  []string
+	RebootAny       bool
+	IsSelf          bool // this host is the machine Patchdeck runs on (boot_id match)
+	ExcludeFromBulk bool // operator-protected: kept out of fleet-wide reboots
+}
+
+// resolveRestartBuckets splits a snapshot's needs-restart list into the restartable bucket and
+// the reboot-only bucket. New scans carry the buckets pre-classified; for pre-restart-intel
+// snapshots (both buckets empty but NeedsRestart populated) it falls back to treating everything
+// as restartable so the UI still offers the action.
+func resolveRestartBuckets(s models.ScanSnapshot) (restartable, rebootOnly []string) {
+	if len(s.RestartServices) == 0 && len(s.RebootServices) == 0 && len(s.NeedsRestart) > 0 {
+		return s.NeedsRestart, nil
+	}
+	return s.RestartServices, s.RebootServices
 }
 
 func fillFromSnapshot(v *nextHostView, s models.ScanSnapshot) {
@@ -88,6 +107,8 @@ func fillFromSnapshot(v *nextHostView, s models.ScanSnapshot) {
 	v.NeedsReboot = s.NeedsReboot
 	v.RebootReason = s.RebootReason
 	v.RestartCount = len(s.NeedsRestart)
+	v.RestartServices, v.RebootServices = resolveRestartBuckets(s)
+	v.RebootAny = s.NeedsReboot || len(v.RebootServices) > 0
 	v.DeferredCount = len(s.DeferredPackages)
 	v.OsName = s.OsName
 	v.OsVersion = s.OsVersion
@@ -168,6 +189,7 @@ func (a *app) nextHostViews() ([]nextHostView, error) {
 		setHostMeta(&v, h)
 		if s, ok := byID[h.ID]; ok {
 			fillFromSnapshot(&v, s)
+			v.IsSelf = a.isSelfHost(s)
 		}
 		v.State = deriveState(v)
 		out = append(out, v)
@@ -180,6 +202,7 @@ func (a *app) nextHostViews() ([]nextHostView, error) {
 // keyChanged = a rotated key is pending operator approval).
 func setHostMeta(v *nextHostView, h models.Host) {
 	v.Tags = h.Tags
+	v.ExcludeFromBulk = h.ExcludeFromBulk
 	// Approval-required = pinned trust mode with no trusted key yet (new /next hosts start
 	// "pinned, no fingerprint" so the first connection must be reviewed + approved). Existing
 	// TOFU hosts keep trust-on-first-use and are never shown as unverified.
@@ -202,11 +225,20 @@ func (a *app) nextHostView(id string) (nextHostView, models.ScanSnapshot, error)
 		if s.HostID == id {
 			snap = s
 			fillFromSnapshot(&v, s)
+			v.IsSelf = a.isSelfHost(s)
 			break
 		}
 	}
 	v.State = deriveState(v)
 	return v, snap, nil
+}
+
+// isSelfHost reports whether a scanned host is the machine Patchdeck itself runs on, by
+// matching the scan's boot_id against Patchdeck's own. boot_id is the host kernel's and is not
+// namespaced, so the container and its host share it. Empty on either side => not self (safe:
+// self-detection simply doesn't fire, and the operator can still mark the host manually).
+func (a *app) isSelfHost(s models.ScanSnapshot) bool {
+	return a.selfBootID != "" && s.BootID != "" && s.BootID == a.selfBootID
 }
 
 // nextAuth gates the /next pages on a session cookie, redirecting a browser to the login
@@ -272,7 +304,12 @@ func (a *app) renderNext(w http.ResponseWriter, name string, data any) {
 // nextSummary is the fleet-level "how are things" line above the host list.
 type nextSummary struct {
 	Total, NeedAttention, UpToDate, Updates, Security int
-	LastScan string
+	// RebootHosts is how many hosts a "Reboot all" would actually reboot: those that need a
+	// reboot (kernel or a reboot-only unit) minus the self-host and any operator-protected host.
+	// RebootExcluded is how many needing-reboot hosts are held back (self/protected) — surfaced
+	// so the confirm can say "3 hosts, 1 held back (Patchdeck's own)".
+	RebootHosts, RebootExcluded int
+	LastScan                    string
 }
 
 // buildSummary aggregates the fleet and splits hosts into the attention vs healthy
@@ -286,6 +323,13 @@ func buildSummary(views []nextHostView) (nextSummary, []nextHostView, []nextHost
 		s.Total++
 		s.Updates += v.UpdateCount
 		s.Security += v.SecurityCount
+		if v.RebootAny {
+			if v.IsSelf || v.ExcludeFromBulk {
+				s.RebootExcluded++
+			} else {
+				s.RebootHosts++
+			}
+		}
 		if v.PendingKey || v.Unverified || (v.HasScan && (v.UpdateCount > 0 || v.NeedsReboot || v.RestartCount > 0)) {
 			s.NeedAttention++
 			attention = append(attention, v)
@@ -363,6 +407,7 @@ func (a *app) nextDashboard(w http.ResponseWriter, r *http.Request) {
 	summary, attention, healthy := buildSummary(views)
 	a.renderNext(w, "dashboard.html", map[string]any{
 		"Summary": summary, "Attention": attention, "Groups": groupHealthyByTag(healthy),
+		"BulkConcurrency": a.cfg.BulkConcurrency, "ApplyStagger": a.cfg.ApplyStaggerSeconds,
 	})
 }
 

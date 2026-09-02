@@ -57,12 +57,12 @@ It's **agentless**: nothing to install on your hosts, no daemon phoning home. Pa
 
 - **Agentless scanning** — connects out over SSH; nothing to deploy or maintain on your hosts
 - **One-click patching** — apply `apt` updates with real-time streaming output, right in the browser
-- **Reboot &amp; service restart** — reboot or shut down a host, run needrestart's safe coordinated restart, or restart the deferred units detached to dodge a full reboot — with a live "waiting for it to come back" watch
-- **Reboot detection** — surfaces `reboot-required` and the exact services needing a restart after an upgrade
+- **Intelligent service restart** — one **Restart services** action picks the right method per unit (a clean restart where it's safe, needrestart's coordinated handler where a naive restart would sever the session). Anything that comes back still flagged is **learned** and moved to a **reboot-required** bucket on its own — so you never have to guess which services actually need a reboot. A reboot (via Patchdeck or out-of-band) clears the learned set automatically.
+- **Reboot detection &amp; scoped fleet reboot** — surfaces `reboot-required` plus the exact services needing attention, split into restart-now vs reboot-required. **Reboot all** reboots only the hosts that need it — and never the host Patchdeck runs on, which it detects automatically (you can protect any other host too), each with its own "waiting for it to come back" watch
 - **First-connection host-key approval** — every new host's SSH key is captured and **held for your approval** before it's trusted; a changed key later pauses operations for re-approval (fail-closed, no silent trust)
 - **Tags &amp; grouped dashboard** — tag hosts by role/site/environment; the dashboard pins what **needs attention** on top and groups the rest by tag, with search and status filters
 - **Scheduled maintenance** — cron schedules targeting a single host, a tag, several hosts, or the whole fleet, with per-job run history (last/next run, per-host outcomes)
-- **Bulk actions** — scan or apply across the fleet, each host streaming independently on its own card
+- **Bulk actions** — scan, apply, or reboot across the fleet, each host streaming independently on its own card; concurrency-capped (`PATCHDECK_BULK_CONCURRENCY`) with an optional apply stagger (`PATCHDECK_APPLY_STAGGER_SECONDS`) so a large fleet doesn't bounce everything at once
 - **Activity log** — a timeline of every scan, apply, restart, reboot, and change, with configurable retention and CSV export
 - **Notifications** — native (no external dependency) alerts to Gotify, ntfy, Discord, Telegram, Slack, Pushover, email (SMTP), and webhooks — global and **per-host overrides**
 - **Single sign-on** — optional OIDC (Authorization Code + PKCE) alongside local password login
@@ -168,6 +168,8 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` is r
 | `PATCHDECK_SSH_TIMEOUT_SECONDS` | | `20` | SSH dial/handshake timeout |
 | `PATCHDECK_EXEC_TIMEOUT_SECONDS` | | `600` | Max wall-clock for a single remote command (scan/apply) |
 | `PATCHDECK_CONNECTIVITY_TIMEOUT_SECONDS` | | `15` | Timeout for the live dashboard connectivity check |
+| `PATCHDECK_BULK_CONCURRENCY` | | `4` | Max hosts a fleet-wide action (scan/apply/reboot all) drives at once; `<1` = no cap |
+| `PATCHDECK_APPLY_STAGGER_SECONDS` | | `0` | Minimum gap between successive apply-all starts (blast-radius safety); `0` = off |
 | `PATCHDECK_APPRISE_TIMEOUT_SECONDS` | | `10` | Notification delivery (HTTP/SMTP) timeout |
 | `PATCHDECK_APPRISE_URL` | | — | Default notification destination URL (see [Notifications](#notifications)) |
 | `PATCHDECK_TLS` | | `true` | Enable HTTPS with an auto-generated self-signed cert; set `false` if behind a reverse proxy |

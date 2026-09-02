@@ -21,6 +21,14 @@ type Config struct {
 	TLSEnabled          bool
 	TLSCertPath         string
 	TLSKeyPath          string
+	// BulkConcurrency caps how many hosts a fleet-wide action (scan-all / apply-all /
+	// reboot-all) drives at once, so a large fleet doesn't open hundreds of SSH sessions in
+	// one burst. The fan-out is client-driven; this value is handed to the dashboard JS.
+	BulkConcurrency int
+	// ApplyStaggerSeconds inserts a minimum gap between successive apply-all starts, to avoid
+	// bouncing services across the whole fleet simultaneously. 0 = no stagger (start as soon
+	// as a concurrency slot frees).
+	ApplyStaggerSeconds int
 }
 
 func Load() (Config, error) {
@@ -64,8 +72,22 @@ func Load() (Config, error) {
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("PATCHDECK_TLS"))); v == "false" || v == "0" {
 		tlsEnabled = false
 	}
+	// Bulk fan-out caps. Default concurrency 4 keeps a burst modest while staying brisk on a
+	// homelab; 0/blank falls back to the default, a value <1 means "no cap".
+	bulkConcurrency := 4
+	if raw := os.Getenv("PATCHDECK_BULK_CONCURRENCY"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil {
+			bulkConcurrency = v
+		}
+	}
+	applyStagger := 0
+	if raw := os.Getenv("PATCHDECK_APPLY_STAGGER_SECONDS"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			applyStagger = v
+		}
+	}
 	cfg := Config{
-		AppVersion:          envOr("PATCHDECK_VERSION", "2.0.0"),
+		AppVersion:          envOr("PATCHDECK_VERSION", "2.1.0"),
 		Port:                port,
 		DatabasePath:        envOr("PATCHDECK_DB_PATH", "/data/patchdeck.db"),
 		MasterKey:           os.Getenv("PATCHDECK_MASTER_KEY"),
@@ -77,6 +99,8 @@ func Load() (Config, error) {
 		TLSEnabled:          tlsEnabled,
 		TLSCertPath:         envOr("PATCHDECK_TLS_CERT", "/data/tls/cert.pem"),
 		TLSKeyPath:          envOr("PATCHDECK_TLS_KEY", "/data/tls/key.pem"),
+		BulkConcurrency:     bulkConcurrency,
+		ApplyStaggerSeconds: applyStagger,
 	}
 	if len(cfg.MasterKey) < 32 {
 		return Config{}, errors.New("PATCHDECK_MASTER_KEY must be set to 32+ characters")

@@ -50,6 +50,12 @@ type app struct {
 	limiter      *ratelimit.HostLimiter
 	loginLimiter *ratelimit.LoginLimiter
 	startTime    time.Time
+	// selfBootID is this container's /proc/sys/kernel/random/boot_id. Because boot_id is the
+	// host kernel's and is NOT namespaced, it equals the boot_id of the machine Patchdeck runs
+	// on — so a managed host whose scanned boot_id matches this one IS that machine, and we keep
+	// it out of fleet-wide reboots (Patchdeck can't watch itself recover mid-batch). Empty when
+	// the file can't be read (e.g. non-Linux dev), which disables self-detection safely.
+	selfBootID string
 }
 
 const totpIssuer = "Patchdeck"
@@ -103,6 +109,10 @@ func main() {
 		limiter:      ratelimit.NewHostLimiter(30 * time.Second),
 		loginLimiter: ratelimit.NewLoginLimiter(8, 15*time.Minute),
 		startTime:    time.Now(),
+		selfBootID:   readSelfBootID(),
+	}
+	if a.selfBootID != "" {
+		log.Printf("self boot_id %s — a managed host reporting this boot_id is the machine Patchdeck runs on and is auto-excluded from fleet reboots", a.selfBootID)
 	}
 	a.sshClient = sshx.NewClient(cfg.SSHTimeout, cfg.ExecTimeout, a.verifyHostKey)
 	a.sched = scheduler.NewEngine(database, a.sshClient, seal, notifier, cfg.AppriseURL)
@@ -210,10 +220,9 @@ func main() {
 		nr.Get("/hosts/{id}/apply-confirm", a.nextApplyConfirm)
 		nr.Get("/hosts/{id}/apply/panel", a.nextApplyPanel)
 		nr.Get("/hosts/{id}/apply/stream", a.nextApplyStream)
-		nr.Get("/hosts/{id}/restart-confirm", a.nextRestartConfirm)
-		nr.Post("/hosts/{id}/restart-all", a.nextRestartAll)
-		nr.Get("/hosts/{id}/restart-deferred-confirm", a.nextRestartDeferredConfirm)
-		nr.Post("/hosts/{id}/restart-deferred", a.nextRestartDeferred)
+		nr.Get("/hosts/{id}/restart-confirm", a.nextRestartConfirmSmart)
+		nr.Post("/hosts/{id}/restart", a.nextRestartSmart)
+		nr.Post("/hosts/{id}/exclude-bulk", a.nextToggleExcludeBulk)
 		nr.Post("/hosts/{id}/notifications", a.nextHostNotifPrefs)
 		nr.Get("/hosts/{id}/reboot-confirm", a.nextRebootConfirm)
 		nr.Post("/hosts/{id}/reboot", a.nextReboot)

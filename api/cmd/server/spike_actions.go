@@ -11,108 +11,9 @@ import (
 	"patchdeck/api/internal/sshx"
 )
 
-// spike_actions.go — /next power posture actions (reboot + needrestart-coordinated
-// service restart) rendered as HTML fragments. These reuse the exact backend calls the
-// JSON API uses (RestartAllViaNeedrestart / Power) and honor the same dbus guardrail:
-// needrestart owns the coordinated restart and leaves unsafe units (dbus/kernel) flagged
-// as reboot-required rather than naively bouncing them.
-
-// nextRestartConfirm renders the "are you sure?" step before a coordinated service restart.
-func (a *app) nextRestartConfirm(w http.ResponseWriter, r *http.Request) {
-	v, snap, err := a.nextHostView(chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, "host not found", http.StatusNotFound)
-		return
-	}
-	a.renderNext(w, "restartconfirm", map[string]any{
-		"ID": v.ID, "Name": v.Name, "Count": len(snap.NeedsRestart), "Out": r.URL.Query().Get("out"),
-	})
-}
-
-// nextRestartAll runs needrestart's coordinated restart pass and renders the outcome.
-func (a *app) nextRestartAll(w http.ResponseWriter, r *http.Request) {
-	host, err := db.GetHost(a.db, chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, "host not found", http.StatusNotFound)
-		return
-	}
-	res, err := a.sshClient.RestartAllViaNeedrestart(host, a.secrets)
-	if err != nil {
-		msg := err.Error()
-		var hkErr *sshx.HostKeyError
-		if errors.As(err, &hkErr) {
-			msg = hkErr.Message
-		}
-		_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_fail", fmt.Sprintf("needrestart restart-all failed: %v", err))
-		a.renderNext(w, "actionresult", map[string]any{
-			"ID": host.ID, "Title": "Restart failed", "Err": msg,
-		})
-		return
-	}
-	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", "Ran needrestart coordinated restart (all safe services)")
-	a.renderNext(w, "actionresult", map[string]any{
-		"ID": host.ID, "Title": "Services restarted",
-		"OK":             "needrestart restarted every service it safely could.",
-		"RebootRequired": res.RebootRequired,
-		"Rescan":         true,
-	})
-}
-
-// hostRestartServices returns the services the latest scan flagged as needing a restart.
-func (a *app) hostRestartServices(hostID string) []string {
-	snaps, _ := db.ListScanSnapshots(a.db)
-	for _, s := range snaps {
-		if s.HostID == hostID {
-			return s.NeedsRestart
-		}
-	}
-	return nil
-}
-
-// nextRestartDeferredConfirm renders the confirm step before a detached deferred-unit restart.
-func (a *app) nextRestartDeferredConfirm(w http.ResponseWriter, r *http.Request) {
-	v, snap, err := a.nextHostView(chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, "host not found", http.StatusNotFound)
-		return
-	}
-	a.renderNext(w, "deferredconfirm", map[string]any{
-		"ID": v.ID, "Name": v.Name, "Count": len(snap.NeedsRestart), "Out": r.URL.Query().Get("out"),
-	})
-}
-
-// nextRestartDeferred restarts the flagged units detached (an opt-in alternative to a reboot).
-// dbus uses needrestart's coordinated handler or stays reboot-required; the rest are restarted
-// detached so a connection flap can't interrupt them.
-func (a *app) nextRestartDeferred(w http.ResponseWriter, r *http.Request) {
-	host, err := db.GetHost(a.db, chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, "host not found", http.StatusNotFound)
-		return
-	}
-	services := a.hostRestartServices(host.ID)
-	if len(services) == 0 {
-		a.renderNext(w, "actionresult", map[string]any{"ID": host.ID, "Title": "Nothing to restart", "OK": "No services are currently flagged for restart.", "Rescan": true})
-		return
-	}
-	res, err := a.sshClient.RestartDeferredDetached(host, a.secrets, services)
-	if err != nil {
-		msg := err.Error()
-		var hkErr *sshx.HostKeyError
-		if errors.As(err, &hkErr) {
-			msg = hkErr.Message
-		}
-		_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_fail", fmt.Sprintf("Detached restart failed: %v", err))
-		a.renderNext(w, "actionresult", map[string]any{"ID": host.ID, "Title": "Restart failed", "Err": msg})
-		return
-	}
-	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", fmt.Sprintf("Restarted %d deferred service(s) detached", len(services)))
-	a.renderNext(w, "actionresult", map[string]any{
-		"ID": host.ID, "Title": "Deferred services restarted",
-		"OK": fmt.Sprintf("Issued a detached restart of %d service(s).", len(services)),
-		"RebootRequired": res.RebootRequired, "Rescan": true,
-	})
-}
+// spike_actions.go — /next power posture actions (reboot / shutdown) rendered as HTML
+// fragments. The service-restart action lives in spike_restart.go (the smart, self-learning
+// restart); these handle the machine-level power controls and their recovery watch.
 
 // nextRebootConfirm renders the confirm step before rebooting a host.
 func (a *app) nextRebootConfirm(w http.ResponseWriter, r *http.Request) {
@@ -121,7 +22,7 @@ func (a *app) nextRebootConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host not found", http.StatusNotFound)
 		return
 	}
-	a.renderNext(w, "rebootconfirm", map[string]any{"ID": v.ID, "Name": v.Name, "Out": r.URL.Query().Get("out")})
+	a.renderNext(w, "rebootconfirm", map[string]any{"ID": v.ID, "Name": v.Name, "Out": r.URL.Query().Get("out"), "Self": v.IsSelf})
 }
 
 // nextReboot initiates a reboot and renders a recovery panel that watches the host come
@@ -153,7 +54,7 @@ func (a *app) nextShutdownConfirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host not found", http.StatusNotFound)
 		return
 	}
-	a.renderNext(w, "shutdownconfirm", map[string]any{"ID": v.ID, "Name": v.Name, "Out": r.URL.Query().Get("out")})
+	a.renderNext(w, "shutdownconfirm", map[string]any{"ID": v.ID, "Name": v.Name, "Out": r.URL.Query().Get("out"), "Self": v.IsSelf})
 }
 
 // nextShutdown powers the host off. Unlike reboot there's no recovery watch — it won't

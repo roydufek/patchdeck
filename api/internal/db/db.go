@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"patchdeck/api/internal/models"
+	"patchdeck/api/internal/restartpolicy"
 
 	"github.com/google/uuid"
 )
@@ -126,7 +127,77 @@ func Migrate(db *sql.DB) error {
 	if err := ensureTableColumn(db, "scans", "deferred_packages_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
+	// v2.1: restart/reboot classification, boot_id (self-host detection + restart→reboot learning),
+	// and the bulk-exclude flag. All additive — old snapshots default to empty buckets and fall
+	// back to the flat needs_restart list.
+	if err := ensureTableColumn(db, "scans", "boot_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureTableColumn(db, "scans", "restart_services_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := ensureTableColumn(db, "scans", "reboot_services_json", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	if err := ensureHostColumn(db, "exclude_from_bulk", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// restart_marks: a service we restarted, stamped with the boot it was restarted on. If the
+	// next scan still flags it on the SAME boot_id, it's restart-resistant (reboot-only). A new
+	// boot_id, or the service dropping off needrestart's list, prunes the mark automatically.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS restart_marks (host_id TEXT NOT NULL, service TEXT NOT NULL, boot_id TEXT NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY(host_id, service))`); err != nil {
+		return err
+	}
 	return nil
+}
+
+// SetRestartMark records that `service` was (re)started on `hostID` while the host was on boot
+// `bootID`. Used by the restart action; reconciled against needrestart on the next scan.
+func SetRestartMark(db *sql.DB, hostID, service, bootID string) error {
+	_, err := db.Exec(`INSERT INTO restart_marks(host_id,service,boot_id,created_at) VALUES(?,?,?,?)
+		ON CONFLICT(host_id,service) DO UPDATE SET boot_id=excluded.boot_id, created_at=excluded.created_at`,
+		hostID, service, strings.TrimSpace(bootID), time.Now().UTC())
+	return err
+}
+
+// reconcileRestartMarks prunes a host's restart marks against the fresh scan and returns the set
+// of services that remain restart-resistant (restarted, still flagged, same boot). A mark is
+// dropped when the service is no longer flagged by needrestart OR the host has rebooted since
+// (boot_id changed) — so an out-of-band reboot self-heals the learned set.
+func reconcileRestartMarks(db *sql.DB, hostID string, needsRestart []string, currentBootID string) map[string]bool {
+	rows, err := db.Query(`SELECT service, boot_id FROM restart_marks WHERE host_id=?`, hostID)
+	if err != nil {
+		return map[string]bool{}
+	}
+	flagged := make(map[string]bool, len(needsRestart))
+	for _, s := range needsRestart {
+		flagged[s] = true
+	}
+	type mark struct{ service, bootID string }
+	var marks []mark
+	for rows.Next() {
+		var m mark
+		if rows.Scan(&m.service, &m.bootID) == nil {
+			marks = append(marks, m)
+		}
+	}
+	rows.Close()
+	cur := strings.TrimSpace(currentBootID)
+	resistant := map[string]bool{}
+	for _, m := range marks {
+		if !flagged[m.service] || strings.TrimSpace(m.bootID) != cur || cur == "" {
+			_, _ = db.Exec(`DELETE FROM restart_marks WHERE host_id=? AND service=?`, hostID, m.service)
+			continue
+		}
+		resistant[m.service] = true
+	}
+	return resistant
+}
+
+// SetHostExcludeFromBulk toggles whether a host is kept out of fleet-wide destructive actions.
+func SetHostExcludeFromBulk(db *sql.DB, hostID string, exclude bool) error {
+	_, err := db.Exec(`UPDATE hosts SET exclude_from_bulk=? WHERE id=?`, boolToInt(exclude), hostID)
+	return err
 }
 
 func HasUsers(db *sql.DB) bool {
@@ -178,7 +249,7 @@ func CreateHost(db *sql.DB, h models.Host) (string, error) {
 }
 
 func ListHosts(db *sql.DB) ([]models.Host, error) {
-	rows, err := db.Query(`SELECT id,name,address,port,ssh_user,auth_type,checks_enabled,auto_update_policy,host_key_required,host_key_trust_mode,host_key_pinned_fingerprint,host_key_trusted_fingerprint,host_key_pending_fingerprint,host_key_last_verified_at,tags_json,created_at FROM hosts ORDER BY name`)
+	rows, err := db.Query(`SELECT id,name,address,port,ssh_user,auth_type,checks_enabled,auto_update_policy,host_key_required,host_key_trust_mode,host_key_pinned_fingerprint,host_key_trusted_fingerprint,host_key_pending_fingerprint,host_key_last_verified_at,tags_json,exclude_from_bulk,created_at FROM hosts ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -186,14 +257,15 @@ func ListHosts(db *sql.DB) ([]models.Host, error) {
 	out := []models.Host{}
 	for rows.Next() {
 		var h models.Host
-		var checksEnabled, hostKeyRequired int
+		var checksEnabled, hostKeyRequired, excludeFromBulk int
 		var hostKeyLastVerified sql.NullTime
 		var tagsJSON string
-		if err := rows.Scan(&h.ID, &h.Name, &h.Address, &h.Port, &h.SSHUser, &h.AuthType, &checksEnabled, &h.AutoUpdatePolicy, &hostKeyRequired, &h.HostKeyTrustMode, &h.HostKeyPinned, &h.HostKeyTrusted, &h.HostKeyPending, &hostKeyLastVerified, &tagsJSON, &h.CreatedAt); err != nil {
+		if err := rows.Scan(&h.ID, &h.Name, &h.Address, &h.Port, &h.SSHUser, &h.AuthType, &checksEnabled, &h.AutoUpdatePolicy, &hostKeyRequired, &h.HostKeyTrustMode, &h.HostKeyPinned, &h.HostKeyTrusted, &h.HostKeyPending, &hostKeyLastVerified, &tagsJSON, &excludeFromBulk, &h.CreatedAt); err != nil {
 			return nil, err
 		}
 		h.ChecksEnabled = checksEnabled == 1
 		h.HostKeyRequired = hostKeyRequired == 1
+		h.ExcludeFromBulk = excludeFromBulk == 1
 		if h.AutoUpdatePolicy == "" {
 			h.AutoUpdatePolicy = "manual"
 		}
@@ -231,15 +303,16 @@ func ListHosts(db *sql.DB) ([]models.Host, error) {
 
 func GetHost(db *sql.DB, id string) (models.Host, error) {
 	var h models.Host
-	var checksEnabled, hostKeyRequired int
+	var checksEnabled, hostKeyRequired, excludeFromBulk int
 	var hostKeyLastVerified sql.NullTime
 	var tagsJSON string
-	err := db.QueryRow(`SELECT id,name,address,port,ssh_user,auth_type,secret_cipher,checks_enabled,auto_update_policy,host_key_required,host_key_trust_mode,host_key_pinned_fingerprint,host_key_trusted_fingerprint,host_key_pending_fingerprint,host_key_last_verified_at,tags_json,created_at FROM hosts WHERE id=?`, id).Scan(&h.ID, &h.Name, &h.Address, &h.Port, &h.SSHUser, &h.AuthType, &h.SecretCipher, &checksEnabled, &h.AutoUpdatePolicy, &hostKeyRequired, &h.HostKeyTrustMode, &h.HostKeyPinned, &h.HostKeyTrusted, &h.HostKeyPending, &hostKeyLastVerified, &tagsJSON, &h.CreatedAt)
+	err := db.QueryRow(`SELECT id,name,address,port,ssh_user,auth_type,secret_cipher,checks_enabled,auto_update_policy,host_key_required,host_key_trust_mode,host_key_pinned_fingerprint,host_key_trusted_fingerprint,host_key_pending_fingerprint,host_key_last_verified_at,tags_json,exclude_from_bulk,created_at FROM hosts WHERE id=?`, id).Scan(&h.ID, &h.Name, &h.Address, &h.Port, &h.SSHUser, &h.AuthType, &h.SecretCipher, &checksEnabled, &h.AutoUpdatePolicy, &hostKeyRequired, &h.HostKeyTrustMode, &h.HostKeyPinned, &h.HostKeyTrusted, &h.HostKeyPending, &hostKeyLastVerified, &tagsJSON, &excludeFromBulk, &h.CreatedAt)
 	if err != nil {
 		return h, err
 	}
 	h.ChecksEnabled = checksEnabled == 1
 	h.HostKeyRequired = hostKeyRequired == 1
+	h.ExcludeFromBulk = excludeFromBulk == 1
 	if h.AutoUpdatePolicy == "" {
 		h.AutoUpdatePolicy = "manual"
 	}
@@ -408,9 +481,16 @@ func UpsertScanResult(db *sql.DB, hostID string, sr models.ScanResult) error {
 	deferredPkg, _ := json.Marshal(sr.DeferredPackages)
 	svc, _ := json.Marshal(sr.NeedsRestart)
 	now := time.Now().UTC()
-	_, err := db.Exec(`INSERT INTO scans(host_id,packages_json,deferred_packages_json,needs_reboot,reboot_reason,needs_restart_json,needrestart_found,raw_output,os_name,os_version,uptime,kernel,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-	ON CONFLICT(host_id) DO UPDATE SET packages_json=excluded.packages_json,deferred_packages_json=excluded.deferred_packages_json,needs_reboot=excluded.needs_reboot,reboot_reason=excluded.reboot_reason,needs_restart_json=excluded.needs_restart_json,needrestart_found=excluded.needrestart_found,raw_output=excluded.raw_output,os_name=excluded.os_name,os_version=excluded.os_version,uptime=excluded.uptime,kernel=excluded.kernel,updated_at=excluded.updated_at`,
-		hostID, string(pkg), string(deferredPkg), boolToInt(sr.NeedsReboot), sr.RebootReason, string(svc), boolToInt(sr.NeedrestartFound), sr.RawOutput, sr.OsName, sr.OsVersion, sr.Uptime, sr.Kernel, now)
+	// Reconcile the learned restart→reboot marks against this fresh scan (a reboot or the service
+	// dropping off needrestart prunes them), then split needs-restart into "a smart restart can
+	// handle it" vs "needs a reboot" (learned-resistant, or the D-Bus bus with no handler).
+	resistant := reconcileRestartMarks(db, hostID, sr.NeedsRestart, sr.BootID)
+	restartable, rebootOnly := restartpolicy.Classify(sr.NeedsRestart, sr.RestartHandlers, resistant)
+	restartJSON, _ := json.Marshal(restartable)
+	rebootJSON, _ := json.Marshal(rebootOnly)
+	_, err := db.Exec(`INSERT INTO scans(host_id,packages_json,deferred_packages_json,needs_reboot,reboot_reason,needs_restart_json,needrestart_found,raw_output,os_name,os_version,uptime,kernel,boot_id,restart_services_json,reboot_services_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	ON CONFLICT(host_id) DO UPDATE SET packages_json=excluded.packages_json,deferred_packages_json=excluded.deferred_packages_json,needs_reboot=excluded.needs_reboot,reboot_reason=excluded.reboot_reason,needs_restart_json=excluded.needs_restart_json,needrestart_found=excluded.needrestart_found,raw_output=excluded.raw_output,os_name=excluded.os_name,os_version=excluded.os_version,uptime=excluded.uptime,kernel=excluded.kernel,boot_id=excluded.boot_id,restart_services_json=excluded.restart_services_json,reboot_services_json=excluded.reboot_services_json,updated_at=excluded.updated_at`,
+		hostID, string(pkg), string(deferredPkg), boolToInt(sr.NeedsReboot), sr.RebootReason, string(svc), boolToInt(sr.NeedrestartFound), sr.RawOutput, sr.OsName, sr.OsVersion, sr.Uptime, sr.Kernel, sr.BootID, string(restartJSON), string(rebootJSON), now)
 	if err != nil {
 		return err
 	}
@@ -785,7 +865,7 @@ func unmarshalPackages(raw string) []models.PackageInfo {
 
 func ListScanSnapshots(db *sql.DB) ([]models.ScanSnapshot, error) {
 	rows, err := db.Query(`
-		SELECT s.host_id, h.name, s.packages_json, s.deferred_packages_json, s.needs_reboot, s.reboot_reason, s.needs_restart_json, s.needrestart_found, s.os_name, s.os_version, s.uptime, s.kernel, s.updated_at
+		SELECT s.host_id, h.name, s.packages_json, s.deferred_packages_json, s.needs_reboot, s.reboot_reason, s.needs_restart_json, s.needrestart_found, s.os_name, s.os_version, s.uptime, s.kernel, s.boot_id, s.restart_services_json, s.reboot_services_json, s.updated_at
 		FROM scans s
 		JOIN hosts h ON h.id = s.host_id
 		ORDER BY s.updated_at DESC, h.name ASC`)
@@ -799,10 +879,10 @@ func ListScanSnapshots(db *sql.DB) ([]models.ScanSnapshot, error) {
 		var snap models.ScanSnapshot
 		var pkgJSON string
 		var deferredJSON string
-		var needsRestartJSON string
+		var needsRestartJSON, restartJSON, rebootJSON string
 		var needsReboot int
 		var needrestartFound int
-		if err := rows.Scan(&snap.HostID, &snap.HostName, &pkgJSON, &deferredJSON, &needsReboot, &snap.RebootReason, &needsRestartJSON, &needrestartFound, &snap.OsName, &snap.OsVersion, &snap.Uptime, &snap.Kernel, &snap.UpdatedAt); err != nil {
+		if err := rows.Scan(&snap.HostID, &snap.HostName, &pkgJSON, &deferredJSON, &needsReboot, &snap.RebootReason, &needsRestartJSON, &needrestartFound, &snap.OsName, &snap.OsVersion, &snap.Uptime, &snap.Kernel, &snap.BootID, &restartJSON, &rebootJSON, &snap.UpdatedAt); err != nil {
 			return nil, err
 		}
 		snap.NeedsReboot = needsReboot == 1
@@ -813,6 +893,12 @@ func ListScanSnapshots(db *sql.DB) ([]models.ScanSnapshot, error) {
 			if err := json.Unmarshal([]byte(needsRestartJSON), &snap.NeedsRestart); err != nil {
 				return nil, err
 			}
+		}
+		if strings.TrimSpace(restartJSON) != "" {
+			_ = json.Unmarshal([]byte(restartJSON), &snap.RestartServices)
+		}
+		if strings.TrimSpace(rebootJSON) != "" {
+			_ = json.Unmarshal([]byte(rebootJSON), &snap.RebootServices)
 		}
 		out = append(out, snap)
 	}
