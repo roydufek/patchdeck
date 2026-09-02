@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Activity · Patchdeck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<script src="/next/assets/htmx.min.js"></script>
+{{template "themeinit"}}
+{{template "styles"}}
+</head>
+<body>
+<div class="app">
+  <div class="detail-top">
+    <a class="back-btn" href="/next"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg> Dashboard</a>
+    <a class="btn ghost" href="/api/activity/export{{if .Host}}?host_id={{.Host}}{{end}}" title="Export CSV">Export CSV</a>
+  </div>
+  <h1 class="formhead" style="margin-bottom:13px">Activity</h1>
+  <div class="field" style="margin-bottom:14px">
+    <select onchange="location.href='/next/activity'+(this.value?('?host='+this.value):'')">
+      <option value="">All hosts</option>
+      {{range .Hosts}}<option value="{{.ID}}"{{if eq $.Host .ID}} selected{{end}}>{{.Name}}</option>{{end}}
+    </select>
+  </div>
+  <div class="actlist">{{template "activityrows" .}}</div>
+</div>
+</body>
+</html>

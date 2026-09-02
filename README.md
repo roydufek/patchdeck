@@ -1,11 +1,12 @@
 <p align="center">
-  <img src="web/public/logo-192.png" alt="Patchdeck" width="96" height="96" />
+  <img src="api/cmd/server/spikeassets/logo.png" alt="Patchdeck" width="96" height="96" />
 </p>
 
 <h1 align="center">Patchdeck</h1>
 
 <p align="center">
-  <strong>Agentless patch management dashboard for Debian &amp; Ubuntu servers.</strong>
+  <strong>The agentless patch dashboard for your homelab.</strong><br>
+  Scan, apply, reboot, and schedule updates across your Debian &amp; Ubuntu boxes — over plain SSH, from one self-hosted pane of glass.
 </p>
 
 <p align="center">
@@ -15,79 +16,47 @@
 <p align="center">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue" />
   <img alt="Go" src="https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white" />
-  <img alt="React" src="https://img.shields.io/badge/react-18-61DAFB?logo=react&logoColor=white" />
+  <img alt="Self-hosted" src="https://img.shields.io/badge/self--hosted-yes-1f9268" />
   <img alt="Docker" src="https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white" />
 </p>
 
 ---
 
-Patchdeck gives you a single pane of glass over your Linux fleet's patch status — scan for updates, apply them, restart services, and schedule recurring maintenance. No agents to install on your hosts — just SSH.
+Keeping a homelab patched is death by a thousand `ssh box && sudo apt update && sudo apt upgrade`. Patchdeck gives you **one place to see what needs updating across every box** — your Proxmox VMs and LXC containers, your Raspberry Pis, that NUC in the closet, bare metal, anything you can reach over SSH — and to actually do something about it.
 
-Built for homelabbers, sysadmins, and small teams who want visibility without enterprise complexity.
+It's **agentless**: nothing to install on your hosts, no daemon phoning home. Patchdeck connects out over SSH, checks `apt`, and streams the output back live. It runs as a **single container** right next to the rest of your self-hosted stack, encrypts every credential at rest, and has **no cloud, no telemetry, and no account** — your fleet's details never leave the box.
+
+### Fits the way you already run things
+
+- **Point it at your fleet over SSH** — password or key auth, per host. First connection to a host pauses so **you review and approve its SSH key** before Patchdeck ever uses it.
+- **Behind your reverse proxy** — Traefik, Caddy, Nginx Proxy Manager. Serves HTTPS on its own by default; flip one env var to let your proxy terminate TLS.
+- **Through your notification stack** — native alerts to Gotify, ntfy, Discord, Telegram, Slack, Pushover, email, or a webhook. No Apprise/python container to babysit.
+- **With your homelab login** — optional single sign-on via any OIDC provider (Authentik, Authelia, Keycloak, Pocket ID, …), or a local admin with TOTP two-factor.
+- **On your phone or your desktop** — the UI is responsive and theme-aware (system / light / dark), so a quick "what needs patching?" check works from the couch.
 
 ## Features
 
-- **Agentless scanning** — connects over SSH, no agents to deploy or maintain
-- **One-click patching** — apply `apt` updates with real-time streaming output
-- **Service restart & reboot** — restart specific services or reboot/shutdown hosts from the UI
-- **Reboot detection** — surfaces `/var/run/reboot-required` with package-level detail
-- **Scheduled maintenance** — cron-based schedules with multi-host and tag-group targeting, plus per-job run history (last/next run, per-host outcomes)
-- **Host tagging & grouping** — organize hosts by environment, role, or location
-- **Activity audit log** — full timeline of scans, applies, reboots, and config changes with configurable retention and CSV export
-- **Notifications** — native (no external dependency) alerts to Gotify, ntfy, Discord, Telegram, Slack, Pushover, email (SMTP), and generic webhooks
-- **SSH host key verification** — TOFU + manual pinning with full audit trail
+- **Agentless scanning** — connects out over SSH; nothing to deploy or maintain on your hosts
+- **One-click patching** — apply `apt` updates with real-time streaming output, right in the browser
+- **Reboot &amp; service restart** — reboot or shut down a host, run needrestart's safe coordinated restart, or restart the deferred units detached to dodge a full reboot — with a live "waiting for it to come back" watch
+- **Reboot detection** — surfaces `reboot-required` and the exact services needing a restart after an upgrade
+- **First-connection host-key approval** — every new host's SSH key is captured and **held for your approval** before it's trusted; a changed key later pauses operations for re-approval (fail-closed, no silent trust)
+- **Tags &amp; grouped dashboard** — tag hosts by role/site/environment; the dashboard pins what **needs attention** on top and groups the rest by tag, with search and status filters
+- **Scheduled maintenance** — cron schedules targeting a single host, a tag, several hosts, or the whole fleet, with per-job run history (last/next run, per-host outcomes)
+- **Bulk actions** — scan or apply across the fleet, each host streaming independently on its own card
+- **Activity log** — a timeline of every scan, apply, restart, reboot, and change, with configurable retention and CSV export
+- **Notifications** — native (no external dependency) alerts to Gotify, ntfy, Discord, Telegram, Slack, Pushover, email (SMTP), and webhooks — global and **per-host overrides**
+- **Single sign-on** — optional OIDC (Authorization Code + PKCE) alongside local password login
+- **Two-factor auth** — optional TOTP with one-time recovery codes on the local admin
 - **API tokens** — programmatic access with `Bearer` auth
-- **Dark & light themes** — system preference detection with manual toggle
-- **Mobile responsive** — works on phones and tablets
-- **Two-factor auth** — optional TOTP (Google Authenticator, Authy, etc.) on admin login
-- **Encrypted secrets** — AES-GCM at rest for all SSH credentials
-- **HTTPS by default** — auto-generated self-signed TLS certificate, no configuration needed; disable with a single env var if behind a reverse proxy
-
-## Screenshots
-
-<details>
-<summary><strong>🖥️ Desktop views</strong></summary>
-<br>
-<p align="center">
-  <img src="docs/screenshots/dashboard-dark-desktop.png" alt="Dashboard — Dark theme" width="720" />
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/dashboard-light-desktop.png" alt="Dashboard — Light theme" width="720" />
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/host-detail-dark-desktop.png" alt="Host detail view" width="720" />
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/settings-dark-desktop.png" alt="Settings — TOTP, API tokens, audit log" width="720" />
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/activity-dark-desktop.png" alt="Activity log" width="720" />
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/schedules-dark-desktop.png" alt="Scheduled jobs" width="720" />
-</p>
-</details>
-
-<details>
-<summary><strong>📱 Mobile views</strong></summary>
-<br>
-<p align="center">
-  <img src="docs/screenshots/dashboard-dark-mobile.png" alt="Dashboard — Mobile" width="280" />
-  &nbsp;&nbsp;
-  <img src="docs/screenshots/host-detail-light-mobile.png" alt="Host detail — Mobile" width="280" />
-</p>
-</details>
+- **Encrypted secrets** — AES-256-GCM at rest for every SSH credential
+- **HTTPS by default** — auto-generated self-signed cert out of the box; one env var to defer to your reverse proxy
 
 ## Quick Start
 
 ### Prerequisites
 
-- Docker & Docker Compose
+- Docker &amp; Docker Compose
 - SSH access to your target hosts (password or key auth)
 
 ### 1. Create your project directory
@@ -103,18 +72,6 @@ mkdir patchdeck && cd patchdeck
 echo "PATCHDECK_MASTER_KEY=$(openssl rand -hex 32)" > .env
 ```
 
-Or copy the example and edit manually:
-
-```bash
-cp .env.example .env
-```
-
-`.env.example`:
-```env
-# Required: 32+ char random string. Encrypts SSH credentials at rest (AES-GCM).
-PATCHDECK_MASTER_KEY=replace-with-32plus-char-random-string
-```
-
 ### 3. Create your `compose.yaml`
 
 ```yaml
@@ -126,18 +83,16 @@ services:
     ports:
       - "6070:6070"
     environment:
-      PUID: 1000                                         # default, set to match your host user
-      PGID: 1000                                         # default, set to match your host group
+      PUID: 1000                                          # set to match your host user
+      PGID: 1000                                          # set to match your host group
       PATCHDECK_PORT: 6070
       PATCHDECK_MASTER_KEY: ${PATCHDECK_MASTER_KEY}
-      #PATCHDECK_TLS: true                                 # default, set false if behind a reverse proxy
-      #PATCHDECK_TLS_CERT: /data/tls/cert.pem              # default, optional — path to custom TLS certificate
-      #PATCHDECK_TLS_KEY: /data/tls/key.pem               # default, optional — path to custom TLS key
+      #TZ: America/Los_Angeles                             # timezone for scheduled jobs (default UTC)
+      #PATCHDECK_TLS: true                                 # default; set false if behind a reverse proxy
       #PATCHDECK_DB_PATH: /data/patchdeck.db               # default, optional
       #PATCHDECK_SSH_TIMEOUT_SECONDS: 20                   # default, optional — SSH dial timeout
       #PATCHDECK_EXEC_TIMEOUT_SECONDS: 600                 # default, optional — max wall-clock for a remote command
       #PATCHDECK_CONNECTIVITY_TIMEOUT_SECONDS: 15          # default, optional — live connectivity-check timeout
-      #PATCHDECK_APPRISE_TIMEOUT_SECONDS: 10               # default, optional — notification delivery timeout
       #PATCHDECK_APPRISE_URL: gotifys://gotify.example.com/TOKEN    # optional — default notification destination
     volumes:
       - ./data:/data
@@ -149,25 +104,24 @@ services:
 docker compose up -d
 ```
 
-Patchdeck will be available at `https://localhost:6070`.
+Patchdeck will be available at `https://localhost:6070` (or `https://<your-server-ip>:6070`).
 
-> **Note:** Patchdeck serves HTTPS by default with an auto-generated self-signed certificate. Your browser will show a certificate warning on first visit — this is expected. If running behind a reverse proxy (Nginx, Caddy, Traefik), set `PATCHDECK_TLS=false` to avoid double encryption.
+> **Note:** Patchdeck serves HTTPS by default with an auto-generated self-signed certificate, so your browser will warn on first visit — that's expected. Behind a reverse proxy (Traefik, Caddy, Nginx Proxy Manager) set `PATCHDECK_TLS=false` so you don't double-encrypt.
 
 ### 5. Create your admin account
 
-Open the web UI and create your admin account. You can enable TOTP two-factor authentication afterwards in **Settings**.
+Open the web UI and create the first admin account. You can turn on TOTP two-factor and wire up OIDC single sign-on afterwards in **Settings**.
 
 ### 6. Add hosts
 
-Click **Add Host** and enter your server's SSH connection details. Patchdeck encrypts all credentials at rest.
+Hit **+** to add a server's SSH details. Patchdeck encrypts the credentials at rest, then walks you through **approving the host's SSH key** on first connect before it scans.
 
 ## Building from Source
 
 ```bash
 git clone https://github.com/roydufek/patchdeck.git
 cd patchdeck
-cp .env.example .env
-# Edit .env with your secrets
+cp .env.example .env    # then edit PATCHDECK_MASTER_KEY
 docker compose up -d --build
 ```
 
@@ -175,10 +129,12 @@ docker compose up -d --build
 
 | Component | Technology |
 |-----------|-----------|
-| Backend | Go 1.25 (Chi router + pure-Go SQLite, WAL) |
-| Frontend | React 18 + Vite + Tailwind CSS + TanStack Query |
-| Notifications | Native Go (no python/Apprise dependency) |
-| Deployment | Docker Compose (single container) |
+| Backend | Go 1.25 — Chi router + pure-Go SQLite (WAL), native Go scheduler &amp; notifications |
+| Frontend | **Server-rendered** Go `html/template` + [HTMX](https://htmx.org) + SSE — no Node, no bundler, no build step |
+| Runtime | A single ~30 MB static Go binary on Alpine; assets embedded — no interpreter, tiny CVE surface |
+| Deployment | Docker Compose (one container, one SQLite file) |
+
+> Patchdeck's UI is rendered by the Go binary itself — there is **no JavaScript build pipeline** (as of v2.0.0 the React/Vite/npm front end was retired in favour of server-rendered HTMX). The whole thing is one container and one `./data` folder to back up.
 
 ## Configuration
 
@@ -186,60 +142,54 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` is r
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `PUID` | | `1000` | User ID for the container process (linuxserver.io convention) |
-| `PGID` | | `1000` | Group ID for the container process (linuxserver.io convention) |
 | `PATCHDECK_MASTER_KEY` | ✅ | — | 32+ char secret; an AES-256 key is derived from it (HKDF) to encrypt SSH credentials at rest |
-| `TZ` | | `UTC` | Timezone for **scheduled jobs** (IANA name, e.g. `America/Los_Angeles`). Cron schedules fire in this zone; the active TZ is shown in the startup log. tzdata is embedded in the binary, so no extra package is needed |
+| `PUID` / `PGID` | | `1000` | User/group ID for the container process (linuxserver.io convention) |
+| `TZ` | | `UTC` | Timezone for **scheduled jobs** (IANA name, e.g. `America/Los_Angeles`). Cron fires in this zone; tzdata is embedded, so no extra package needed |
 | `PATCHDECK_DB_PATH` | | `/data/patchdeck.db` | SQLite database path inside the container |
 | `PATCHDECK_SSH_TIMEOUT_SECONDS` | | `20` | SSH dial/handshake timeout |
 | `PATCHDECK_EXEC_TIMEOUT_SECONDS` | | `600` | Max wall-clock for a single remote command (scan/apply) |
 | `PATCHDECK_CONNECTIVITY_TIMEOUT_SECONDS` | | `15` | Timeout for the live dashboard connectivity check |
 | `PATCHDECK_APPRISE_TIMEOUT_SECONDS` | | `10` | Notification delivery (HTTP/SMTP) timeout |
 | `PATCHDECK_APPRISE_URL` | | — | Default notification destination URL (see [Notifications](#notifications)) |
-| `PATCHDECK_TLS` | | `true` | Enable HTTPS with auto-generated self-signed cert; set `false` if behind a reverse proxy |
-| `PATCHDECK_TLS_CERT` | | `/data/tls/cert.pem` | Path to TLS certificate (auto-generated if missing) |
-| `PATCHDECK_TLS_KEY` | | `/data/tls/key.pem` | Path to TLS private key (auto-generated if missing) |
+| `PATCHDECK_TLS` | | `true` | Enable HTTPS with an auto-generated self-signed cert; set `false` if behind a reverse proxy |
+| `PATCHDECK_TLS_CERT` / `PATCHDECK_TLS_KEY` | | `/data/tls/…` | Paths to a custom TLS cert/key (auto-generated if missing) |
 
 ## Architecture
 
 ```
-┌─────────────┐
-│   Browser    │
-└──────┬──────┘
-       │ :6070 (HTTPS)
-┌──────▼──────────────┐
-│  Patchdeck          │
-│  ┌───────────────┐  │
-│  │ Go API server  │  │
-│  │ + static SPA   │  │
-│  │ + SQLite       │  │
-│  │ + Notifications│  │
-│  │ + Scheduler    │  │
-│  └───────┬───────┘  │
-└──────────┼──────────┘
-           │ SSH
-    ┌──────▼──────┐
-    │ Your hosts  │
-    └─────────────┘
+        Browser  (phone / desktop)
+           │  :6070 HTTPS
+┌──────────▼───────────────────┐
+│  Patchdeck  (one container)   │
+│  ┌─────────────────────────┐  │
+│  │ Go server                │  │
+│  │  · JSON API + token auth │  │
+│  │  · server-rendered UI    │  │   html/template + HTMX + SSE
+│  │  · SQLite (WAL)          │  │
+│  │  · native notifications  │  │
+│  │  · cron scheduler        │  │
+│  └───────────┬─────────────┘  │
+└──────────────┼────────────────┘
+               │ outbound SSH
+     ┌─────────▼──────────┐
+     │  your Linux hosts   │   VMs · LXC · Pis · bare metal
+     └────────────────────┘
 ```
 
 ## Security
 
-- **Credentials encrypted at rest** — AES-256-GCM; the key is derived from `PATCHDECK_MASTER_KEY` via HKDF-SHA256
-- **Password hashing** — bcrypt
-- **Cookie sessions** — httpOnly, Secure, SameSite=Lax, server-side session store with sliding 7-day expiry (no JWT, no token in URLs)
+- **Credentials encrypted at rest** — AES-256-GCM; the key is derived from `PATCHDECK_MASTER_KEY` via HKDF-SHA256, and secrets are never returned by the API
+- **Fail-closed SSH host keys** — first connection is held for **operator approval**; a later key change blocks all operations until you approve or reject it (no silent trust-on-first-use)
+- **Cookie sessions** — httpOnly, Secure, SameSite=Lax, server-side store with a sliding 7-day expiry (no JWT, no token in URLs)
 - **Login brute-force lockout** — per-IP sliding-window lockout after repeated failures
-- **TOTP two-factor** — optional time-based one-time password on login, with one-time recovery codes
-- **SSH host key verification** — fail-closed; TOFU with optional manual pinning; mismatches block operations until resolved
+- **TOTP two-factor** — optional, with one-time recovery codes; plus optional OIDC SSO
 - **Command-injection guards** — strict validation of service names and power actions sent over SSH
-- **Parameterized SQL** — no raw string interpolation
-- **Rate limiting** — 30-second per-host cooldown on scan/apply
-- **Audit trail** — all operations logged with retention policy
-- **HTTPS by default** — auto-generated self-signed TLS; supports user-provided certificates
+- **Parameterized SQL**, **bcrypt** password hashing, per-host scan/apply rate limiting, and a full **audit trail**
+- **Minimal runtime** — a static Go binary on Alpine, no interpreter or JS runtime in the image; both `trivy` and `grype` gate every release for fixable HIGH/CRITICAL CVEs
 
 ## Notifications
 
-Patchdeck delivers alerts (updates available, apply success/failure, scan failure) **natively in Go** — there is no python or Apprise dependency in the image. Configure a single destination URL in **Settings → Notifications** (or via `PATCHDECK_APPRISE_URL`). URLs follow the familiar Apprise-style scheme, so most existing URLs keep working.
+Patchdeck delivers alerts (updates available, apply success/failure, scan failure) **natively in Go** — no python or Apprise dependency in the image. Configure a single destination URL in **Settings → Notifications** (or via `PATCHDECK_APPRISE_URL`), with optional **per-host overrides**. URLs follow the familiar Apprise-style scheme, so most existing URLs keep working.
 
 | Service | URL format | Notes |
 |---------|-----------|-------|
@@ -249,48 +199,39 @@ Patchdeck delivers alerts (updates available, apply success/failure, scan failur
 | **Telegram** | `tgram://bot_token/chat_id` | one chat id per URL |
 | **Slack** | `slack://TokenA/TokenB/TokenC[/channel]` | incoming-webhook tokens |
 | **Pushover** | `pover://user_key@app_token` | `?priority=N` optional |
-| **Email (SMTP)** | `mailtos://user:pass@smtp.host[:port]/?to=you@example.com` | `mailtos://` = TLS (port 465), `mailto://` = STARTTLS (587). `&from=` / `&name=` optional. Explicit SMTP host required |
-| **Webhook** | `jsons://host/path` or `forms://host/path` | `json*` posts JSON `{title,message,…}`, `form*` posts form data; extra query params are passed through |
+| **Email (SMTP)** | `mailtos://user:pass@smtp.host[:port]/?to=you@example.com` | `mailtos://` = TLS (465), `mailto://` = STARTTLS (587). Explicit SMTP host required |
+| **Webhook** | `jsons://host/path` or `forms://host/path` | `json*` posts JSON `{title,message,…}`, `form*` posts form data |
 
-> The supported schemes are also listed in **Settings → Notifications**. One destination per instance — use your notification backend (e.g. an ntfy topic or a webhook) for fan-out to multiple recipients. Use **Send test** to verify a URL before saving.
+> One destination per instance — use your notification backend (an ntfy topic, a webhook) for fan-out. Hit **Send test** to verify a URL before saving.
 
 ## API
 
-The web UI authenticates via an httpOnly session cookie (set by `/api/login`). For programmatic access, create an API token in **Settings** and send it as `Authorization: Bearer pd_...`.
-
-Key endpoints:
+The web UI authenticates via an httpOnly session cookie. For automation, create an API token in **Settings** and send it as `Authorization: Bearer pd_...`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/login` | Authenticate (sets session cookie) |
-| `POST` | `/api/logout` | Revoke the current session |
 | `GET` | `/api/hosts` | List all hosts |
 | `POST` | `/api/hosts` | Add a host |
 | `POST` | `/api/hosts/:id/scan` | Scan a host for updates (SSE stream) |
 | `POST` | `/api/hosts/:id/apply` | Apply updates (SSE stream) |
 | `POST` | `/api/hosts/:id/power` | Reboot or shutdown |
-| `GET` | `/api/activity` | Activity log (paginated) |
-| `GET` | `/api/activity/export` | Export activity as CSV |
-| `GET/POST` | `/api/jobs` | List/create scheduled jobs (list includes last/next run) |
-| `GET` | `/api/jobs/:id/runs` | Scheduled-job run history |
-| `GET/PUT` | `/api/settings/*` | Notification, audit, and token settings |
-
-Full API documentation is planned for a future release.
+| `GET` | `/api/activity` · `/api/activity/export` | Activity log (paginated) · CSV export |
+| `GET/POST` | `/api/jobs` · `/api/jobs/:id/runs` | Scheduled jobs · run history |
+| `GET/PUT` | `/api/settings/*` | Notification, OIDC, audit, and token settings |
 
 ## Development
 
+No Node, no bundler — the UI is Go templates + HTMX served by the binary. Editing the front end means editing `.html` templates and rebuilding the binary.
+
 ```bash
-# Backend
 cd api
 go build ./...
 go test ./...
-
-# Frontend
-cd web
-npm install
-npm run dev    # Dev server with HMR
-npm run build  # Production build
+go run ./cmd/server    # needs PATCHDECK_MASTER_KEY set
 ```
+
+Templates and static assets live under `api/cmd/server/` and are embedded at build time (`//go:embed`), so the compiled binary is fully self-contained.
 
 ## Roadmap
 
@@ -298,11 +239,8 @@ npm run build  # Production build
 - [ ] Package holds (`apt-mark`) and security-only update mode
 - [ ] Auto-reboot within scheduled maintenance windows
 - [ ] Fleet patch-status report / export
-- [ ] Notification log with delivery status (sending works today; this adds a persisted per-attempt success/failure record)
-- [ ] Webhooks for external integrations
-- [ ] Role-based access control (RBAC) and multi-user management
+- [ ] Notification delivery log (per-attempt success/failure)
 - [ ] RPM/dnf support (RHEL, Fedora, Rocky)
-- [ ] Dashboard tag filter / grouped host view (tags already drive job targeting; this adds browsing/filtering hosts by tag on the dashboard)
 - [ ] Dashboard metrics and charts
 
 ## License
@@ -311,4 +249,4 @@ npm run build  # Production build
 
 ## Contributing
 
-Patchdeck is in early development. Issues and pull requests are welcome.
+Issues and pull requests welcome.

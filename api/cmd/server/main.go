@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -188,43 +187,74 @@ func main() {
 		sr.Get("/api/hosts/{id}/await-recovery", a.awaitRecovery)
 	})
 
-	// Serve static frontend files (SPA)
-	staticDir := os.Getenv("PATCHDECK_STATIC_DIR")
-	if staticDir == "" {
-		staticDir = "/app/static"
-	}
-	if info, err := os.Stat(staticDir); err == nil && info.IsDir() {
-		log.Printf("serving static files from %s", staticDir)
-		fsys := http.Dir(staticDir)
-		fileServer := http.FileServer(fsys)
-		r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
-			// Try to serve the file directly; if not found, serve index.html (SPA fallback)
-			path := req.URL.Path
-			if f, err := fsys.Open(path); err == nil {
-				f.Close()
-				// Vite emits content-hashed assets under /assets/ (index-<hash>.js|css) — their
-				// URL changes whenever the content does, so they're safe to cache forever. Every
-				// OTHER path (notably index.html) MUST be revalidated on each load: it's the entry
-				// point that references the current hashed bundle, and if a browser caches it the
-				// user stays pinned to an OLD frontend after a deploy (they'd need to clear cache).
-				if strings.HasPrefix(path, "/assets/") {
-					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-				} else {
-					w.Header().Set("Cache-Control", "no-cache")
-				}
-				fileServer.ServeHTTP(w, req)
-				return
-			}
-			// SPA fallback: serve index.html for client-side routing. Never cache it (see above).
-			if idx, err := fs.Stat(os.DirFS(staticDir), "index.html"); err == nil && !idx.IsDir() {
-				w.Header().Set("Cache-Control", "no-cache")
-				req.URL.Path = "/"
-				fileServer.ServeHTTP(w, req)
-				return
-			}
-			http.NotFound(w, req)
+	// /next — server-rendered HTMX dashboard (frontend-rebuild spike). Runs in parallel to
+	// the React SPA against the same data layer; adds no backend behavior. Cookie-gated.
+	r.Route("/next", func(nr chi.Router) {
+		// Public (pre-auth) surface: assets must load for the login page (its JS + logo),
+		// and login/bootstrap/logout run without a session.
+		nr.Get("/assets/{file}", a.nextAsset)
+		nr.Get("/login", a.nextLogin)
+		nr.Post("/login", a.nextLoginPost)
+		nr.Post("/bootstrap", a.nextBootstrapPost)
+		nr.Post("/logout", a.nextLogout)
+		// Authenticated app (nr is shadowed to the guarded sub-router).
+		nr.Group(func(nr chi.Router) {
+		nr.Use(a.nextAuth)
+		nr.Get("/", a.nextDashboard)
+		nr.Get("/hosts/{id}", a.nextDetail)
+		nr.Get("/hosts/{id}/card", a.nextCard)
+		nr.Get("/hosts/{id}/dot", a.nextDot)
+		nr.Get("/hosts/{id}/connline", a.nextConnLine)
+		nr.Get("/hosts/{id}/scanpanel", a.nextScanPanel)
+		nr.Get("/hosts/{id}/scan/stream", a.nextScanStream)
+		nr.Get("/hosts/{id}/apply-confirm", a.nextApplyConfirm)
+		nr.Get("/hosts/{id}/apply/panel", a.nextApplyPanel)
+		nr.Get("/hosts/{id}/apply/stream", a.nextApplyStream)
+		nr.Get("/hosts/{id}/restart-confirm", a.nextRestartConfirm)
+		nr.Post("/hosts/{id}/restart-all", a.nextRestartAll)
+		nr.Get("/hosts/{id}/restart-deferred-confirm", a.nextRestartDeferredConfirm)
+		nr.Post("/hosts/{id}/restart-deferred", a.nextRestartDeferred)
+		nr.Post("/hosts/{id}/notifications", a.nextHostNotifPrefs)
+		nr.Get("/hosts/{id}/reboot-confirm", a.nextRebootConfirm)
+		nr.Post("/hosts/{id}/reboot", a.nextReboot)
+		nr.Get("/hosts/{id}/reboot-watch", a.nextRebootWatch)
+		nr.Get("/hosts/{id}/shutdown-confirm", a.nextShutdownConfirm)
+		nr.Post("/hosts/{id}/shutdown", a.nextShutdown)
+		nr.Get("/add", a.nextHostNew)
+		nr.Post("/hosts", a.nextHostCreate)
+		nr.Get("/hosts/{id}/edit", a.nextHostEdit)
+		nr.Post("/hosts/{id}/edit", a.nextHostUpdate)
+		nr.Get("/hosts/{id}/delete-confirm", a.nextHostDeleteConfirm)
+		nr.Post("/hosts/{id}/delete", a.nextHostDelete)
+		nr.Post("/hosts/{id}/host-key/accept", a.nextHostKeyAccept)
+		nr.Post("/hosts/{id}/host-key/deny", a.nextHostKeyDeny)
+		nr.Post("/hosts/{id}/verify", a.nextHostVerify)
+		nr.Get("/settings", a.nextSettings)
+		nr.Post("/settings/notifications", a.nextNotifSave)
+		nr.Post("/settings/notifications/test", a.nextNotifTest)
+		nr.Post("/settings/oidc", a.nextOIDCSave)
+		nr.Post("/settings/tokens", a.nextTokenCreate)
+		nr.Post("/settings/tokens/{id}/revoke", a.nextTokenRevoke)
+		nr.Post("/settings/audit", a.nextAuditSave)
+		nr.Post("/settings/totp/setup", a.nextTotpSetup)
+		nr.Post("/settings/totp/confirm", a.nextTotpConfirm)
+		nr.Post("/settings/totp/disable", a.nextTotpDisable)
+		nr.Get("/activity", a.nextActivity)
+		nr.Get("/activity/rows", a.nextActivityRows)
+		nr.Get("/schedules", a.nextSchedules)
+		nr.Post("/schedules", a.nextScheduleCreate)
+		nr.Post("/schedules/{id}/toggle", a.nextScheduleToggle)
+		nr.Post("/schedules/{id}/delete", a.nextScheduleDelete)
+		nr.Get("/schedules/{id}/runs", a.nextScheduleRuns)
 		})
-	}
+	})
+
+	// The React SPA is retired (v2.0.0). The server-rendered app lives under /next; the root
+	// redirects there, and the favicon is served from the embedded logo so tabs get an icon.
+	r.Get("/", func(w http.ResponseWriter, req *http.Request) {
+		http.Redirect(w, req, "/next/", http.StatusFound)
+	})
+	r.Get("/favicon.ico", a.nextFavicon)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

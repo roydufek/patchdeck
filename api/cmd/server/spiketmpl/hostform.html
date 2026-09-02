@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{if eq .Mode "edit"}}Edit {{.Name}}{{else}}Add host{{end}} · Patchdeck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<script src="/next/assets/htmx.min.js"></script>
+{{template "themeinit"}}
+{{template "styles"}}
+</head>
+<body>
+<div class="app">
+  <a class="back-btn" href="{{if eq .Mode "edit"}}/next/hosts/{{.ID}}{{else}}/next{{end}}"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg> {{if eq .Mode "edit"}}Cancel{{else}}All hosts{{end}}</a>
+
+  <div class="formcard">
+    <h1 class="formhead">{{if eq .Mode "edit"}}Edit host{{else}}Add a host{{end}}</h1>
+    <p class="formsub">Patchdeck connects over SSH &mdash; agentless. Credentials are encrypted at rest.</p>
+
+    {{if .Err}}<div class="formerr" style="margin-bottom:14px">{{.Err}}</div>{{end}}
+
+    <form class="form" hx-post="{{if eq .Mode "edit"}}/next/hosts/{{.ID}}/edit{{else}}/next/hosts{{end}}" hx-target="body" hx-swap="outerHTML">
+      <div class="field">
+        <label for="name">Name</label>
+        <input id="name" name="name" value="{{.Name}}" placeholder="web-01" autocomplete="off" required>
+      </div>
+      <div class="field">
+        <label for="address">Address</label>
+        <input id="address" name="address" value="{{.Address}}" placeholder="10.0.0.5 or host.example.com" autocomplete="off" required>
+        <span class="hint">Hostname or IP Patchdeck can reach over SSH.</span>
+      </div>
+      <div class="field">
+        <label for="port">SSH port</label>
+        <input id="port" name="port" type="number" min="1" max="65535" value="{{.Port}}" inputmode="numeric">
+      </div>
+      <div class="field">
+        <label for="ssh_user">SSH user</label>
+        <input id="ssh_user" name="ssh_user" value="{{.SSHUser}}" placeholder="root or a sudo user" autocomplete="off" required>
+      </div>
+      <div class="field">
+        <label for="auth_type">Authentication</label>
+        <select id="auth_type" name="auth_type" onchange="pdAuthToggle()">
+          <option value="key"{{if eq .AuthType "key"}} selected{{end}}>SSH private key</option>
+          <option value="password"{{if eq .AuthType "password"}} selected{{end}}>Password</option>
+        </select>
+      </div>
+
+      <div id="grp-key" class="field">
+        <label for="private_key_pem">Private key (PEM)</label>
+        <textarea id="private_key_pem" name="private_key_pem" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;…" autocomplete="off" spellcheck="false"></textarea>
+        {{if eq .Mode "edit"}}<span class="hint">Leave blank to keep the current key.</span>{{end}}
+        <div style="margin-top:6px">
+          <label for="passphrase" style="font-size:12.5px;font-weight:600;color:var(--ink-2)">Key passphrase <span class="hint" style="font-weight:400">(optional)</span></label>
+          <input id="passphrase" name="passphrase" type="password" autocomplete="new-password" placeholder="only if the key is encrypted" style="margin-top:6px">
+        </div>
+      </div>
+
+      <div id="grp-pw" class="field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="new-password" placeholder="{{if eq .Mode "edit"}}leave blank to keep current{{else}}SSH password{{end}}">
+      </div>
+
+      <div class="field">
+        <label for="sudo_password">Sudo password <span class="hint" style="font-weight:400">(optional)</span></label>
+        <input id="sudo_password" name="sudo_password" type="password" autocomplete="new-password" placeholder="{{if eq .Mode "edit"}}leave blank to keep current{{else}}if sudo needs a password{{end}}">
+      </div>
+
+      {{if eq .Mode "new"}}
+      <div class="grp">
+        <div class="grp-h">Host key</div>
+        <p class="scard-sub" style="margin:0">Once added, you&rsquo;ll review and approve this host&rsquo;s SSH key before Patchdeck connects &mdash; a first-connection check against tampering. If the key ever changes, it pauses for re-approval.</p>
+      </div>
+      {{end}}
+
+      <div class="grp">
+        <div class="grp-h">Operation</div>
+        <div class="field">
+          <label for="tags">Tags <span class="hint" style="font-weight:400">(comma-separated)</span></label>
+          <input id="tags" name="tags" value="{{.Tags}}" placeholder="prod, db, edge" autocomplete="off">
+          <span class="hint">Groups the dashboard and lets a schedule target a whole tag.</span>
+        </div>
+        <label class="checkrow">
+          <input type="checkbox" name="checks_enabled" value="1"{{if .ChecksEnabled}} checked{{end}}>
+          <span class="ctext"><b>Enable checks</b><span class="hint">Allow Patchdeck to scan and apply on this host.</span></span>
+        </label>
+        <div class="field">
+          <label for="auto_update_policy">Auto-update policy</label>
+          <select id="auto_update_policy" name="auto_update_policy">
+            <option value="manual"{{if eq .AutoUpdatePolicy "manual"}} selected{{end}}>Manual &mdash; never auto-apply</option>
+            <option value="scheduled_apply"{{if eq .AutoUpdatePolicy "scheduled_apply"}} selected{{end}}>Allow scheduled apply jobs</option>
+          </select>
+        </div>
+      </div>
+
+      <button type="submit" class="btn primary block">{{if eq .Mode "edit"}}Save changes{{else}}Add host{{end}}</button>
+    </form>
+  </div>
+
+  {{if eq .Mode "edit"}}
+  <div class="danger-zone">
+    <h3>Delete host</h3>
+    <p>Remove {{.Name}} and its stored credentials and scan history.</p>
+    <button class="btn danger" hx-get="/next/hosts/{{.ID}}/delete-confirm" hx-target="#delarea" hx-swap="innerHTML">Delete host…</button>
+    <div id="delarea"></div>
+  </div>
+  {{end}}
+</div>
+<script>
+  function pdAuthToggle(){var t=document.getElementById('auth_type').value;document.getElementById('grp-key').hidden=(t!=='key');document.getElementById('grp-pw').hidden=(t!=='password');}
+  pdAuthToggle();
+</script>
+</body>
+</html>

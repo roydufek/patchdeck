@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Patchdeck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<script src="/next/assets/htmx.min.js"></script>
+<script src="/next/assets/sse.min.js"></script>
+{{template "themeinit"}}
+{{template "logscroll"}}
+{{template "styles"}}
+</head>
+<body>
+<div class="app wide">
+  <header class="appbar">
+    <div class="brand"><span class="mark"></span><b>Patchdeck</b></div>
+    <nav class="nav">
+      {{template "themetoggle"}}
+      <a class="iconbtn" href="/next/activity" title="Activity" aria-label="Activity">{{template "i-activity"}}</a>
+      <a class="iconbtn" href="/next/settings" title="Settings" aria-label="Settings">{{template "i-gear"}}</a>
+      <a class="iconbtn accent" href="/next/add" title="Add host" aria-label="Add host">{{template "i-plus"}}</a>
+    </nav>
+  </header>
+
+  <div class="summary">
+    <div class="sum-head">
+      <div class="sum-lead">
+        <span class="n">{{.Summary.NeedAttention}}</span>
+        <span class="t">host{{if ne .Summary.NeedAttention 1}}s{{end}} need{{if eq .Summary.NeedAttention 1}}s{{end}} attention</span>
+      </div>
+      <div class="sum-sub">{{.Summary.UpToDate}} up to date{{if .Summary.LastScan}} &middot; last scan {{.Summary.LastScan}}{{end}}</div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="v">{{.Summary.Total}}</div><div class="k">host{{if ne .Summary.Total 1}}s{{end}}</div></div>
+      <div class="stat"><div class="v">{{.Summary.Updates}}</div><div class="k">updates</div></div>
+      <div class="stat stat-sec"><div class="v">{{.Summary.Security}}</div><div class="k">security</div></div>
+    </div>
+  </div>
+
+  {{if or .Attention .Groups}}
+  <div class="bulkbar">
+    <button class="btn ghost" onclick="document.body.dispatchEvent(new CustomEvent('pd:scanall'))">{{template "i-scanall"}} Scan all</button>
+    {{if gt .Summary.Updates 0}}<button class="btn primary" onclick="document.getElementById('bulkconfirm').hidden=false;this.hidden=true">Apply all updates</button>{{end}}
+  </div>
+  {{if gt .Summary.Updates 0}}
+  <div id="bulkconfirm" class="applyconfirm" hidden style="margin-top:12px">
+    <p class="confirm-q">Apply updates on the <b>{{.Summary.NeedAttention}} host{{if ne .Summary.NeedAttention 1}}s{{end}}</b> that need them ({{.Summary.Updates}} update{{if ne .Summary.Updates 1}}s{{end}} total)? Each host runs <span class="mono">apt upgrade</span> independently and streams on its own card.</p>
+    <div class="c-actions">
+      <button class="btn danger" onclick="document.body.dispatchEvent(new CustomEvent('pd:applyall'));document.getElementById('bulkconfirm').hidden=true">Apply all now</button>
+      <button class="btn ghost" onclick="document.getElementById('bulkconfirm').hidden=true">Cancel</button>
+    </div>
+  </div>
+  {{end}}
+
+  <div class="filters">
+    <input class="search" id="hostsearch" type="search" placeholder="Search name or tag&hellip;" oninput="pdFilter()" autocomplete="off">
+    <div class="chips">
+      <button class="chip active" data-f="all" onclick="pdChip(this)">All</button>
+      <button class="chip" data-f="attention" onclick="pdChip(this)">Attention</button>
+      <button class="chip" data-f="updates" onclick="pdChip(this)">Updates</button>
+      <button class="chip" data-f="healthy" onclick="pdChip(this)">Healthy</button>
+    </div>
+    <button class="iconbtn" onclick="location.reload()" title="Refresh" aria-label="Refresh" style="width:36px;height:36px">{{template "i-refresh"}}</button>
+  </div>
+  {{end}}
+
+  {{if .Attention}}
+  <div class="sec"><h2>Needs attention</h2><span class="cnt">{{len .Attention}}</span><span class="rule"></span></div>
+  <div class="cards">{{range .Attention}}{{template "card" .}}{{end}}</div>
+  {{end}}
+
+  {{range .Groups}}
+  <div class="sec quiet"><h2>{{.Tag}}</h2><span class="cnt cnt-q">{{len .Hosts}}</span><span class="rule"></span></div>
+  <div class="cards">{{range .Hosts}}{{template "card" .}}{{end}}</div>
+  {{end}}
+
+  {{if and (not .Attention) (not .Groups)}}
+  <p class="empty">No hosts yet — hit the + to add your first one.</p>
+  {{end}}
+</div>
+<script>
+  function pdActiveFilter(){var c=document.querySelector('.chip.active');return c?c.getAttribute('data-f'):'all';}
+  function pdChip(b){document.querySelectorAll('.chip').forEach(function(c){c.classList.remove('active');});b.classList.add('active');pdFilter();}
+  function pdFilter(){
+    var el=document.getElementById('hostsearch');var q=((el&&el.value)||'').toLowerCase().trim();var f=pdActiveFilter();
+    document.querySelectorAll('article.card').forEach(function(card){
+      var name=(card.getAttribute('data-name')||'').toLowerCase();
+      var addr=(card.getAttribute('data-addr')||'').toLowerCase();
+      var tags=(card.getAttribute('data-tags')||'').toLowerCase();
+      var attn=card.getAttribute('data-attn')==='1';
+      var upd=card.getAttribute('data-updates')==='1';
+      var mText=!q||name.indexOf(q)>=0||addr.indexOf(q)>=0||tags.indexOf(q)>=0;
+      var mF=f==='all'||(f==='attention'&&attn)||(f==='updates'&&upd)||(f==='healthy'&&!attn);
+      card.hidden=!(mText&&mF);
+    });
+    document.querySelectorAll('.cards').forEach(function(cards){
+      var any=Array.prototype.some.call(cards.querySelectorAll('article.card'),function(c){return !c.hidden;});
+      cards.hidden=!any;var sec=cards.previousElementSibling;
+      if(sec&&sec.classList.contains('sec'))sec.hidden=!any;
+    });
+  }
+</script>
+</body>
+</html>

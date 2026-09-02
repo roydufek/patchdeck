@@ -1,0 +1,555 @@
+package main
+
+import (
+	"context"
+	"embed"
+	"errors"
+	"fmt"
+	"html"
+	"html/template"
+	"log"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"patchdeck/api/internal/auth"
+	"patchdeck/api/internal/db"
+	"patchdeck/api/internal/models"
+	"patchdeck/api/internal/sshx"
+)
+
+// --- /next: a server-rendered (Go html/template + HTMX + SSE) dashboard, running in
+// parallel to the React SPA against the SAME data layer. This is the frontend-rebuild
+// spike; it adds no backend behavior (it reuses ListHosts / ListScanSnapshots /
+// ScanHostStreaming / probeConnectivity), and the SPA is untouched.
+
+//go:embed spikeassets/htmx.min.js spikeassets/sse.min.js spikeassets/logo.png
+var nextAssets embed.FS
+
+//go:embed spiketmpl/*.html
+var nextTmplFS embed.FS
+
+var nextTmpl = template.Must(template.New("next").Funcs(template.FuncMap{
+	"isSecurity": isSecuritySource,
+	"evtTone":    eventTone,
+	"evtLabel":   eventLabel,
+	"dict":       tmplDict,
+}).ParseFS(nextTmplFS, "spiketmpl/*.html"))
+
+// tmplDict builds a map from alternating key/value args, so a template can pass a small
+// sub-object to a partial: {{template "x" (dict "ID" .ID "P" .Prefs)}}.
+func tmplDict(kv ...any) map[string]any {
+	m := make(map[string]any, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		if k, ok := kv[i].(string); ok {
+			m[k] = kv[i+1]
+		}
+	}
+	return m
+}
+
+// isSecuritySource reports whether an apt suite string denotes a security update
+// (e.g. "jammy-security", "bookworm-security"). Patchdeck stores no dedicated security
+// flag, so this is derived from PackageInfo.Source.
+func isSecuritySource(source string) bool {
+	return strings.Contains(strings.ToLower(source), "security")
+}
+
+// nextHostView is the per-host summary a dashboard card renders — signal at rest.
+type nextHostView struct {
+	ID, Name, Address          string
+	HasScan                    bool
+	UpdateCount, SecurityCount int
+	NeedsReboot                bool
+	RebootReason               string
+	RestartCount               int
+	DeferredCount              int
+	OsName, OsVersion, OSShort string
+	Uptime                     string
+	UpdatedAt                  time.Time
+	ScanAge                    string
+	State                      string   // uptodate | updates | attention | noscan | unverified
+	Tags                       []string // host tags (for chips + grouping)
+	Unverified                 bool     // approval-required host whose first key isn't approved yet
+	PendingKey                 bool     // a host key is captured and awaiting operator approval
+}
+
+func fillFromSnapshot(v *nextHostView, s models.ScanSnapshot) {
+	v.HasScan = true
+	v.UpdateCount = len(s.Packages)
+	for _, p := range s.Packages {
+		if isSecuritySource(p.Source) {
+			v.SecurityCount++
+		}
+	}
+	v.NeedsReboot = s.NeedsReboot
+	v.RebootReason = s.RebootReason
+	v.RestartCount = len(s.NeedsRestart)
+	v.DeferredCount = len(s.DeferredPackages)
+	v.OsName = s.OsName
+	v.OsVersion = s.OsVersion
+	v.OSShort = shortOS(s.OsName, s.OsVersion)
+	v.Uptime = s.Uptime
+	v.UpdatedAt = s.UpdatedAt
+	v.ScanAge = timeAgoShort(s.UpdatedAt)
+}
+
+// shortOS compacts a scan's OS pretty-name into a card-friendly label, e.g.
+// "Debian GNU/Linux 12 (bookworm)" + "12" -> "Debian 12". Keeps the distro word plus
+// the version so a long PRETTY_NAME doesn't dominate the card row.
+func shortOS(name, version string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	distro := name
+	if i := strings.IndexByte(name, ' '); i > 0 {
+		distro = name[:i]
+	}
+	if version = strings.TrimSpace(version); version != "" {
+		return distro + " " + version
+	}
+	return distro
+}
+
+func deriveState(v nextHostView) string {
+	switch {
+	case v.PendingKey:
+		return "attention" // a captured host key needs approval before anything else
+	case v.Unverified:
+		return "unverified" // approval-required host, first connection not approved yet
+	case !v.HasScan:
+		return "noscan"
+	case v.NeedsReboot || v.RestartCount > 0:
+		return "attention"
+	case v.UpdateCount > 0:
+		return "updates"
+	default:
+		return "uptodate"
+	}
+}
+
+func timeAgoShort(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+func (a *app) nextHostViews() ([]nextHostView, error) {
+	hosts, err := db.ListHosts(a.db)
+	if err != nil {
+		return nil, err
+	}
+	snaps, err := db.ListScanSnapshots(a.db)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]models.ScanSnapshot, len(snaps))
+	for _, s := range snaps {
+		byID[s.HostID] = s
+	}
+	out := make([]nextHostView, 0, len(hosts))
+	for _, h := range hosts {
+		v := nextHostView{ID: h.ID, Name: h.Name, Address: h.Address}
+		setHostMeta(&v, h)
+		if s, ok := byID[h.ID]; ok {
+			fillFromSnapshot(&v, s)
+		}
+		v.State = deriveState(v)
+		out = append(out, v)
+	}
+	return out, nil
+}
+
+// setHostMeta copies host-level (non-snapshot) fields onto a view: tags and the host-key
+// verification state (unverified = no trusted key yet / awaiting first-connection approval;
+// keyChanged = a rotated key is pending operator approval).
+func setHostMeta(v *nextHostView, h models.Host) {
+	v.Tags = h.Tags
+	// Approval-required = pinned trust mode with no trusted key yet (new /next hosts start
+	// "pinned, no fingerprint" so the first connection must be reviewed + approved). Existing
+	// TOFU hosts keep trust-on-first-use and are never shown as unverified.
+	v.Unverified = strings.EqualFold(strings.TrimSpace(h.HostKeyTrustMode), "pinned") && strings.TrimSpace(h.HostKeyTrusted) == ""
+	v.PendingKey = strings.TrimSpace(h.HostKeyPending) != ""
+}
+
+// nextHostView loads one host's view plus its raw snapshot (for the detail page). There is
+// no single-host snapshot getter in db, so it filters ListScanSnapshots (fleets are small).
+func (a *app) nextHostView(id string) (nextHostView, models.ScanSnapshot, error) {
+	h, err := db.GetHost(a.db, id)
+	if err != nil {
+		return nextHostView{}, models.ScanSnapshot{}, err
+	}
+	v := nextHostView{ID: h.ID, Name: h.Name, Address: h.Address}
+	setHostMeta(&v, h)
+	var snap models.ScanSnapshot
+	snaps, _ := db.ListScanSnapshots(a.db)
+	for _, s := range snaps {
+		if s.HostID == id {
+			snap = s
+			fillFromSnapshot(&v, s)
+			break
+		}
+	}
+	v.State = deriveState(v)
+	return v, snap, nil
+}
+
+// nextAuth gates the /next pages on a session cookie, redirecting a browser to the login
+// page when unauthenticated rather than returning a bare 401 (cookie only — a browser
+// EventSource/navigation carries it automatically; pd_ API tokens aren't used here).
+func (a *app) nextAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if claims := a.sessionClaims(r); claims != nil {
+			next.ServeHTTP(w, r.WithContext(auth.WithClaims(r.Context(), claims)))
+			return
+		}
+		http.Redirect(w, r, "/next/login", http.StatusFound)
+	})
+}
+
+func (a *app) nextAsset(w http.ResponseWriter, r *http.Request) {
+	var path, ctype string
+	switch chi.URLParam(r, "file") {
+	case "htmx.min.js":
+		path, ctype = "spikeassets/htmx.min.js", "application/javascript; charset=utf-8"
+	case "sse.min.js":
+		path, ctype = "spikeassets/sse.min.js", "application/javascript; charset=utf-8"
+	case "logo.png":
+		path, ctype = "spikeassets/logo.png", "image/png"
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	b, err := nextAssets.ReadFile(path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(b)
+}
+
+// nextFavicon serves the embedded Patchdeck logo as the site favicon (the SPA's static
+// favicon is gone with the React build).
+func (a *app) nextFavicon(w http.ResponseWriter, r *http.Request) {
+	b, err := nextAssets.ReadFile("spikeassets/logo.png")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(b)
+}
+
+func (a *app) renderNext(w http.ResponseWriter, name string, data any) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Pages and fragments are live state — always revalidate so a deploy shows up on the
+	// next load instead of a stale cached copy (the browser otherwise heuristically caches
+	// a header-less HTML response). The hashed JS assets stay immutable-cacheable.
+	w.Header().Set("Cache-Control", "no-cache")
+	if err := nextTmpl.ExecuteTemplate(w, name, data); err != nil {
+		log.Printf("next render %s: %v", name, err)
+	}
+}
+
+// nextSummary is the fleet-level "how are things" line above the host list.
+type nextSummary struct {
+	Total, NeedAttention, UpToDate, Updates, Security int
+	LastScan string
+}
+
+// buildSummary aggregates the fleet and splits hosts into the attention vs healthy
+// groups the dashboard renders. Attention = anything actionable at rest (updates,
+// reboot, or a service restart); healthy = up-to-date or never-scanned.
+func buildSummary(views []nextHostView) (nextSummary, []nextHostView, []nextHostView) {
+	var s nextSummary
+	var attention, healthy []nextHostView
+	var latest time.Time
+	for _, v := range views {
+		s.Total++
+		s.Updates += v.UpdateCount
+		s.Security += v.SecurityCount
+		if v.PendingKey || v.Unverified || (v.HasScan && (v.UpdateCount > 0 || v.NeedsReboot || v.RestartCount > 0)) {
+			s.NeedAttention++
+			attention = append(attention, v)
+		} else {
+			if v.State == "uptodate" {
+				s.UpToDate++
+			}
+			healthy = append(healthy, v)
+		}
+		if v.HasScan && v.UpdatedAt.After(latest) {
+			latest = v.UpdatedAt
+		}
+	}
+	if !latest.IsZero() {
+		s.LastScan = timeAgoShort(latest)
+	}
+	return s, attention, healthy
+}
+
+// tagGroup is a dashboard section for one tag (or "Healthy"/"Ungrouped").
+type tagGroup struct {
+	Tag   string
+	Hosts []nextHostView
+}
+
+// groupHealthyByTag groups the healthy (non-attention) hosts into per-tag sections. With no
+// tags anywhere it collapses to a single "Healthy" section; otherwise each tag gets a section
+// (a multi-tag host appears under each), and untagged hosts fall into "Ungrouped" last.
+func groupHealthyByTag(healthy []nextHostView) []tagGroup {
+	anyTag := false
+	for _, v := range healthy {
+		if len(v.Tags) > 0 {
+			anyTag = true
+			break
+		}
+	}
+	if !anyTag {
+		if len(healthy) == 0 {
+			return nil
+		}
+		return []tagGroup{{Tag: "Healthy", Hosts: healthy}}
+	}
+	byTag := map[string][]nextHostView{}
+	var untagged []nextHostView
+	for _, v := range healthy {
+		if len(v.Tags) == 0 {
+			untagged = append(untagged, v)
+			continue
+		}
+		for _, t := range v.Tags {
+			byTag[t] = append(byTag[t], v)
+		}
+	}
+	tags := make([]string, 0, len(byTag))
+	for t := range byTag {
+		tags = append(tags, t)
+	}
+	sort.Strings(tags)
+	groups := make([]tagGroup, 0, len(tags)+1)
+	for _, t := range tags {
+		groups = append(groups, tagGroup{Tag: t, Hosts: byTag[t]})
+	}
+	if len(untagged) > 0 {
+		groups = append(groups, tagGroup{Tag: "Ungrouped", Hosts: untagged})
+	}
+	return groups
+}
+
+func (a *app) nextDashboard(w http.ResponseWriter, r *http.Request) {
+	views, err := a.nextHostViews()
+	if err != nil {
+		http.Error(w, "failed to load hosts", http.StatusInternalServerError)
+		return
+	}
+	summary, attention, healthy := buildSummary(views)
+	a.renderNext(w, "dashboard.html", map[string]any{
+		"Summary": summary, "Attention": attention, "Groups": groupHealthyByTag(healthy),
+	})
+}
+
+func (a *app) nextDetail(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	v, snap, err := a.nextHostView(id)
+	if err != nil {
+		http.Error(w, "host not found", http.StatusNotFound)
+		return
+	}
+	host, _ := db.GetHost(a.db, id)
+	prefs, _ := db.GetHostNotificationPrefs(a.db, id)
+	a.renderNext(w, "detail.html", map[string]any{"V": v, "Snap": snap, "Host": host, "Prefs": prefs})
+}
+
+func (a *app) nextCard(w http.ResponseWriter, r *http.Request) {
+	v, _, err := a.nextHostView(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "host not found", http.StatusNotFound)
+		return
+	}
+	a.renderNext(w, "card", v)
+}
+
+func (a *app) nextScanPanel(w http.ResponseWriter, r *http.Request) {
+	h, err := db.GetHost(a.db, chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "host not found", http.StatusNotFound)
+		return
+	}
+	a.renderNext(w, "scanpanel", map[string]string{"ID": h.ID, "Name": h.Name, "Ctx": r.URL.Query().Get("ctx")})
+}
+
+func (a *app) nextDot(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
+	st := a.probeConnectivity(checker, id)
+	a.renderNext(w, "dot", map[string]any{"HostID": id, "Connected": st.Connected})
+}
+
+// nextConnLine is the detail-screen connectivity status: dot + reachable/unreachable text
+// (with the failure reason) + live uptime + a manual recheck button.
+func (a *app) nextConnLine(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
+	st := a.probeConnectivity(checker, id)
+	a.renderNext(w, "connline", map[string]any{
+		"ID": id, "Connected": st.Connected, "Reason": st.Error, "Uptime": humanUptime(st.UptimeSeconds),
+	})
+}
+
+// humanUptime renders a compact uptime like "3d 4h", "5h 12m", or "8m" (empty when unknown).
+func humanUptime(sec int64) string {
+	if sec <= 0 {
+		return ""
+	}
+	d := sec / 86400
+	h := (sec % 86400) / 3600
+	m := (sec % 3600) / 60
+	switch {
+	case d > 0:
+		return fmt.Sprintf("%dd %dh", d, h)
+	case h > 0:
+		return fmt.Sprintf("%dh %dm", h, m)
+	default:
+		return fmt.Sprintf("%dm", m)
+	}
+}
+
+// nextScanStream runs a live scan and streams it as HTML fragments over SSE — the
+// server-rendered analogue of scanHostStream (which emits JSON for the SPA). It reuses the
+// same backend scan and persists the result, so the card refresh the browser fires on the
+// terminal `done` event reads fresh data. Closing the EventSource aborts the scan (ctx).
+func (a *app) nextScanStream(w http.ResponseWriter, r *http.Request) {
+	host, err := db.GetHost(a.db, chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "host not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	line := func(class, text string) {
+		fmt.Fprintf(w, "event: line\ndata: <div class=\"ln %s\">%s</div>\n\n", class, html.EscapeString(text))
+		flusher.Flush()
+	}
+	done := func() {
+		fmt.Fprint(w, "event: done\ndata: {}\n\n")
+		flusher.Flush()
+	}
+
+	line("", "Connecting to "+host.Name+"…")
+	res, err := a.sshClient.ScanHostStreaming(r.Context(), host, a.secrets, func(l string) { line("", l) })
+	if err != nil {
+		if r.Context().Err() != nil {
+			return // client disconnected — scan aborted on purpose, record nothing
+		}
+		line("err", "Scan failed: "+err.Error())
+		done()
+		return
+	}
+	_ = db.UpsertScanResult(a.db, host.ID, res)
+	_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scan completed: %d packages available", len(res.Packages)))
+	line("ok", fmt.Sprintf("Scan complete — %d update(s) available.", len(res.Packages)))
+	done()
+}
+
+// nextApplyConfirm renders the "are you sure?" step — applying is destructive.
+func (a *app) nextApplyConfirm(w http.ResponseWriter, r *http.Request) {
+	v, _, err := a.nextHostView(chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "host not found", http.StatusNotFound)
+		return
+	}
+	a.renderNext(w, "applyconfirm", map[string]any{
+		"ID": v.ID, "Name": v.Name, "Count": v.UpdateCount, "Ctx": r.URL.Query().Get("ctx"),
+	})
+}
+
+func (a *app) nextApplyPanel(w http.ResponseWriter, r *http.Request) {
+	h, err := db.GetHost(a.db, chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "host not found", http.StatusNotFound)
+		return
+	}
+	a.renderNext(w, "applypanel", map[string]string{"ID": h.ID, "Name": h.Name, "Ctx": r.URL.Query().Get("ctx")})
+}
+
+// nextApplyStream runs apt upgrade and streams it as HTML fragments, then re-scans so the
+// card/detail reflects the new (lower) update count. Reuses the same backend apply as the
+// SPA; apply runs on a background context (aborting mid-configure risks a half-configured
+// dpkg), and a dropped connection is reported as "likely restarting" rather than a failure.
+func (a *app) nextApplyStream(w http.ResponseWriter, r *http.Request) {
+	host, err := db.GetHost(a.db, chi.URLParam(r, "id"))
+	if err != nil {
+		http.Error(w, "host not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	line := func(class, text string) {
+		fmt.Fprintf(w, "event: line\ndata: <div class=\"ln %s\">%s</div>\n\n", class, html.EscapeString(text))
+		flusher.Flush()
+	}
+	done := func() {
+		fmt.Fprint(w, "event: done\ndata: {}\n\n")
+		flusher.Flush()
+	}
+
+	line("", "Applying updates on "+host.Name+"…")
+	res, err := a.sshClient.ApplyUpdatesStreaming(context.Background(), host, a.secrets, func(l string) { line("", l) })
+	if err != nil {
+		var interrupted *sshx.ApplyInterruptedError
+		if errors.As(err, &interrupted) {
+			_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_interrupted", fmt.Sprintf("Connection lost during apply (%d changed) — host likely restarting", interrupted.ChangedSoFar))
+			line("ok", "Connection dropped mid-apply — the host may be restarting a service or rebooting. Re-scan to verify.")
+		} else {
+			_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_fail", fmt.Sprintf("Apply failed: %v", err))
+			line("err", "Apply failed: "+err.Error())
+		}
+		done()
+		return
+	}
+	_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_ok", fmt.Sprintf("Applied updates: %d packages changed", res.ChangedPackages))
+	line("ok", fmt.Sprintf("Applied — %d package(s) changed. Re-scanning…", res.ChangedPackages))
+	if sres, serr := a.sshClient.ScanHostStreaming(context.Background(), host, a.secrets, func(string) {}); serr == nil {
+		_ = db.UpsertScanResult(a.db, host.ID, sres)
+		line("ok", fmt.Sprintf("Now %d update(s) remaining.", len(sres.Packages)))
+	}
+	done()
+}

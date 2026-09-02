@@ -1,0 +1,471 @@
+{{define "styles"}}<style>
+  :root{
+    --ground:#eceff1;--surface:#ffffff;--surface-2:#f4f6f7;
+    --ink:#141f27;--ink-2:#3a4a54;--muted:#697781;--faint:#9aa7ae;
+    --border:#e5eaec;--border-2:#d7dee1;
+    --accent:#0c7f88;--accent-2:#0a6a72;--accent-bg:#e2eff0;
+    --good:#1f9268;--good-bg:#e5f3ec;
+    --warn:#a76d12;--warn-bg:#f9efd9;
+    --crit:#c24a41;--crit-bg:#fae7e4;
+    --card-shadow:0 1px 2px rgba(20,31,39,.05),0 10px 24px -12px rgba(20,31,39,.16);
+    --lift-shadow:0 1px 2px rgba(20,31,39,.06),0 18px 40px -16px rgba(20,31,39,.24);
+    --glow:rgba(12,127,136,.10);
+    --fsans:"Onest",system-ui,-apple-system,"Segoe UI",sans-serif;
+    --fmono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --ground:#0a0f14;--surface:#131c23;--surface-2:#1a242c;
+    --ink:#e9eff2;--ink-2:#c2cdd4;--muted:#899aa3;--faint:#5d6e78;
+    --border:#233039;--border-2:#31424c;
+    --accent:#37ccd6;--accent-2:#54d6df;--accent-bg:#0f2f34;
+    --good:#4fc78f;--good-bg:#122f26;
+    --warn:#e0a94b;--warn-bg:#33280f;
+    --crit:#ec7d72;--crit-bg:#341f1c;
+    --card-shadow:0 1px 2px rgba(0,0,0,.4),0 12px 28px -14px rgba(0,0,0,.55);
+    --lift-shadow:0 1px 2px rgba(0,0,0,.45),0 22px 46px -18px rgba(0,0,0,.65);
+    --glow:rgba(55,204,214,.11);
+  }}
+  /* Explicit dark, forced by the header theme toggle regardless of OS setting. */
+  :root[data-theme="dark"]{
+    --ground:#0a0f14;--surface:#131c23;--surface-2:#1a242c;
+    --ink:#e9eff2;--ink-2:#c2cdd4;--muted:#899aa3;--faint:#5d6e78;
+    --border:#233039;--border-2:#31424c;
+    --accent:#37ccd6;--accent-2:#54d6df;--accent-bg:#0f2f34;
+    --good:#4fc78f;--good-bg:#122f26;
+    --warn:#e0a94b;--warn-bg:#33280f;
+    --crit:#ec7d72;--crit-bg:#341f1c;
+    --card-shadow:0 1px 2px rgba(0,0,0,.4),0 12px 28px -14px rgba(0,0,0,.55);
+    --lift-shadow:0 1px 2px rgba(0,0,0,.45),0 22px 46px -18px rgba(0,0,0,.65);
+    --glow:rgba(55,204,214,.11);
+  }
+  *{box-sizing:border-box}
+  html{overflow-x:hidden}
+  body{background:var(--ground);color:var(--ink);font-family:var(--fsans);-webkit-font-smoothing:antialiased;margin:0;overflow-x:hidden}
+  a{color:inherit;text-decoration:none}
+  .app{max-width:460px;margin:0 auto;padding:24px 16px 56px;position:relative;animation:fade .4s ease}
+  .app::before{content:"";position:absolute;top:-40px;left:0;right:0;height:200px;background:radial-gradient(70% 100% at 50% 0,var(--glow),transparent 70%);pointer-events:none}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+
+  .appbar{display:flex;align-items:center;justify-content:space-between;margin:0 2px 18px;position:relative}
+  .brand{display:flex;align-items:center;gap:11px}
+  /* Brand mark = the original Patchdeck logo, recolored to the scheme's accent teal via an
+     alpha mask (theme-aware: it brightens to the lighter teal in dark mode). */
+  .mark{width:34px;height:34px;flex:none;background:var(--accent);-webkit-mask:url(/next/assets/logo.png) center/contain no-repeat;mask:url(/next/assets/logo.png) center/contain no-repeat}
+  .brand b{font-weight:600;font-size:19px;letter-spacing:-.015em}
+  .badge{font-family:var(--fmono);font-size:11px;color:var(--accent);border:1px solid var(--border);border-radius:999px;padding:3px 10px}
+
+  .summary{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:17px 18px;box-shadow:var(--card-shadow);position:relative}
+  .sum-lead{display:flex;align-items:baseline;gap:9px;margin-bottom:3px}
+  .sum-lead .n{font-size:28px;font-weight:700;letter-spacing:-.02em;line-height:1}
+  .sum-lead .t{font-size:15.5px;font-weight:500;color:var(--ink-2)}
+  .sum-sub{font-size:13px;color:var(--muted);margin-bottom:15px}
+  .stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+  .stat{background:var(--surface-2);border-radius:13px;padding:11px 13px;min-width:0}
+  .stat .v{font-size:18px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+  .stat .k{font-size:11px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stat-sec .v{color:var(--crit)}
+
+  .sec{display:flex;align-items:center;gap:9px;margin:26px 2px 12px}
+  .sec h2{font-size:13px;font-weight:600;margin:0;color:var(--ink-2);white-space:nowrap}
+  .sec .cnt{font-family:var(--fmono);font-size:11px;font-weight:500;padding:1px 8px;border-radius:999px;background:var(--warn-bg);color:var(--warn)}
+  .sec .rule{flex:1;height:1px;background:var(--border)}
+  .sec.quiet h2{color:var(--muted)}
+
+  .cards{display:flex;flex-direction:column;gap:12px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:15px 16px 14px;box-shadow:var(--card-shadow);position:relative}
+  .card.attn{box-shadow:var(--lift-shadow)}
+  .card.attn::before{content:"";position:absolute;left:0;top:17px;bottom:17px;width:3px;border-radius:0 3px 3px 0;background:var(--warn)}
+  /* Healthy cards: still calmer than the elevated attention cards (no warm rail), but a real
+     contained tile — a subtle recessed fill + border + soft shadow so they don't read as
+     floating text. */
+  .card.calm{background:var(--surface-2)}
+  .c-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px}
+  .host{display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 auto}
+  .os{flex:0 1 auto;min-width:0;max-width:52%;overflow:hidden;text-overflow:ellipsis}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none;background:var(--faint);position:relative}
+  .dot-up{background:var(--good)}
+  .dot-up::after{content:"";position:absolute;inset:-4px;border-radius:50%;background:var(--good);opacity:.16}
+  .dot-down{background:var(--crit)}
+  .dot-checking{background:var(--warn);animation:pulse 1.1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  @media (prefers-reduced-motion:reduce){.dot-checking{animation:none;opacity:.6}}
+  .hn{font-size:16.5px;font-weight:600;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .os{font-family:var(--fmono);font-size:11px;color:var(--muted);white-space:nowrap}
+  .signal{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:14px;min-height:22px}
+  .updates{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+  .sep{color:var(--faint)}
+  .muted{color:var(--muted);font-size:14px}
+  .pill{font-family:var(--fmono);font-size:12px;font-weight:500;padding:2px 9px;border-radius:999px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+  .pill.crit{background:var(--crit-bg);color:var(--crit)}
+  .pill.warn{background:var(--warn-bg);color:var(--warn)}
+  .pill.muted{background:var(--surface-2);color:var(--muted)}
+  .calm-line{font-size:14px;color:var(--muted);display:flex;align-items:center;gap:8px}
+  .tags{display:flex;flex-wrap:wrap;gap:5px;margin:-2px 0 11px}
+  .tag{font-family:var(--fmono);font-size:10.5px;color:var(--muted);background:var(--ground);border:1px solid var(--border);padding:1px 8px;border-radius:999px;white-space:nowrap}
+  .c-actions{display:flex;align-items:center;gap:8px}
+  .btn{font-family:var(--fsans);font-size:13.5px;font-weight:600;border-radius:11px;padding:9px 16px;border:1px solid var(--border-2);background:var(--surface-2);color:var(--ink);cursor:pointer;transition:border-color .15s}
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .btn.ghost{background:var(--surface-2);border-color:var(--border-2);box-shadow:var(--card-shadow)}
+  .btn.danger{background:var(--crit);color:#fff;border-color:var(--crit)}
+  .applyconfirm{margin-top:13px;border-top:1px solid var(--border);padding-top:12px}
+  .confirm-q{font-size:13.5px;color:var(--ink-2);line-height:1.5;margin:0 0 11px}
+  .confirm-q b{font-weight:600;color:var(--ink)}
+  .mono{font-family:var(--fmono);font-size:.9em;background:var(--surface-2);padding:1px 5px;border-radius:5px}
+  .age{margin-left:auto;font-family:var(--fmono);font-size:11px;color:var(--faint)}
+  .ico{width:13px;height:13px;display:inline-block;vertical-align:-1px}
+  .empty{color:var(--muted);text-align:center;padding:48px 0}
+
+  .scanpanel{margin-top:13px;border-top:1px solid var(--border);padding-top:12px}
+  .scanhead{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--muted);margin-bottom:9px}
+  .spinner{width:13px;height:13px;border-radius:50%;border:2px solid var(--border-2);border-top-color:var(--accent);animation:spin .7s linear infinite;flex:none}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .scanlog{margin:0;max-height:200px;overflow:auto;background:var(--surface-2);border-radius:12px;padding:10px 12px;font-family:var(--fmono);font-size:11.5px;line-height:1.55;color:var(--muted);word-break:break-word}
+  .scanlog .ln{white-space:pre-wrap}
+  .scanlog .ln.err{color:var(--crit)}
+  .scanlog .ln.ok{color:var(--good);font-weight:500}
+
+  .back-btn{display:inline-flex;align-items:center;gap:7px;font-family:var(--fsans);font-size:14px;font-weight:500;color:var(--ink-2);background:var(--surface);border:1px solid var(--border);border-radius:11px;padding:9px 15px 9px 12px;margin-bottom:16px;box-shadow:var(--card-shadow);transition:border-color .15s}
+  .back-btn:hover{border-color:var(--accent)}
+  .back-btn .ico{width:16px;height:16px}
+  .detail-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:16px}
+  .detail-top .back-btn{margin-bottom:0}
+  .connrow{display:flex;align-items:center;gap:8px;margin-top:12px}
+  .conntext{color:var(--muted);font-family:var(--fmono);font-size:11.5px}
+  .conntext.down{color:var(--crit)}
+  .btn-xs{padding:4px 11px;font-size:11.5px;margin-left:auto}
+  .dhead{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:16px 17px;box-shadow:var(--card-shadow);margin-bottom:8px}
+  .dtitle{font-size:23px;font-weight:700;letter-spacing:-.02em;margin:2px 0 4px;display:flex;align-items:center;gap:11px}
+  .dsub{font-family:var(--fmono);font-size:12px;color:var(--muted);margin-bottom:6px}
+  .section-h{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);font-family:var(--fmono);margin:24px 0 10px}
+  table.pkgs{width:100%;border-collapse:collapse;font-size:13px}
+  table.pkgs th{text-align:left;color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:7px 9px;border-bottom:1px solid var(--border)}
+  table.pkgs td{padding:8px 9px;border-bottom:1px solid var(--border);font-family:var(--fmono);font-size:12px;vertical-align:top}
+  table.pkgs td.name{color:var(--ink);word-break:break-word}
+  .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .tag-sec{color:var(--crit);font-size:11px}
+  .ver{color:var(--muted)}
+  .units{display:flex;flex-wrap:wrap;gap:6px}
+  .reboot-watch{display:flex;align-items:center;gap:9px;margin-top:10px;background:var(--surface-2);border-radius:12px;padding:11px 13px}
+  .actionrow{display:flex;align-items:center;gap:8px;margin-top:11px;flex-wrap:wrap}
+  .filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:18px 2px 2px}
+  .search{flex:1;min-width:150px;font-family:var(--fsans);font-size:14px;color:var(--ink);background:var(--surface);border:1px solid var(--border-2);border-radius:11px;padding:9px 13px;outline:none;-webkit-appearance:none;appearance:none}
+  .search:focus{border-color:var(--accent)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{font-family:var(--fsans);font-size:12.5px;font-weight:500;color:var(--muted);background:var(--surface-2);border:1px solid var(--border);border-radius:999px;padding:6px 12px;cursor:pointer;transition:border-color .15s}
+  .chip:hover{border-color:var(--accent)}
+  .chip.active{background:var(--accent-bg);color:var(--accent-2);border-color:var(--accent)}
+  .cnt-q{background:var(--surface-2)!important;color:var(--muted)!important}
+  .bulkbar{display:flex;gap:9px;margin:13px 2px 0}
+  .bulkbar .btn{display:inline-flex;align-items:center;gap:7px}
+  .bulkbar .btn .ico{width:15px;height:15px}
+
+  .nav{display:flex;align-items:center;gap:7px}
+  .iconbtn{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:11px;border:1px solid var(--border);background:var(--surface);color:var(--ink-2);box-shadow:var(--card-shadow);transition:border-color .15s,color .15s;cursor:pointer}
+  .iconbtn:hover{border-color:var(--accent);color:var(--accent)}
+  .iconbtn .ico{width:19px;height:19px}
+  .iconbtn.accent{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .iconbtn.accent:hover{color:#fff}
+
+  .formcard{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:17px 17px;box-shadow:var(--card-shadow)}
+  .formhead{font-size:22px;font-weight:700;letter-spacing:-.02em;margin:0 0 4px}
+  .formsub{font-size:13px;color:var(--muted);margin:0 0 15px}
+  .form{display:flex;flex-direction:column;gap:14px}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field label{font-size:12.5px;font-weight:600;color:var(--ink-2)}
+  .field .hint{font-size:11.5px;color:var(--muted)}
+  .field input,.field select,.field textarea{font-family:var(--fsans);font-size:14.5px;color:var(--ink);background:var(--surface);border:1px solid var(--border-2);border-radius:11px;padding:11px 12px;width:100%;outline:none;transition:border-color .15s;-webkit-appearance:none;appearance:none}
+  .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--accent)}
+  .field textarea{font-family:var(--fmono);font-size:12px;min-height:118px;resize:vertical}
+  .field select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23697781' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:34px}
+  .checkrow{display:flex;align-items:center;gap:10px;cursor:pointer}
+  .checkrow input{width:18px;height:18px;accent-color:var(--accent);flex:none}
+  .checkrow .ctext{display:flex;flex-direction:column;gap:2px}
+  .checkrow .ctext b{font-size:13.5px;font-weight:600;color:var(--ink-2)}
+  .grp{border-top:1px solid var(--border);padding-top:15px;margin-top:2px;display:flex;flex-direction:column;gap:14px}
+  .grp-h{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--faint);font-family:var(--fmono)}
+  .formerr{background:var(--crit-bg);color:var(--crit);border-radius:11px;padding:11px 13px;font-size:13px;font-weight:500}
+  .btn.block{width:100%;justify-content:center;padding:12px 16px;font-size:15px;display:flex}
+  .danger-zone{border:1px solid var(--crit);border-radius:16px;padding:15px 16px;margin-top:20px}
+  .danger-zone h3{font-size:13px;font-weight:600;margin:0 0 4px;color:var(--crit)}
+  .danger-zone p{font-size:12.5px;color:var(--muted);margin:0 0 12px}
+
+  .scard{background:var(--surface);border:1px solid var(--border);border-radius:18px;padding:16px 17px;box-shadow:var(--card-shadow);margin-bottom:14px}
+  .scard-h{display:flex;align-items:center;gap:10px;margin-bottom:5px}
+  .scard-h .ico{width:18px;height:18px;color:var(--accent)}
+  .scard-h h2{font-size:15.5px;font-weight:600;margin:0;letter-spacing:-.01em}
+  .scard-sub{font-size:12.5px;color:var(--muted);margin:0 0 14px;line-height:1.5}
+  .flash{border-radius:10px;padding:9px 12px;font-size:12.5px;font-weight:500;margin-bottom:12px}
+  .flash.ok{background:var(--good-bg);color:var(--good)}
+  .flash.err{background:var(--crit-bg);color:var(--crit)}
+  .form-inline{display:flex;gap:9px;align-items:flex-end}
+  .form-inline .field{flex:1}
+  .tokenrow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}
+  .tokenrow:last-child{border-bottom:none}
+  .tokenrow .tn{font-weight:600;font-size:13.5px}
+  .tokenrow .tm{font-family:var(--fmono);font-size:11px;color:var(--muted);margin-top:2px}
+  .tokenshow{background:var(--accent-bg);border:1px solid var(--accent);border-radius:11px;padding:11px 12px;margin-bottom:13px}
+  .tokenshow .lbl{font-size:11.5px;color:var(--accent-2);font-weight:600;margin-bottom:5px}
+  .tokenshow code{font-family:var(--fmono);font-size:12px;word-break:break-all;color:var(--ink)}
+  .qrwrap{display:flex;flex-direction:column;align-items:center;gap:11px;background:var(--surface-2);border-radius:13px;padding:16px;margin-bottom:13px}
+  .qrwrap img{width:180px;height:180px;border-radius:8px;background:#fff;padding:6px}
+  .recovery{display:grid;grid-template-columns:1fr 1fr;gap:7px 14px;font-family:var(--fmono);font-size:12.5px;background:var(--surface-2);border-radius:12px;padding:14px;margin:12px 0}
+  .linkrow{display:flex;align-items:center;gap:12px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px 15px;box-shadow:var(--card-shadow);margin-bottom:10px}
+  .linkrow .ico{width:19px;height:19px;color:var(--accent);flex:none}
+  .linkrow .lt{flex:1;min-width:0}
+  .linkrow .lt b{display:block;font-size:14.5px;font-weight:600}
+  .linkrow .lt span{font-size:12px;color:var(--muted)}
+  .linkrow .chev{color:var(--faint)}
+
+  .actlist{display:flex;flex-direction:column}
+  .actrow{display:flex;gap:11px;padding:12px 2px;border-bottom:1px solid var(--border)}
+  .adot{width:8px;height:8px;border-radius:50%;flex:none;margin-top:6px}
+  .adot.ok{background:var(--good)}
+  .adot.err{background:var(--crit)}
+  .adot.warn{background:var(--warn)}
+  .adot.muted{background:var(--faint)}
+  .actbody{flex:1;min-width:0}
+  .acthead{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+  .actlabel{font-size:14px;font-weight:600}
+  .acthost{font-family:var(--fmono);font-size:11px;color:var(--accent-2);background:var(--accent-bg);padding:1px 7px;border-radius:999px}
+  .acttime{margin-left:auto;font-family:var(--fmono);font-size:11px;color:var(--faint);white-space:nowrap}
+  .actsum{font-size:12.5px;color:var(--muted);margin-top:3px;line-height:1.45;word-break:break-word}
+
+  .job{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:14px 15px;box-shadow:var(--card-shadow);margin-bottom:11px}
+  .job.off{opacity:.62}
+  .job-top{display:flex;align-items:center;gap:10px;margin-bottom:7px}
+  .job-name{font-size:15px;font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .job-mode{font-family:var(--fmono);font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--muted)}
+  .job-meta{display:flex;flex-wrap:wrap;gap:5px 14px;font-family:var(--fmono);font-size:11.5px;color:var(--muted);margin-bottom:11px}
+  .job-cron{color:var(--ink-2)}
+  .checklist{display:flex;flex-direction:column;gap:9px;max-height:220px;overflow:auto;background:var(--surface-2);border-radius:12px;padding:12px 13px}
+  .jobruns{margin-top:11px;border-top:1px solid var(--border);padding-top:10px;display:flex;flex-direction:column;gap:7px}
+  .runrow{display:flex;align-items:center;gap:9px;font-size:12px}
+  .runrow .adot{margin-top:0}
+  .runstatus{font-weight:600;text-transform:capitalize}
+  .runmeta{color:var(--muted);font-family:var(--fmono);font-size:11px}
+
+  .themebtn svg[hidden]{display:none}
+
+  .authpage{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 16px;gap:18px}
+  .authbrand{display:flex;align-items:center;gap:11px}
+  .authbrand .mark{width:34px;height:34px;flex:none;background:var(--accent);-webkit-mask:url(/next/assets/logo.png) center/contain no-repeat;mask:url(/next/assets/logo.png) center/contain no-repeat}
+  .authbrand b{font-size:22px;font-weight:600;letter-spacing:-.015em}
+  .authcard{width:100%;max-width:384px}
+  .authdiv{display:flex;align-items:center;gap:11px;color:var(--faint);font-size:12px;margin:16px 0}
+  .authdiv::before,.authdiv::after{content:"";flex:1;height:1px;background:var(--border)}
+
+  /* --- Desktop: same components, wider container + a card grid so the screen isn't wasted.
+     Phone layout (<768px) is untouched; content pages stay a comfortable reading column, the
+     dashboard (.app.wide) spreads its host cards into a responsive grid. --- */
+  @media (min-width:768px){
+    .app{max-width:600px;padding:30px 22px 66px}
+    .app.wide{max-width:1060px}
+    .appbar{margin-bottom:20px}
+    .summary{display:flex;align-items:center;justify-content:space-between;gap:30px;padding:20px 26px}
+    .sum-head{flex:1;min-width:0}
+    .sum-lead{margin-bottom:4px}
+    .sum-sub{margin-bottom:0}
+    .summary .stats{flex:none;grid-template-columns:repeat(3,112px)}
+    .bulkbar{margin-top:16px}
+    .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-items:start}
+  }
+</style>{{end}}
+
+{{define "themeinit"}}<script>
+  (function(){try{var t=localStorage.getItem('pd-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+  function pdCycleTheme(){var r=document.documentElement,cur=r.getAttribute('data-theme')||'system',nx=cur==='system'?'light':cur==='light'?'dark':'system';try{if(nx==='system'){r.removeAttribute('data-theme');localStorage.removeItem('pd-theme');}else{r.setAttribute('data-theme',nx);localStorage.setItem('pd-theme',nx);}}catch(e){if(nx==='system'){r.removeAttribute('data-theme');}else{r.setAttribute('data-theme',nx);}}pdSyncTheme();}
+  function pdSyncTheme(){var m=document.documentElement.getAttribute('data-theme')||'system';document.querySelectorAll('.themebtn svg').forEach(function(s){s.hidden=s.getAttribute('data-ico')!==m;});}
+  document.addEventListener('DOMContentLoaded',pdSyncTheme);
+</script>{{end}}
+
+{{define "themetoggle"}}<button class="iconbtn themebtn" onclick="pdCycleTheme()" title="Theme — system / light / dark" aria-label="Toggle theme">
+  <svg data-ico="system" class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+  <svg data-ico="light" class="ico" hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></svg>
+  <svg data-ico="dark" class="ico" hidden viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+</button>{{end}}
+
+{{define "check"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="var(--good)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>{{end}}
+{{define "reboot"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 5v5h5M20 19v-5h-5"/><path d="M19 9a7 7 0 0 0-12-3M5 15a7 7 0 0 0 12 3"/></svg>{{end}}
+{{define "i-plus"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>{{end}}
+{{define "i-gear"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>{{end}}
+{{define "i-activity"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>{{end}}
+{{define "i-scanall"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/><path d="M22 4 12 14.01l-3-3"/></svg>{{end}}
+{{define "i-clock"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>{{end}}
+{{define "i-refresh"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>{{end}}
+{{define "i-pencil"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>{{end}}
+{{define "i-shield"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>{{end}}
+{{define "i-bell"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>{{end}}
+{{define "i-key"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/></svg>{{end}}
+{{define "i-lock"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>{{end}}
+{{define "i-chevron"}}<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>{{end}}
+
+{{define "deleteconfirm"}}<div class="applyconfirm">
+  <p class="confirm-q">Delete <b>{{.Name}}</b> from Patchdeck? This removes the host and its stored credentials and scan history. This cannot be undone.</p>
+  <div class="c-actions">
+    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/delete">Delete host</button>
+    <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
+  </div>
+</div>{{end}}
+
+
+{{define "signal"}}{{if not .HasScan}}<span class="muted">Never scanned</span>
+{{else if and (eq .UpdateCount 0) (not .NeedsReboot) (eq .RestartCount 0)}}<span class="calm-line">{{template "check"}} Up to date</span>
+{{else}}{{if gt .UpdateCount 0}}<span class="updates">{{.UpdateCount}} update{{if ne .UpdateCount 1}}s{{end}}</span>{{end}}{{if gt .SecurityCount 0}}<span class="sep">&middot;</span><span class="pill crit">{{.SecurityCount}} security</span>{{end}}{{if .NeedsReboot}}<span class="pill warn">{{template "reboot"}}Reboot</span>{{else if gt .RestartCount 0}}<span class="pill warn">{{template "reboot"}}{{.RestartCount}} restart{{if ne .RestartCount 1}}s{{end}}</span>{{end}}{{if gt .DeferredCount 0}}<span class="pill muted">{{.DeferredCount}} deferred</span>{{end}}{{end}}{{end}}
+
+{{define "dot"}}<span id="dot-{{.HostID}}" class="dot {{if .Connected}}dot-up{{else}}dot-down{{end}}" title="{{if .Connected}}reachable{{else}}unreachable{{end}}" aria-label="{{if .Connected}}reachable{{else}}unreachable{{end}}"></span>{{end}}
+
+{{define "card"}}<article id="card-{{.ID}}" class="card {{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}attn{{else}}calm{{end}}" data-name="{{.Name}}" data-addr="{{.Address}}" data-tags="{{range .Tags}}{{.}} {{end}}" data-attn="{{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}1{{else}}0{{end}}" data-updates="{{if gt .UpdateCount 0}}1{{else}}0{{end}}">
+  <div class="c-top">
+    <span class="host">
+      <span id="dot-{{.ID}}" class="dot dot-checking" hx-get="/next/hosts/{{.ID}}/dot" hx-trigger="load" hx-swap="outerHTML" aria-label="checking connectivity"></span>
+      <a class="hn" href="/next/hosts/{{.ID}}">{{.Name}}</a>
+    </span>
+    <span class="os">{{if .OSShort}}{{.OSShort}}{{else}}{{.Address}}{{end}}</span>
+  </div>
+  {{if .Tags}}<div class="tags">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</div>{{end}}
+  <div class="signal">{{if or .Unverified .PendingKey}}<span class="pill warn">{{template "i-shield"}} {{if .PendingKey}}Key awaiting approval{{else}}Awaiting approval{{end}}</span>{{else}}{{template "signal" .}}{{end}}</div>
+  <div class="c-actions">
+    {{if or .Unverified .PendingKey}}<a class="btn primary" href="/next/hosts/{{.ID}}">Review &amp; approve</a>
+    {{else}}{{if gt .UpdateCount 0}}<button class="btn primary" hx-get="/next/hosts/{{.ID}}/apply-confirm" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Apply {{.UpdateCount}}</button>
+    {{else}}<button class="btn primary" hx-get="/next/hosts/{{.ID}}/scanpanel" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Scan</button>{{end}}
+    <a class="btn ghost" href="/next/hosts/{{.ID}}">Details</a>
+    {{if .HasScan}}<span class="age">scanned {{.ScanAge}}</span>{{end}}{{end}}
+  </div>
+  <div id="scanarea-{{.ID}}"></div>
+  {{if not .Unverified}}<div hidden hx-get="/next/hosts/{{.ID}}/scanpanel" hx-trigger="pd:scanall from:body" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>
+  {{if gt .UpdateCount 0}}<div hidden hx-get="/next/hosts/{{.ID}}/apply/panel" hx-trigger="pd:applyall from:body" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}{{end}}
+</article>{{end}}
+
+{{define "applyconfirm"}}<div class="applyconfirm">
+  <p class="confirm-q">Apply <b>{{.Count}}</b> update{{if ne .Count 1}}s{{end}} to <b>{{.Name}}</b>? This runs <span class="mono">apt upgrade</span> and may restart services.</p>
+  <div class="c-actions">
+    <button class="btn danger" hx-get="/next/hosts/{{.ID}}/apply/panel?ctx={{.Ctx}}" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Apply now</button>
+    <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
+  </div>
+</div>{{end}}
+
+{{define "logscroll"}}<script>
+  function pdScrollLogs(){document.querySelectorAll('.scanlog').forEach(function(l){l.scrollTop=l.scrollHeight})}
+  document.addEventListener('htmx:afterSwap',pdScrollLogs);
+  document.addEventListener('htmx:sseMessage',function(){requestAnimationFrame(pdScrollLogs)});
+</script>{{end}}
+
+{{define "applypanel"}}<div class="scanpanel" hx-ext="sse" sse-connect="/next/hosts/{{.ID}}/apply/stream" sse-close="done">
+  <div class="scanhead"><span class="spinner"></span> Applying updates on {{.Name}}&hellip;</div>
+  <div class="scanlog" sse-swap="line" hx-swap="beforeend" hx-on::after-swap="this.scrollTop = this.scrollHeight"></div>
+  {{if eq .Ctx "detail"}}<div hidden hx-get="/next/hosts/{{.ID}}" hx-trigger="sse:done" hx-target="body" hx-swap="outerHTML"></div>
+  {{else}}<div hidden hx-get="/next/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML"></div>{{end}}
+</div>{{end}}
+
+{{define "scanpanel"}}<div class="scanpanel" hx-ext="sse" sse-connect="/next/hosts/{{.ID}}/scan/stream" sse-close="done">
+  <div class="scanhead"><span class="spinner"></span> Scanning {{.Name}}&hellip;</div>
+  <div class="scanlog" sse-swap="line" hx-swap="beforeend" hx-on::after-swap="this.scrollTop = this.scrollHeight"></div>
+  {{if eq .Ctx "detail"}}<div hidden hx-get="/next/hosts/{{.ID}}" hx-trigger="sse:done" hx-target="body" hx-swap="outerHTML"></div>
+  {{else}}<div hidden hx-get="/next/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML"></div>{{end}}
+</div>{{end}}
+
+{{define "restartconfirm"}}<div class="applyconfirm">
+  <p class="confirm-q">Restart the <b>{{.Count}}</b> service{{if ne .Count 1}}s{{end}} needrestart flagged on <b>{{.Name}}</b>? This runs needrestart&rsquo;s coordinated restart &mdash; safe services only. The kernel and session-critical units (dbus) stay flagged for a reboot instead of being bounced live.</p>
+  <div class="c-actions">
+    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/restart-all" hx-target="#{{.Out}}" hx-swap="innerHTML">Restart now</button>
+    <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
+  </div>
+</div>{{end}}
+
+{{define "deferredconfirm"}}<div class="applyconfirm">
+  <p class="confirm-q">Restart the <b>{{.Count}}</b> flagged service{{if ne .Count 1}}s{{end}} on <b>{{.Name}}</b> as a <b>detached</b> restart, to avoid a full reboot? Session-critical units (dbus) use needrestart&rsquo;s coordinated handler or stay reboot-required; everything else restarts detached so a connection flap can&rsquo;t interrupt it.</p>
+  <div class="c-actions">
+    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/restart-deferred" hx-target="#{{.Out}}" hx-swap="innerHTML">Restart detached</button>
+    <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
+  </div>
+</div>{{end}}
+
+{{define "hostnotif"}}<div id="hostnotif-{{.ID}}">
+  {{if .Flash}}<div class="flash ok" style="margin-bottom:11px">{{.Flash}}</div>{{end}}
+  <form class="form" hx-post="/next/hosts/{{.ID}}/notifications" hx-target="#hostnotif-{{.ID}}" hx-swap="outerHTML">
+    <label class="checkrow"><input type="checkbox" name="updates_available" value="1"{{if .P.UpdatesAvailable}} checked{{end}}><span class="ctext"><b>Updates available</b></span></label>
+    <label class="checkrow"><input type="checkbox" name="auto_apply_success" value="1"{{if .P.AutoApplySuccess}} checked{{end}}><span class="ctext"><b>Apply succeeded</b></span></label>
+    <label class="checkrow"><input type="checkbox" name="auto_apply_failure" value="1"{{if .P.AutoApplyFailure}} checked{{end}}><span class="ctext"><b>Apply failed</b></span></label>
+    <label class="checkrow"><input type="checkbox" name="scan_failure" value="1"{{if .P.ScanFailure}} checked{{end}}><span class="ctext"><b>Scan failed</b></span></label>
+    <button type="submit" class="btn primary" style="align-self:flex-start">Save</button>
+  </form>
+</div>{{end}}
+
+{{define "connline"}}<span class="dot {{if .Connected}}dot-up{{else}}dot-down{{end}}"></span>{{if .Connected}}<span class="conntext">reachable{{if .Uptime}} &middot; up {{.Uptime}}{{end}}</span>{{else}}<span class="conntext down">unreachable{{if .Reason}} &middot; {{.Reason}}{{end}}</span>{{end}}<button class="btn ghost btn-xs" hx-get="/next/hosts/{{.ID}}/connline" hx-target="#conn-{{.ID}}" hx-swap="innerHTML">Recheck</button>{{end}}
+
+{{define "shutdownconfirm"}}<div class="applyconfirm">
+  <p class="confirm-q">Power off <b>{{.Name}}</b>? It will shut down and <b>won&rsquo;t come back</b> until it&rsquo;s powered on again by other means.</p>
+  <div class="c-actions">
+    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/shutdown" hx-target="#{{.Out}}" hx-swap="innerHTML">Shut down</button>
+    <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
+  </div>
+</div>{{end}}
+
+{{define "rebootconfirm"}}<div class="applyconfirm">
+  <p class="confirm-q">Reboot <b>{{.Name}}</b> now? The host drops offline for a minute or two while it restarts. Patchdeck will watch for it to come back.</p>
+  <div class="c-actions">
+    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/reboot" hx-target="#{{.Out}}" hx-swap="innerHTML">Reboot host</button>
+    <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
+  </div>
+</div>{{end}}
+
+{{define "actionresult"}}<div class="scanpanel">
+  <div class="scanhead">{{if .Err}}<span class="dot dot-down"></span> {{.Title}}{{else}}{{template "check"}} {{.Title}}{{end}}</div>
+  <div class="scanlog">
+    {{if .Err}}<div class="ln err">{{.Err}}</div>
+    {{else}}<div class="ln ok">{{.OK}}</div>{{if .RebootRequired}}<div class="ln">{{len .RebootRequired}} unit(s) still need a reboot to fully apply:</div>{{range .RebootRequired}}<div class="ln">&bull; {{.}}</div>{{end}}{{end}}{{end}}
+  </div>
+  {{if .Rescan}}<div class="actionrow"><button class="btn primary" hx-get="/next/hosts/{{.ID}}/scanpanel?ctx=detail" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" onclick="this.closest('.scanpanel').remove()">Re-scan to refresh</button></div>{{end}}
+</div>{{end}}
+
+{{define "rebootpanel"}}<div class="scanpanel">
+  <div class="scanhead"><span class="spinner"></span> Reboot initiated on {{.Name}} &mdash; waiting for it to come back&hellip;</div>
+  <div id="rbw-{{.ID}}" hx-get="/next/hosts/{{.ID}}/reboot-watch" hx-trigger="load delay:12s" hx-swap="outerHTML"></div>
+</div>{{end}}
+
+{{define "jobcard"}}<div id="job-{{.ID}}" class="job{{if not .Enabled}} off{{end}}">
+  <div class="job-top">
+    <span class="job-name">{{if .Name}}{{.Name}}{{else if .HostName}}{{.HostName}}{{else}}Schedule{{end}}</span>
+    <span class="job-mode">{{if eq .Mode "scan_apply"}}scan + apply{{else}}{{.Mode}}{{end}}</span>
+  </div>
+  <div class="job-meta">
+    <span class="job-cron">{{.CronExpr}}</span>
+    <span>{{if .TagFilter}}tag: {{.TagFilter}}{{else if .HostIDs}}{{len .HostIDs}} hosts{{else if .HostName}}{{.HostName}}{{else}}{{.HostID}}{{end}}</span>
+    {{if .NextRun}}<span>next {{.NextRun.Format "Jan 2 15:04"}}</span>{{end}}
+    {{if .LastRun}}<span>last {{.LastRun.Status}}</span>{{end}}
+    {{if not .Enabled}}<span>paused</span>{{end}}
+  </div>
+  <div class="c-actions">
+    {{if .Enabled}}<button class="btn ghost" hx-post="/next/schedules/{{.ID}}/toggle" hx-vals='{"enabled":"0"}' hx-target="#job-{{.ID}}" hx-swap="outerHTML">Pause</button>
+    {{else}}<button class="btn primary" hx-post="/next/schedules/{{.ID}}/toggle" hx-vals='{"enabled":"1"}' hx-target="#job-{{.ID}}" hx-swap="outerHTML">Resume</button>{{end}}
+    <button class="btn ghost" hx-get="/next/schedules/{{.ID}}/runs" hx-target="#runs-{{.ID}}" hx-swap="innerHTML">Runs</button>
+    <button class="btn danger" hx-post="/next/schedules/{{.ID}}/delete" hx-confirm="Delete this schedule?">Delete</button>
+  </div>
+  <div id="runs-{{.ID}}"></div>
+</div>{{end}}
+
+{{define "jobruns"}}<div class="jobruns">
+  {{if .Runs}}{{range .Runs}}<div class="runrow">
+    <span class="adot {{if eq .Status "success"}}ok{{else if eq .Status "failed"}}err{{else if eq .Status "partial"}}warn{{else}}muted{{end}}"></span>
+    <span class="runstatus">{{.Status}}</span>
+    <span class="runmeta">{{.StartedAt.Format "Jan 2 15:04"}} &middot; {{.HostsOK}}/{{.HostsTotal}} ok{{if gt .HostsFailed 0}} &middot; {{.HostsFailed}} failed{{end}}</span>
+  </div>{{end}}{{else}}<div class="runrow"><span class="runmeta">No runs yet.</span></div>{{end}}
+</div>{{end}}
+
+{{define "activityrows"}}{{range .Entries}}<div class="actrow">
+  <span class="adot {{evtTone .EventType}}"></span>
+  <div class="actbody">
+    <div class="acthead"><span class="actlabel">{{evtLabel .EventType}}</span>{{if .HostName}}<span class="acthost">{{.HostName}}</span>{{end}}<span class="acttime">{{.CreatedAt.Format "Jan 2 15:04"}}</span></div>
+    {{if .Summary}}<div class="actsum">{{.Summary}}</div>{{end}}
+  </div>
+</div>{{end}}{{if not .Entries}}<p class="empty">No activity yet — scans, applies, restarts and reboots will show up here.</p>{{end}}{{if .HasMore}}<button class="btn ghost block" style="margin-top:13px" hx-get="/next/activity/rows?offset={{.NextOffset}}{{if .Host}}&host={{.Host}}{{end}}" hx-swap="outerHTML">Load older</button>{{end}}{{end}}
+
+{{define "rebootwatch"}}{{if .Connected}}<div id="rbw-{{.ID}}" class="reboot-watch">
+  <span class="dot dot-up"></span>
+  <span class="calm-line">Back online. Refresh to re-scan its posture.</span>
+  <button class="btn primary" style="margin-left:auto" hx-get="/next/hosts/{{.ID}}" hx-target="body" hx-swap="outerHTML">Refresh</button>
+</div>{{else}}<div id="rbw-{{.ID}}" class="reboot-watch" hx-get="/next/hosts/{{.ID}}/reboot-watch" hx-trigger="every 8s" hx-swap="outerHTML">
+  <span class="dot dot-checking"></span>
+  <span class="calm-line">Still offline &mdash; checking every 8s&hellip;</span>
+</div>{{end}}{{end}}

@@ -19,7 +19,7 @@ on:
     branches: [main]
     # Skip CI when the only changes don't affect the built image: compose files
     # (runtime-only, not baked in), env example, docs, gitignore. Image-relevant
-    # paths (Dockerfile, api/**, web/**, entrypoint.sh, .forgejo/**) still build.
+    # paths (Dockerfile, api/**, entrypoint.sh, .forgejo/**) still build.
     paths-ignore:
       - 'docker-compose.yml'
       - 'docker-compose.ghcr.yml'

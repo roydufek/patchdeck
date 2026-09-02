@@ -1,14 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
-# --- Build frontend ---
-FROM node:22-alpine AS web-build
-WORKDIR /web
-COPY web/package*.json ./
-RUN npm ci
-COPY web .
-RUN npm run build
-
 # --- Build backend ---
+# The frontend is server-rendered by the Go binary (html/template + HTMX, assets embedded),
+# so there is no Node/Vite build stage as of v2.0.0 — the whole JS toolchain is gone.
 FROM golang:1.25-alpine AS api-build
 WORKDIR /src
 RUN apk add --no-cache git
@@ -34,7 +28,6 @@ RUN apk upgrade --no-cache \
     && mkdir -p /data && chown patchdeck:patchdeck /data
 
 COPY --from=api-build /out/patchdeck /app/patchdeck
-COPY --from=web-build /web/dist /app/static
 COPY entrypoint.sh /app/entrypoint.sh
 
 EXPOSE 6070

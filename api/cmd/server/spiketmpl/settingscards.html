@@ -1,0 +1,90 @@
+{{define "notifcard"}}<section id="card-notif" class="scard">
+  <div class="scard-h">{{template "i-bell"}}<h2>Notifications</h2></div>
+  <p class="scard-sub">Where Patchdeck sends alerts (an Apprise-style URL), and which events fire one.</p>
+  {{if .Flash}}<div class="flash ok">{{.Flash}}</div>{{end}}{{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
+  <form class="form" hx-post="/next/settings/notifications" hx-target="#card-notif" hx-swap="outerHTML">
+    <div class="field">
+      <label for="apprise_url">Destination URL</label>
+      <input id="apprise_url" name="apprise_url" value="{{.S.AppriseURL}}" placeholder="gotify://host/token" autocomplete="off">
+      <span class="hint">gotify, ntfy, discord, telegram, slack, pushover, mailto&hellip;</span>
+    </div>
+    <label class="checkrow"><input type="checkbox" name="updates_available" value="1"{{if .S.UpdatesAvailable}} checked{{end}}><span class="ctext"><b>Updates available</b></span></label>
+    <label class="checkrow"><input type="checkbox" name="auto_apply_success" value="1"{{if .S.AutoApplySuccess}} checked{{end}}><span class="ctext"><b>Apply succeeded</b></span></label>
+    <label class="checkrow"><input type="checkbox" name="auto_apply_failure" value="1"{{if .S.AutoApplyFailure}} checked{{end}}><span class="ctext"><b>Apply failed</b></span></label>
+    <label class="checkrow"><input type="checkbox" name="scan_failure" value="1"{{if .S.ScanFailure}} checked{{end}}><span class="ctext"><b>Scan failed</b></span></label>
+    <div class="actionrow">
+      <button type="submit" class="btn primary">Save</button>
+      <button type="button" class="btn ghost" hx-post="/next/settings/notifications/test" hx-include="#apprise_url" hx-target="#card-notif" hx-swap="outerHTML">Send test</button>
+    </div>
+  </form>
+</section>{{end}}
+
+{{define "oidccard"}}<section id="card-oidc" class="scard">
+  <div class="scard-h">{{template "i-shield"}}<h2>Single sign-on (OIDC)</h2></div>
+  <p class="scard-sub">Optional. Sign in through any OIDC provider (Authorization Code + PKCE). Local password and 2FA remain as break-glass access.</p>
+  {{if .Flash}}<div class="flash ok">{{.Flash}}</div>{{end}}{{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
+  <div class="field" style="margin-bottom:14px">
+    <label>Redirect / callback URL <span class="hint" style="font-weight:400">— register this in your IdP</span></label>
+    <div class="mono" style="word-break:break-all;padding:9px 11px">{{.CallbackURL}}</div>
+  </div>
+  <form class="form" hx-post="/next/settings/oidc" hx-target="#card-oidc" hx-swap="outerHTML">
+    <label class="checkrow"><input type="checkbox" name="enabled" value="1"{{if .Enabled}} checked{{end}}><span class="ctext"><b>Enable SSO</b><span class="hint">Show the SSO button on the login page.</span></span></label>
+    <div class="field"><label for="oidc_issuer">Issuer URL</label><input id="oidc_issuer" name="issuer" value="{{.Issuer}}" placeholder="https://id.example.com" autocomplete="off"></div>
+    <div class="field"><label for="oidc_client">Client ID</label><input id="oidc_client" name="client_id" value="{{.ClientID}}" autocomplete="off"></div>
+    <div class="field"><label for="oidc_secret">Client secret</label><input id="oidc_secret" name="client_secret" type="password" autocomplete="new-password" placeholder="{{if .HasSecret}}stored — leave blank to keep{{else}}required to enable{{end}}">
+      {{if .HasSecret}}<label class="checkrow" style="margin-top:9px"><input type="checkbox" name="clear_secret" value="1"><span class="ctext"><b>Clear stored secret</b></span></label>{{end}}
+    </div>
+    <div class="field"><label for="oidc_base">Public base URL <span class="hint" style="font-weight:400">(optional)</span></label><input id="oidc_base" name="base_url" value="{{.BaseURL}}" placeholder="https://patchdeck.example.com" autocomplete="off"><span class="hint">Overrides the auto-derived callback origin.</span></div>
+    <div class="field"><label for="oidc_allowed">Allowed emails / groups <span class="hint" style="font-weight:400">(optional)</span></label><input id="oidc_allowed" name="allowed" value="{{.Allowed}}" placeholder="you@example.com, admins" autocomplete="off"><span class="hint">Blank = the IdP is the sole gate (recommended).</span></div>
+    <div class="field"><label for="oidc_label">Button label</label><input id="oidc_label" name="button_label" value="{{.ButtonLabel}}" placeholder="Sign in with SSO" autocomplete="off"></div>
+    <button type="submit" class="btn primary">Save SSO settings</button>
+  </form>
+</section>{{end}}
+
+{{define "tokenscard"}}<section id="card-tokens" class="scard">
+  <div class="scard-h">{{template "i-key"}}<h2>API tokens</h2></div>
+  <p class="scard-sub">Bearer tokens for automation (the <span class="mono">pd_</span> prefix). A token is shown once, at creation.</p>
+  {{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
+  {{if .New}}<div class="tokenshow"><div class="lbl">New token — copy it now, it won&rsquo;t be shown again</div><code>{{.New}}</code></div>{{end}}
+  {{if .Tokens}}<div style="margin-bottom:13px">{{range .Tokens}}<div class="tokenrow"><div><div class="tn">{{.Name}}</div><div class="tm">created {{.CreatedAt.Format "2006-01-02"}}{{if .Revoked}} &middot; revoked{{end}}</div></div>{{if not .Revoked}}<button class="btn ghost" hx-post="/next/settings/tokens/{{.ID}}/revoke" hx-target="#card-tokens" hx-swap="outerHTML">Revoke</button>{{end}}</div>{{end}}</div>{{end}}
+  <form class="form-inline" hx-post="/next/settings/tokens" hx-target="#card-tokens" hx-swap="outerHTML">
+    <div class="field"><label for="tok_name">New token name</label><input id="tok_name" name="name" placeholder="ci-runner" autocomplete="off"></div>
+    <button type="submit" class="btn primary">Create</button>
+  </form>
+</section>{{end}}
+
+{{define "totpcard"}}<section id="card-totp" class="scard">
+  <div class="scard-h">{{template "i-lock"}}<h2>Two-factor authentication</h2></div>
+  {{if .Flash}}<div class="flash ok">{{.Flash}}</div>{{end}}{{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
+  {{if .Recovery}}
+    <p class="scard-sub">Two-factor is on. Save these one-time recovery codes somewhere safe — each works once if you lose your authenticator.</p>
+    <div class="recovery">{{range .Recovery}}<span>{{.}}</span>{{end}}</div>
+  {{else if .Setup}}
+    <p class="scard-sub">Scan the QR in your authenticator app (or enter the secret), then type the current 6-digit code to finish.</p>
+    <div class="qrwrap"><img src="{{.QR}}" alt="TOTP QR code"><div class="mono" style="font-size:11px;word-break:break-all">{{.Secret}}</div></div>
+    <form class="form-inline" hx-post="/next/settings/totp/confirm" hx-target="#card-totp" hx-swap="outerHTML">
+      <input type="hidden" name="secret" value="{{.Secret}}">
+      <div class="field"><label for="totp_code">6-digit code</label><input id="totp_code" name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="123456"></div>
+      <button type="submit" class="btn primary">Verify</button>
+    </form>
+  {{else if .Enabled}}
+    <p class="scard-sub">Two-factor is <b>on</b> for your account. Disable it with your password.</p>
+    <form class="form-inline" hx-post="/next/settings/totp/disable" hx-target="#card-totp" hx-swap="outerHTML">
+      <div class="field"><label for="totp_pw">Password</label><input id="totp_pw" name="password" type="password" autocomplete="current-password"></div>
+      <button type="submit" class="btn danger">Disable</button>
+    </form>
+  {{else}}
+    <p class="scard-sub">Add a time-based one-time code to your login as a second factor.</p>
+    <button class="btn primary" hx-post="/next/settings/totp/setup" hx-target="#card-totp" hx-swap="outerHTML">Set up 2FA</button>
+  {{end}}
+</section>{{end}}
+
+{{define "auditcard"}}<section id="card-audit" class="scard">
+  <div class="scard-h">{{template "i-clock"}}<h2>Audit retention</h2></div>
+  <p class="scard-sub">How long to keep activity-log entries. 0 keeps them forever; the minimum is 30 days.</p>
+  {{if .Flash}}<div class="flash ok">{{.Flash}}</div>{{end}}{{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
+  <form class="form-inline" hx-post="/next/settings/audit" hx-target="#card-audit" hx-swap="outerHTML">
+    <div class="field"><label for="ret">Retention (days)</label><input id="ret" name="retention_days" type="number" min="0" value="{{.Days}}" inputmode="numeric"></div>
+    <button type="submit" class="btn primary">Save</button>
+  </form>
+</section>{{end}}
