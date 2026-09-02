@@ -150,6 +150,8 @@
   .selfnote{display:flex;align-items:flex-start;gap:9px;margin:15px 0 4px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:11px 13px;font-size:13px;color:var(--muted);line-height:1.5}
   .selfnote .ico{flex:none;width:16px;height:16px;margin-top:2px;color:var(--muted)}
   .bulkprotect{margin-top:12px}
+  .inflight{display:none}
+  .inflight.htmx-request{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:13px}
   .reboot-watch{display:flex;align-items:center;gap:9px;margin-top:10px;background:var(--surface-2);border-radius:12px;padding:11px 13px}
   .actionrow{display:flex;align-items:center;gap:8px;margin-top:11px;flex-wrap:wrap}
   .filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:18px 2px 2px}
@@ -415,8 +417,9 @@
   {{if .Disruptive}}<p class="confirm-q" style="color:var(--warn)">Heads up &mdash; {{len .Disruptive}} of these may briefly drop your SSH session or bounce containers as they restart: <b>{{range $i, $s := .Disruptive}}{{if $i}}, {{end}}{{$s}}{{end}}</b>. They&rsquo;re restarted detached so a connection flap can&rsquo;t interrupt them.</p>{{end}}
   <p class="formsub">Anything that comes back still flagged after this moves to &ldquo;reboot required&rdquo; automatically &mdash; you won&rsquo;t have to guess which need a reboot.</p>
   <div class="c-actions">
-    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/restart" hx-target="#{{.Out}}" hx-swap="innerHTML">Restart services</button>
+    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/restart" hx-target="#{{.Out}}" hx-swap="innerHTML" hx-disabled-elt="this" hx-indicator="#rstind-{{.ID}}">Restart services</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
+    <span id="rstind-{{.ID}}" class="inflight"><span class="spinner"></span> Restarting&hellip;</span>
   </div>
 </div>{{end}}
 
@@ -462,7 +465,7 @@
     {{if .Err}}<div class="ln err">{{.Err}}</div>
     {{else}}<div class="ln ok">{{.OK}}</div>{{if .RebootRequired}}<div class="ln">{{len .RebootRequired}} unit(s) still need a reboot to fully apply:</div>{{range .RebootRequired}}<div class="ln">&bull; {{.}}</div>{{end}}{{end}}{{end}}
   </div>
-  {{if .Rescan}}<div class="actionrow"><button class="btn primary" hx-get="/next/hosts/{{.ID}}/scanpanel?ctx=detail" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" onclick="this.closest('.scanpanel').remove()">Re-scan to refresh</button></div>{{end}}
+  {{if .Rescan}}<div class="actionrow"><button class="btn primary" hx-get="/next/hosts/{{.ID}}/scanpanel?ctx=detail" hx-target="#actionarea-{{.ID}}" hx-swap="innerHTML">Re-scan to refresh</button></div>{{end}}
 </div>{{end}}
 
 {{define "rebootpanel"}}<div class="scanpanel">
