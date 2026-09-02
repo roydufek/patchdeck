@@ -109,6 +109,14 @@
   .btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
   .btn.ghost{background:var(--surface-2);border-color:var(--border-2);box-shadow:var(--card-shadow)}
   .btn.danger{background:var(--crit);color:#fff;border-color:var(--crit)}
+  /* Universal in-flight state: any button making an htmx request dims, shows a spinner, and
+     blocks re-clicks. htmx adds .htmx-request to the triggering element for the request's life. */
+  .btn.htmx-request{opacity:.72;pointer-events:none;position:relative}
+  .btn.htmx-request::after{content:"";display:inline-block;width:11px;height:11px;margin-left:8px;vertical-align:-2px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .6s linear infinite}
+  .btn:disabled{opacity:.6;cursor:default;pointer-events:none}
+  /* Global error toast (see errtoast script) — request failures that would otherwise be silent. */
+  .pd-toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,16px);z-index:2000;max-width:min(92vw,440px);background:var(--surface);color:var(--ink);border:1px solid var(--border-2);border-left:3px solid var(--crit);border-radius:12px;padding:12px 15px;font-size:13.5px;line-height:1.45;box-shadow:var(--lift-shadow);opacity:0;pointer-events:none;transition:opacity .18s ease,transform .18s ease}
+  .pd-toast.show{opacity:1;transform:translate(-50%,0)}
   .applyconfirm{margin-top:13px;border-top:1px solid var(--border);padding-top:12px}
   .confirm-q{font-size:13.5px;color:var(--ink-2);line-height:1.5;margin:0 0 11px}
   .confirm-q b{font-weight:600;color:var(--ink)}
@@ -150,8 +158,6 @@
   .selfnote{display:flex;align-items:flex-start;gap:9px;margin:15px 0 4px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:11px 13px;font-size:13px;color:var(--muted);line-height:1.5}
   .selfnote .ico{flex:none;width:16px;height:16px;margin-top:2px;color:var(--muted)}
   .bulkprotect{margin-top:12px}
-  .inflight{display:none}
-  .inflight.htmx-request{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:13px}
   .reboot-watch{display:flex;align-items:center;gap:9px;margin-top:10px;background:var(--surface-2);border-radius:12px;padding:11px 13px}
   .actionrow{display:flex;align-items:center;gap:8px;margin-top:11px;flex-wrap:wrap}
   .filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:18px 2px 2px}
@@ -276,7 +282,26 @@
     .bulkbar{margin-top:16px}
     .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;align-items:stretch}
   }
-</style>{{end}}
+</style>{{template "errtoast"}}{{end}}
+
+{{/* errtoast — a global safety net for htmx request failures that would otherwise be silent
+     (a 5xx, a dropped connection, a timeout). Included from "styles" so it loads on every page.
+     Listens on document (available in <head>); the toast element is created lazily on first
+     error, once <body> exists. SSE stream errors surface in their own scan/apply log panels. */}}
+{{define "errtoast"}}<script>
+(function(){
+  function toast(msg){
+    var t=document.getElementById('pd-toast');
+    if(!t){ if(!document.body) return; t=document.createElement('div'); t.id='pd-toast'; t.className='pd-toast'; t.setAttribute('role','status'); document.body.appendChild(t); }
+    t.textContent=msg; t.classList.add('show');
+    clearTimeout(t._t); t._t=setTimeout(function(){ t.classList.remove('show'); },6000);
+  }
+  window.pdToast=toast;
+  document.addEventListener('htmx:responseError',function(e){ var x=e.detail&&e.detail.xhr; toast('Something went wrong'+(x&&x.status?' ('+x.status+')':'')+'. Please try again.'); });
+  document.addEventListener('htmx:sendError',function(){ toast('Network error — check your connection and try again.'); });
+  document.addEventListener('htmx:timeout',function(){ toast('That request timed out. Please try again.'); });
+})();
+</script>{{end}}
 
 {{define "themeinit"}}<script>
   (function(){try{var t=localStorage.getItem('pd-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
@@ -418,9 +443,8 @@
   {{if .Disruptive}}<p class="confirm-q" style="color:var(--warn)">Heads up &mdash; {{len .Disruptive}} of these may briefly drop your SSH session or bounce containers as they restart: <b>{{range $i, $s := .Disruptive}}{{if $i}}, {{end}}{{$s}}{{end}}</b>. They&rsquo;re restarted detached so a connection flap can&rsquo;t interrupt them.</p>{{end}}
   <p class="formsub">Anything that comes back still flagged after this moves to &ldquo;reboot required&rdquo; automatically &mdash; you won&rsquo;t have to guess which need a reboot.</p>
   <div class="c-actions">
-    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/restart" hx-target="#{{.Out}}" hx-swap="innerHTML" hx-disabled-elt="this" hx-indicator="#rstind-{{.ID}}">Restart services</button>
+    <button class="btn danger" hx-post="/next/hosts/{{.ID}}/restart" hx-target="#{{.Out}}" hx-swap="innerHTML" hx-disabled-elt="this">Restart services</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
-    <span id="rstind-{{.ID}}" class="inflight"><span class="spinner"></span> Restarting&hellip;</span>
   </div>
 </div>{{end}}
 
