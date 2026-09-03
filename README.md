@@ -14,10 +14,11 @@
 </p>
 
 <p align="center">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-blue" />
+  <a href="https://github.com/roydufek/patchdeck/actions/workflows/build-images.yml"><img alt="Build" src="https://github.com/roydufek/patchdeck/actions/workflows/build-images.yml/badge.svg" /></a>
+  <a href="https://github.com/roydufek/patchdeck/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/roydufek/patchdeck?sort=semver&color=1f9268" /></a>
+  <a href="https://github.com/roydufek/patchdeck/pkgs/container/patchdeck"><img alt="Container image" src="https://img.shields.io/badge/ghcr.io-patchdeck-2496ED?logo=docker&logoColor=white" /></a>
   <img alt="Go" src="https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white" />
-  <img alt="Self-hosted" src="https://img.shields.io/badge/self--hosted-yes-1f9268" />
-  <img alt="Docker" src="https://img.shields.io/badge/docker-ready-2496ED?logo=docker&logoColor=white" />
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/roydufek/patchdeck?color=blue" /></a>
 </p>
 
 ---
@@ -153,7 +154,7 @@ docker compose up -d --build
 | Runtime | A single ~30 MB static Go binary on Alpine; assets embedded — no interpreter, tiny CVE surface |
 | Deployment | Docker Compose (one container, one SQLite file) |
 
-> Patchdeck's UI is rendered by the Go binary itself — there is **no JavaScript build pipeline** (as of v2.0.0 the React/Vite/npm front end was retired in favour of server-rendered HTMX). The whole thing is one container and one `./data` folder to back up.
+> Patchdeck's UI is rendered by the Go binary itself — there is **no JavaScript build pipeline**, no Node, no bundler. The whole thing is one container and one `./data` folder to back up.
 
 ## Configuration
 
