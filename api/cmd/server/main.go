@@ -821,11 +821,10 @@ func (a *app) scanHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
+	prev, _, _ := db.GetScanSnapshot(a.db, host.ID)
 	_ = db.UpsertScanResult(a.db, host.ID, res)
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scan completed: %d packages available", len(res.Packages)))
-	if len(res.Packages) > 0 && a.notificationEnabledForHostEvent(host.ID, "updates_available") {
-		_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: updates available on %s (%d packages)", host.Name, len(res.Packages)))
-	}
+	a.notifyIfNewUpdates(host, prev.Packages, res.Packages)
 	writeJSON(w, 200, res)
 }
 
@@ -1288,6 +1287,16 @@ func (a *app) currentAppriseURL() string {
 		return s.AppriseURL
 	}
 	return a.cfg.AppriseURL
+}
+
+// notifyIfNewUpdates sends the "updates available" alert only when a scan surfaced updates that
+// weren't present at the previous scan (models.HasNewUpdates), so re-scanning the same pending
+// set — manually or on a schedule — doesn't re-ping. prevPkgs is the package list from before
+// this scan's UpsertScanResult; every scan path (GUI stream + JSON API) routes through here.
+func (a *app) notifyIfNewUpdates(host models.Host, prevPkgs, curr []models.PackageInfo) {
+	if len(curr) > 0 && models.HasNewUpdates(prevPkgs, curr) && a.notificationEnabledForHostEvent(host.ID, "updates_available") {
+		_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: updates available on %s (%d packages)", host.Name, len(curr)))
+	}
 }
 
 func (a *app) notificationEnabledForHostEvent(hostID, eventKey string) bool {
@@ -2356,11 +2365,10 @@ func (a *app) scanHostStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	prev, _, _ := db.GetScanSnapshot(a.db, host.ID)
 	_ = db.UpsertScanResult(a.db, host.ID, res)
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scan completed: %d packages available", len(res.Packages)))
-	if len(res.Packages) > 0 && a.notificationEnabledForHostEvent(host.ID, "updates_available") {
-		_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: updates available on %s (%d packages)", host.Name, len(res.Packages)))
-	}
+	a.notifyIfNewUpdates(host, prev.Packages, res.Packages)
 	sseWrite(w, flusher, "result", res)
 	sseWrite(w, flusher, "done", map[string]string{})
 }

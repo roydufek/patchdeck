@@ -364,11 +364,13 @@ func (e *Engine) runScan(j models.Job, host models.Host) bool {
 		_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_fail", fmt.Sprintf("Scheduled scan failed: %v", err))
 		return false
 	}
+	prev, _, _ := db.GetScanSnapshot(e.db, host.ID) // before the upsert, for new-updates detection
 	if err := db.UpsertScanResult(e.db, host.ID, res); err != nil {
 		log.Printf("scheduler: job=%s save scan host=%s failed: %v", j.ID, host.Name, err)
 		return false
 	}
-	if len(res.Packages) > 0 {
+	// Only ping on genuinely new updates, so a recurring scan of the same pending set stays quiet.
+	if len(res.Packages) > 0 && models.HasNewUpdates(prev.Packages, res.Packages) {
 		e.sendNotification(host.ID, "updates_available", fmt.Sprintf("Patchdeck: updates available on %s (%d packages)", host.Name, len(res.Packages)))
 	}
 	_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scheduled scan completed: %d packages available", len(res.Packages)))

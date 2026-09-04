@@ -474,17 +474,23 @@ func (a *app) nextScanStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	line("", "Connecting to "+host.Name+"…")
+	prev, _, _ := db.GetScanSnapshot(a.db, host.ID) // captured before the upsert, for new-updates detection
 	res, err := a.sshClient.ScanHostStreaming(r.Context(), host, a.secrets, func(l string) { line("", l) })
 	if err != nil {
 		if r.Context().Err() != nil {
 			return // client disconnected — scan aborted on purpose, record nothing
 		}
+		if a.notificationEnabledForHostEvent(host.ID, "scan_failure") {
+			_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: scan FAILED on %s (%v)", host.Name, err))
+		}
+		_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_fail", fmt.Sprintf("Scan failed: %v", err))
 		line("err", "Scan failed: "+err.Error())
 		done()
 		return
 	}
 	_ = db.UpsertScanResult(a.db, host.ID, res)
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scan completed: %d packages available", len(res.Packages)))
+	a.notifyIfNewUpdates(host, prev.Packages, res.Packages)
 	line("ok", fmt.Sprintf("Scan complete — %d update(s) available.", len(res.Packages)))
 	done()
 }

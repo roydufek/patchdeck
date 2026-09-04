@@ -49,6 +49,24 @@ type PackageInfo struct {
 	DeferReason string `json:"defer_reason,omitempty"`
 }
 
+// HasNewUpdates reports whether curr contains any upgradable package — keyed by name + target
+// version — that wasn't in prev, i.e. a genuinely new update has appeared since the previous
+// scan. Used to fire the "updates available" notification only on new updates, so re-scanning the
+// same pending set (manually or on a schedule) doesn't re-ping. A package whose available version
+// bumped counts as new; a set that only shrank (some were applied) does not.
+func HasNewUpdates(prev, curr []PackageInfo) bool {
+	seen := make(map[string]struct{}, len(prev))
+	for _, p := range prev {
+		seen[p.Name+"\x00"+p.NewVersion] = struct{}{}
+	}
+	for _, p := range curr {
+		if _, ok := seen[p.Name+"\x00"+p.NewVersion]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
 type ScanHistoryEntry struct {
 	ID               string        `json:"id"`
 	HostID           string        `json:"host_id"`
