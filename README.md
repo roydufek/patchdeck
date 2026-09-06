@@ -17,7 +17,7 @@
   <a href="https://github.com/roydufek/patchdeck/actions/workflows/build-images.yml"><img alt="Build" src="https://github.com/roydufek/patchdeck/actions/workflows/build-images.yml/badge.svg" /></a>
   <a href="https://github.com/roydufek/patchdeck/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/roydufek/patchdeck?sort=semver&color=1f9268" /></a>
   <a href="https://github.com/roydufek/patchdeck/pkgs/container/patchdeck"><img alt="Container image" src="https://img.shields.io/badge/ghcr.io-patchdeck-2496ED?logo=docker&logoColor=white" /></a>
-  <img alt="Go" src="https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white" />
+  <a href="api/go.mod"><img alt="Go" src="https://img.shields.io/github/go-mod/go-version/roydufek/patchdeck?filename=api%2Fgo.mod&label=go&color=00ADD8&logo=go&logoColor=white" /></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/roydufek/patchdeck?color=blue" /></a>
 </p>
 
@@ -149,7 +149,7 @@ docker compose up -d --build
 
 | Component | Technology |
 |-----------|-----------|
-| Backend | Go 1.25 — Chi router + pure-Go SQLite (WAL), native Go scheduler &amp; notifications |
+| Backend | Go 1.26 — Chi router + pure-Go SQLite (WAL), native Go scheduler &amp; notifications |
 | Frontend | **Server-rendered** Go `html/template` + [HTMX](https://htmx.org) + SSE — no Node, no bundler, no build step |
 | Runtime | A single ~30 MB static Go binary on Alpine; assets embedded — no interpreter, tiny CVE surface |
 | Deployment | Docker Compose (one container, one SQLite file) |
