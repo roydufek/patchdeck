@@ -3,7 +3,7 @@
 # --- Build backend ---
 # The frontend is server-rendered by the Go binary (html/template + HTMX, assets embedded),
 # so there is no Node/Vite build stage as of v2.0.0 — the whole JS toolchain is gone.
-FROM golang:1.25-alpine AS api-build
+FROM golang:1.26-alpine AS api-build
 WORKDIR /src
 RUN apk add --no-cache git
 COPY api/go.mod ./api/go.mod
