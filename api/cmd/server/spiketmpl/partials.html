@@ -312,7 +312,7 @@
 {{define "themeinit"}}<script>
   (function(){try{var t=localStorage.getItem('pd-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
   function pdCycleTheme(){var r=document.documentElement,cur=r.getAttribute('data-theme')||'system',nx=cur==='system'?'light':cur==='light'?'dark':'system';try{if(nx==='system'){r.removeAttribute('data-theme');localStorage.removeItem('pd-theme');}else{r.setAttribute('data-theme',nx);localStorage.setItem('pd-theme',nx);}}catch(e){if(nx==='system'){r.removeAttribute('data-theme');}else{r.setAttribute('data-theme',nx);}}pdSyncTheme();}
-  function pdSyncTheme(){var m=document.documentElement.getAttribute('data-theme')||'system';document.querySelectorAll('.themebtn svg').forEach(function(s){s.hidden=s.getAttribute('data-ico')!==m;});}
+  function pdSyncTheme(){var m=document.documentElement.getAttribute('data-theme')||'system';document.querySelectorAll('.themebtn svg').forEach(function(s){s.toggleAttribute('hidden',s.getAttribute('data-ico')!==m);});}
   document.addEventListener('DOMContentLoaded',pdSyncTheme);
 </script>{{end}}
 
