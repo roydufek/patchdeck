@@ -60,6 +60,9 @@ func (a *app) nextRestartConfirmSmart(w http.ResponseWriter, r *http.Request) {
 // of band — changes boot_id and clears the marks.
 func (a *app) nextRestartSmart(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	// bulk = driven by "Restart all": auto-rescan the host afterward to confirm/clear its flags,
+	// instead of leaving the operator a manual "Re-scan" button (the detail-page single restart).
+	bulk := r.URL.Query().Get("ctx") == "bulk"
 	host, err := db.GetHost(a.db, id)
 	if err != nil {
 		http.Error(w, "host not found", http.StatusNotFound)
@@ -72,7 +75,7 @@ func (a *app) nextRestartSmart(w http.ResponseWriter, r *http.Request) {
 	}
 	restartable, _ := resolveRestartBuckets(snap)
 	if len(restartable) == 0 {
-		a.renderNext(w, "actionresult", map[string]any{"ID": host.ID, "Title": "Nothing to restart", "OK": "No services are flagged for a restart right now.", "Rescan": true})
+		a.renderNext(w, "actionresult", map[string]any{"ID": host.ID, "Title": "Nothing to restart", "OK": "No services are flagged for a restart right now.", "Rescan": !bulk, "AutoRescan": bulk})
 		return
 	}
 	res, err := a.sshClient.RestartDeferredDetached(host, a.secrets, restartable)
@@ -104,11 +107,16 @@ func (a *app) nextRestartSmart(w http.ResponseWriter, r *http.Request) {
 	}
 	restarted := len(restartable) - len(res.RebootRequired)
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", fmt.Sprintf("Smart restart of %d service(s); %d watched for reboot-resistance", restarted, marked))
+	okMsg := fmt.Sprintf("Restarted %d service(s). Re-scan to confirm — any that come back flagged move to “reboot required”.", restarted)
+	if bulk {
+		okMsg = fmt.Sprintf("Restarted %d service(s). Re-scanning to confirm — any that come back flagged move to “reboot required”.", restarted)
+	}
 	a.renderNext(w, "actionresult", map[string]any{
 		"ID": host.ID, "Title": "Services restarted",
-		"OK":             fmt.Sprintf("Restarted %d service(s). Re-scan to confirm — any that come back flagged move to “reboot required”.", restarted),
+		"OK":             okMsg,
 		"RebootRequired": res.RebootRequired,
-		"Rescan":         true,
+		"Rescan":         !bulk,
+		"AutoRescan":     bulk,
 	})
 }
 

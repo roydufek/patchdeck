@@ -47,6 +47,7 @@
     <button class="btn ghost" onclick="pdBulk('scan',{{.BulkConcurrency}},0,{{.WatchdogMs}})">{{template "i-scanall"}} Scan all</button>
     {{if gt .Summary.Updates 0}}<button class="btn primary" onclick="document.getElementById('bulkconfirm').hidden=false;this.hidden=true">Apply all updates</button>{{end}}
     {{if gt .Summary.RebootHosts 0}}<button class="btn ghost" onclick="document.getElementById('rebootconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Reboot all ({{.Summary.RebootHosts}})</button>{{end}}
+    {{if gt .Summary.RestartHosts 0}}<button class="btn ghost" onclick="document.getElementById('restartconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Restart all ({{.Summary.RestartHosts}})</button>{{end}}
   </div>
   {{if gt .Summary.Updates 0}}
   <div id="bulkconfirm" class="applyconfirm" hidden style="margin-top:12px">
@@ -66,13 +67,23 @@
     </div>
   </div>
   {{end}}
+  {{if gt .Summary.RestartHosts 0}}
+  <div id="restartconfirm" class="applyconfirm" hidden style="margin-top:12px">
+    <p class="confirm-q">Restart flagged services on the <b>{{.Summary.RestartHosts}} host{{if ne .Summary.RestartHosts 1}}s{{end}}</b> that need only a restart? Patchdeck picks the safe method per unit &mdash; a clean restart where it&rsquo;s safe, needrestart&rsquo;s coordinated handler where a naive restart would sever the session &mdash; then re-scans each host to confirm{{if gt .BulkConcurrency 0}}, up to {{.BulkConcurrency}} at a time{{end}}. Hosts that need a reboot aren&rsquo;t included &mdash; reboot those instead.</p>
+    <div class="c-actions">
+      <button class="btn danger" onclick="pdBulk('restart',{{.BulkConcurrency}},0,{{.WatchdogMs}});document.getElementById('restartconfirm').hidden=true">Restart all now</button>
+      <button class="btn ghost" onclick="document.getElementById('restartconfirm').hidden=true">Cancel</button>
+    </div>
+  </div>
+  {{end}}
 
   <div class="filters">
     <input class="search" id="hostsearch" type="search" placeholder="Search name or tag&hellip;" oninput="pdApply()" autocomplete="off">
     <div class="chips" id="facetchips">
       <button class="chip active" data-f="all" onclick="pdChip(this)">All</button>
       <button class="chip" data-f="updates" onclick="pdChip(this)">Updates</button>
-      <button class="chip" data-f="reboot" onclick="pdChip(this)">Reboot / restart</button>
+      <button class="chip" data-f="reboot" onclick="pdChip(this)">Reboot</button>
+      <button class="chip" data-f="restart" onclick="pdChip(this)">Restart</button>
       <button class="chip" data-f="healthy" onclick="pdChip(this)">Healthy</button>
     </div>
     {{if .HasTags}}<div class="grpby" id="groupchips">

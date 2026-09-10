@@ -44,7 +44,10 @@ func (a *app) nextReboot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "reboot_ok", fmt.Sprintf("Reboot initiated on %s", host.Name))
-	a.renderNext(w, "rebootpanel", map[string]any{"ID": host.ID, "Name": host.Name})
+	// ctx flows through to the recovery watch so that, once the host is back, it auto-rescans in the
+	// right place: "bulk" (a dashboard card / Reboot all) re-scans into the card; anything else
+	// (the detail page) re-scans and refreshes the detail view. Clears the reboot flag on its own.
+	a.renderNext(w, "rebootpanel", map[string]any{"ID": host.ID, "Name": host.Name, "Ctx": r.URL.Query().Get("ctx")})
 }
 
 // nextShutdownConfirm renders the confirm step before powering a host off.
@@ -86,5 +89,5 @@ func (a *app) nextRebootWatch(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
 	st := a.probeConnectivity(checker, id)
-	a.renderNext(w, "rebootwatch", map[string]any{"ID": id, "Connected": st.Connected})
+	a.renderNext(w, "rebootwatch", map[string]any{"ID": id, "Connected": st.Connected, "Ctx": r.URL.Query().Get("ctx")})
 }

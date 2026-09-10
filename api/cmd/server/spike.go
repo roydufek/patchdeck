@@ -80,6 +80,10 @@ type nextHostView struct {
 	RestartServices []string
 	RebootServices  []string
 	RebootAny       bool
+	// RestartOnly is true when the host has restartable units to clear but does NOT need a reboot.
+	// A host that needs a reboot (RebootAny) is presented as reboot-only — a reboot clears the
+	// restarts too, so we don't also offer/count it for a restart. This is what "Restart all" targets.
+	RestartOnly     bool
 	IsSelf          bool // this host is the machine Patchdeck runs on (boot_id match)
 	ExcludeFromBulk bool // operator-protected: kept out of fleet-wide reboots
 }
@@ -108,6 +112,7 @@ func fillFromSnapshot(v *nextHostView, s models.ScanSnapshot) {
 	v.RestartCount = len(s.NeedsRestart)
 	v.RestartServices, v.RebootServices = resolveRestartBuckets(s)
 	v.RebootAny = s.NeedsReboot || len(v.RebootServices) > 0
+	v.RestartOnly = !v.RebootAny && len(v.RestartServices) > 0
 	v.DeferredCount = len(s.DeferredPackages)
 	v.OsName = s.OsName
 	v.OsVersion = s.OsVersion
@@ -308,7 +313,11 @@ type nextSummary struct {
 	// RebootExcluded is how many needing-reboot hosts are held back (self/protected) — surfaced
 	// so the confirm can say "3 hosts, 1 held back (Patchdeck's own)".
 	RebootHosts, RebootExcluded int
-	LastScan                    string
+	// RestartHosts is how many hosts a "Restart all" would act on: those with restartable units
+	// that do NOT need a reboot (a reboot-needing host is rebooted instead, which clears its
+	// restarts too, so it's never double-counted here).
+	RestartHosts int
+	LastScan     string
 }
 
 // buildSummary aggregates the fleet and splits hosts into the attention vs healthy
@@ -328,6 +337,8 @@ func buildSummary(views []nextHostView) (nextSummary, []nextHostView, []nextHost
 			} else {
 				s.RebootHosts++
 			}
+		} else if v.RestartOnly {
+			s.RestartHosts++
 		}
 		if v.PendingKey || v.Unverified || (v.HasScan && (v.UpdateCount > 0 || v.NeedsReboot || v.RestartCount > 0)) {
 			s.NeedAttention++

@@ -347,12 +347,12 @@
 
 
 {{define "signal"}}{{if not .HasScan}}<span class="muted">Never scanned</span>
-{{else if and (eq .UpdateCount 0) (not .NeedsReboot) (eq .RestartCount 0)}}<span class="calm-line">{{template "check"}} Up to date</span>
-{{else}}{{if gt .UpdateCount 0}}<span class="updates">{{.UpdateCount}} update{{if ne .UpdateCount 1}}s{{end}}</span>{{end}}{{if gt .SecurityCount 0}}<span class="sep">&middot;</span><span class="pill crit">{{.SecurityCount}} security</span>{{end}}{{if .NeedsReboot}}<span class="pill warn">{{template "reboot"}}Reboot</span>{{else if gt .RestartCount 0}}<span class="pill warn">{{template "reboot"}}{{.RestartCount}} restart{{if ne .RestartCount 1}}s{{end}}</span>{{end}}{{if gt .DeferredCount 0}}<span class="pill muted">{{.DeferredCount}} deferred</span>{{end}}{{end}}{{end}}
+{{else if and (eq .UpdateCount 0) (not .RebootAny) (not .RestartOnly)}}<span class="calm-line">{{template "check"}} Up to date</span>
+{{else}}{{if gt .UpdateCount 0}}<span class="updates">{{.UpdateCount}} update{{if ne .UpdateCount 1}}s{{end}}</span>{{end}}{{if gt .SecurityCount 0}}<span class="sep">&middot;</span><span class="pill crit">{{.SecurityCount}} security</span>{{end}}{{if .RebootAny}}<span class="pill crit">{{template "reboot"}}Reboot needed</span>{{else if .RestartOnly}}<span class="pill warn">{{template "reboot"}}{{len .RestartServices}} restart{{if ne (len .RestartServices) 1}}s{{end}}</span>{{end}}{{if gt .DeferredCount 0}}<span class="pill muted">{{.DeferredCount}} deferred</span>{{end}}{{end}}{{end}}
 
 {{define "dot"}}<span id="dot-{{.HostID}}" class="dot {{if .Connected}}dot-up{{else}}dot-down{{end}}" title="{{if .Connected}}reachable{{else}}unreachable{{end}}" aria-label="{{if .Connected}}reachable{{else}}unreachable{{end}}"></span>{{end}}
 
-{{define "card"}}<article id="card-{{.ID}}" class="card {{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}attn{{else}}calm{{end}}" data-name="{{.Name}}" data-addr="{{.Address}}" data-tags="{{range .Tags}}{{.}} {{end}}" data-attn="{{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}1{{else}}0{{end}}" data-updates="{{if gt .UpdateCount 0}}1{{else}}0{{end}}" data-reboot="{{if or .NeedsReboot (gt .RestartCount 0)}}1{{else}}0{{end}}" data-updcount="{{.UpdateCount}}" data-seccount="{{.SecurityCount}}">
+{{define "card"}}<article id="card-{{.ID}}" class="card {{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}attn{{else}}calm{{end}}" data-name="{{.Name}}" data-addr="{{.Address}}" data-tags="{{range .Tags}}{{.}} {{end}}" data-attn="{{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}1{{else}}0{{end}}" data-updates="{{if gt .UpdateCount 0}}1{{else}}0{{end}}" data-reboot="{{if .RebootAny}}1{{else}}0{{end}}" data-restart="{{if .RestartOnly}}1{{else}}0{{end}}" data-updcount="{{.UpdateCount}}" data-seccount="{{.SecurityCount}}">
   <div class="c-top">
     <span class="host">
       <span id="dot-{{.ID}}" class="dot dot-checking" hx-get="/hosts/{{.ID}}/dot" hx-trigger="load" hx-swap="outerHTML" aria-label="checking connectivity"></span>
@@ -372,7 +372,8 @@
   <div id="scanarea-{{.ID}}"></div>
   {{if not .Unverified}}<div hidden data-pdbulk="scan" data-host="{{.ID}}" hx-get="/hosts/{{.ID}}/scanpanel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>
   {{if gt .UpdateCount 0}}<div hidden data-pdbulk="apply" data-host="{{.ID}}" hx-get="/hosts/{{.ID}}/apply/panel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}
-  {{if and .RebootAny (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="reboot" data-host="{{.ID}}" hx-post="/hosts/{{.ID}}/reboot" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::after-request="document.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}{{end}}
+  {{if and .RebootAny (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="reboot" data-host="{{.ID}}" hx-post="/hosts/{{.ID}}/reboot?ctx=bulk" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::after-request="document.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}
+  {{if .RestartOnly}}<div hidden data-pdbulk="restart" data-host="{{.ID}}" hx-post="/hosts/{{.ID}}/restart?ctx=bulk" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}{{end}}
 </article>{{end}}
 
 {{define "applyconfirm"}}<div class="applyconfirm">
@@ -453,6 +454,7 @@
     var attn=c.getAttribute('data-attn')==='1';
     if(f==='updates') return c.getAttribute('data-updates')==='1';
     if(f==='reboot')  return c.getAttribute('data-reboot')==='1';
+    if(f==='restart') return c.getAttribute('data-restart')==='1';
     if(f==='healthy') return !attn;
     return true;
   }
@@ -602,12 +604,13 @@
     {{if .Err}}<div class="ln err">{{.Err}}</div>
     {{else}}<div class="ln ok">{{.OK}}</div>{{if .RebootRequired}}<div class="ln">{{len .RebootRequired}} unit(s) still need a reboot to fully apply:</div>{{range .RebootRequired}}<div class="ln">&bull; {{.}}</div>{{end}}{{end}}{{end}}
   </div>
-  {{if .Rescan}}<div class="actionrow"><button class="btn primary" hx-get="/hosts/{{.ID}}/scanpanel?ctx=detail" hx-target="#actionarea-{{.ID}}" hx-swap="innerHTML">Re-scan to refresh</button></div>{{end}}
+  {{if .AutoRescan}}<div hidden hx-get="/hosts/{{.ID}}/scanpanel" hx-trigger="load delay:800ms" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>
+  {{else if .Rescan}}<div class="actionrow"><button class="btn primary" hx-get="/hosts/{{.ID}}/scanpanel?ctx=detail" hx-target="#actionarea-{{.ID}}" hx-swap="innerHTML">Re-scan to refresh</button></div>{{end}}
 </div>{{end}}
 
 {{define "rebootpanel"}}<div class="scanpanel">
   <div class="scanhead"><span class="spinner"></span> Reboot initiated on {{.Name}} &mdash; waiting for it to come back&hellip;</div>
-  <div id="rbw-{{.ID}}" hx-get="/hosts/{{.ID}}/reboot-watch" hx-trigger="load delay:12s" hx-swap="outerHTML"></div>
+  <div id="rbw-{{.ID}}" hx-get="/hosts/{{.ID}}/reboot-watch?ctx={{.Ctx}}" hx-trigger="load delay:12s" hx-swap="outerHTML"></div>
 </div>{{end}}
 
 {{define "jobcard"}}<div id="job-{{.ID}}" class="job{{if not .Enabled}} off{{end}}">
@@ -649,9 +652,12 @@
 
 {{define "rebootwatch"}}{{if .Connected}}<div id="rbw-{{.ID}}" class="reboot-watch">
   <span class="dot dot-up"></span>
-  <span class="calm-line">Back online. Refresh to re-scan its posture.</span>
-  <button class="btn primary" style="margin-left:auto" hx-get="/hosts/{{.ID}}" hx-target="body" hx-swap="outerHTML">Refresh</button>
-</div>{{else}}<div id="rbw-{{.ID}}" class="reboot-watch" hx-get="/hosts/{{.ID}}/reboot-watch" hx-trigger="every 8s" hx-swap="outerHTML">
+  <span class="calm-line">Back online &mdash; re-scanning to clear its flags&hellip;</span>
+  {{/* Auto-rescan on reconnect (replaces the old manual "Refresh" button). Target the watcher's
+       own element so it works wherever the reboot panel lives — a dashboard/bulk card's scanarea,
+       or the detail page's power/restart-intel area. bulk => card swap on done; detail => reload. */}}
+  <div hidden hx-get="/hosts/{{.ID}}/scanpanel{{if ne .Ctx "bulk"}}?ctx=detail{{end}}" hx-trigger="load" hx-target="#rbw-{{.ID}}" hx-swap="outerHTML"></div>
+</div>{{else}}<div id="rbw-{{.ID}}" class="reboot-watch" hx-get="/hosts/{{.ID}}/reboot-watch?ctx={{.Ctx}}" hx-trigger="every 8s" hx-swap="outerHTML">
   <span class="dot dot-checking"></span>
   <span class="calm-line">Still offline &mdash; checking every 8s&hellip;</span>
 </div>{{end}}{{end}}
