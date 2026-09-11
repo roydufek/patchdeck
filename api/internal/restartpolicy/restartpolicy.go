@@ -21,6 +21,24 @@ func IsDbusFamily(svc string) bool {
 	return false
 }
 
+// IsKnownRebootOnly reports whether a unit is one we know, from practice, a live restart cannot
+// clear: its code is coupled to the running kernel/runtime, so needrestart keeps flagging it until
+// a reboot. containerd is the proven case — `needrestart -r a` (and a plain restart) leave it
+// flagged on the same boot; only a reboot applies the change. Like the D-Bus bus, such a unit is
+// treated as reboot-only UNLESS the host has a coordinated needrestart handler for it (see Classify)
+// — that handler is the escape hatch for a host that genuinely can restart it in place.
+//
+// Keep this list SHORT and evidence-based. The general mechanism is to LEARN reboot-resistance per
+// host (a unit we restarted that comes back still-flagged on the same boot); this static seed only
+// spares the operator a known-futile first restart for units we've actually confirmed are coupled.
+func IsKnownRebootOnly(svc string) bool {
+	switch norm(svc) {
+	case "containerd", "containerd.service":
+		return true
+	}
+	return false
+}
+
 // IsRisky reports whether a plain `systemctl restart` over SSH is destructive to the session
 // (the bus + the login-session manager). These must go through needrestart's coordinated
 // handler or a detached restart — never a naive live restart.
@@ -58,7 +76,8 @@ func IsDisruptive(svc string) bool {
 // Classify splits a host's needs-restart list into the units a smart "Restart services" can act
 // on (restartable) versus the units that genuinely need a reboot (rebootOnly). A unit is
 // reboot-only when it's learned-resistant (we restarted it and it came back on the same boot), or
-// it's the D-Bus bus with no coordinated handler on this host. Inputs:
+// it's the D-Bus bus / a known kernel-coupled unit (e.g. containerd) with no coordinated handler on
+// this host. Inputs:
 //   - handlers[svc]:  the host has /etc/needrestart/restart.d/<svc> (a coordinated handler)
 //   - resistant[svc]: it was restarted but is still flagged on the current boot
 func Classify(needsRestart []string, handlers, resistant map[string]bool) (restartable, rebootOnly []string) {
@@ -66,7 +85,7 @@ func Classify(needsRestart []string, handlers, resistant map[string]bool) (resta
 		switch {
 		case resistant[s]:
 			rebootOnly = append(rebootOnly, s)
-		case IsDbusFamily(s) && !handlers[s]:
+		case (IsDbusFamily(s) || IsKnownRebootOnly(s)) && !handlers[s]:
 			rebootOnly = append(rebootOnly, s)
 		default:
 			restartable = append(restartable, s)

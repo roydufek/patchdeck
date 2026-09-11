@@ -50,6 +50,32 @@ func TestClassify(t *testing.T) {
 	}
 }
 
+func TestKnownRebootOnly(t *testing.T) {
+	if !IsKnownRebootOnly("containerd.service") || !IsKnownRebootOnly("containerd") {
+		t.Error("containerd should be known reboot-only")
+	}
+	// Keep the seed tight — these are restartable/disruptive, NOT statically reboot-only.
+	for _, s := range []string{"docker.service", "cron.service", "dbus.service", "tailscaled"} {
+		if IsKnownRebootOnly(s) {
+			t.Errorf("%s should NOT be in the known-reboot-only seed", s)
+		}
+	}
+	// containerd with no handler and no learned mark -> reboot-only via the static seed (spares the
+	// operator a known-futile restart); cron stays restartable.
+	restartable, rebootOnly := Classify([]string{"cron.service", "containerd.service"}, nil, nil)
+	if !reflect.DeepEqual(rebootOnly, []string{"containerd.service"}) {
+		t.Errorf("containerd (no handler) should be reboot-only, got reboot=%v restart=%v", rebootOnly, restartable)
+	}
+	if !reflect.DeepEqual(restartable, []string{"cron.service"}) {
+		t.Errorf("cron should be restartable, got %v", restartable)
+	}
+	// Escape hatch: a host with a coordinated needrestart handler for containerd can restart it.
+	r2, rb2 := Classify([]string{"containerd.service"}, map[string]bool{"containerd.service": true}, nil)
+	if len(rb2) != 0 || !reflect.DeepEqual(r2, []string{"containerd.service"}) {
+		t.Errorf("containerd with handler should be restartable, got reboot=%v restart=%v", rb2, r2)
+	}
+}
+
 func TestClassifyDbusWithHandlerIsRestartable(t *testing.T) {
 	// With a coordinated handler present, dbus is restartable (needrestart owns the bus restart).
 	restartable, rebootOnly := Classify([]string{"dbus.service"}, map[string]bool{"dbus.service": true}, nil)
