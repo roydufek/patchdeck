@@ -113,13 +113,19 @@ func TestCardRestartRebootPresentation(t *testing.T) {
 // TestActionresultAutoRescan verifies the bulk restart path auto-fires a scan (no manual button),
 // while the non-bulk path keeps the manual "Re-scan to refresh" control.
 func TestActionresultAutoRescan(t *testing.T) {
-	auto := exec(t, "actionresult", map[string]any{"ID": "h1", "Title": "Services restarted", "OK": "done", "AutoRescan": true})
-	mustContain(t, "actionresult/auto", auto, `hx-get="/hosts/h1/scanpanel"`)
-	mustContain(t, "actionresult/auto", auto, "hx-trigger=\"load")
-	mustNotContain(t, "actionresult/auto", auto, "Re-scan to refresh")
+	// Bulk restart: auto-rescan into the card (default ctx => card swap on done), targeting the
+	// result's own element, and NO manual button.
+	bulk := exec(t, "actionresult", map[string]any{"ID": "h1", "Title": "Services restarted", "OK": "done", "AutoRescan": true, "Bulk": true})
+	mustContain(t, "actionresult/bulk", bulk, `hx-get="/hosts/h1/scanpanel"`)
+	mustContain(t, "actionresult/bulk", bulk, `hx-target="#actn-h1"`)
+	mustNotContain(t, "actionresult/bulk", bulk, "scanpanel?ctx=detail")
+	mustNotContain(t, "actionresult/bulk", bulk, "Re-scan to refresh")
 
-	manual := exec(t, "actionresult", map[string]any{"ID": "h1", "Title": "Services restarted", "OK": "done", "Rescan": true})
-	mustContain(t, "actionresult/manual", manual, "Re-scan to refresh")
+	// Single per-host restart (detail): auto-rescan with ctx=detail (reload on done), same self-target.
+	detail := exec(t, "actionresult", map[string]any{"ID": "h1", "Title": "Services restarted", "OK": "done", "AutoRescan": true, "Bulk": false})
+	mustContain(t, "actionresult/detail", detail, "/hosts/h1/scanpanel?ctx=detail")
+	mustContain(t, "actionresult/detail", detail, `hx-target="#actn-h1"`)
+	mustNotContain(t, "actionresult/detail", detail, "Re-scan to refresh")
 }
 
 // TestRebootWatchAutoScan verifies the reconnect branch auto-scans instead of offering Refresh,

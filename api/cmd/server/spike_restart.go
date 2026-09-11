@@ -75,7 +75,7 @@ func (a *app) nextRestartSmart(w http.ResponseWriter, r *http.Request) {
 	}
 	restartable, _ := resolveRestartBuckets(snap)
 	if len(restartable) == 0 {
-		a.renderNext(w, "actionresult", map[string]any{"ID": host.ID, "Title": "Nothing to restart", "OK": "No services are flagged for a restart right now.", "Rescan": !bulk, "AutoRescan": bulk})
+		a.renderNext(w, "actionresult", map[string]any{"ID": host.ID, "Title": "Nothing to restart", "OK": "No services are flagged for a restart right now."})
 		return
 	}
 	res, err := a.sshClient.RestartDeferredDetached(host, a.secrets, restartable)
@@ -107,16 +107,15 @@ func (a *app) nextRestartSmart(w http.ResponseWriter, r *http.Request) {
 	}
 	restarted := len(restartable) - len(res.RebootRequired)
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", fmt.Sprintf("Smart restart of %d service(s); %d watched for reboot-resistance", restarted, marked))
-	okMsg := fmt.Sprintf("Restarted %d service(s). Re-scan to confirm — any that come back flagged move to “reboot required”.", restarted)
-	if bulk {
-		okMsg = fmt.Sprintf("Restarted %d service(s). Re-scanning to confirm — any that come back flagged move to “reboot required”.", restarted)
-	}
+	// All restart paths (bulk "Restart all" and the single per-host restart) now auto-rescan to
+	// confirm — consistent with reboot recovery, and it drives the reboot-only learning without a
+	// manual click. Bulk re-scans into the card; the detail page re-scans and refreshes in place.
 	a.renderNext(w, "actionresult", map[string]any{
 		"ID": host.ID, "Title": "Services restarted",
-		"OK":             okMsg,
+		"OK":             fmt.Sprintf("Restarted %d service(s). Re-scanning to confirm — any that come back flagged move to “reboot required”.", restarted),
 		"RebootRequired": res.RebootRequired,
-		"Rescan":         !bulk,
-		"AutoRescan":     bulk,
+		"AutoRescan":     true,
+		"Bulk":           bulk,
 	})
 }
 
