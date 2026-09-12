@@ -373,7 +373,7 @@
   {{if not .Unverified}}<div hidden data-pdbulk="scan" data-host="{{.ID}}" hx-get="/hosts/{{.ID}}/scanpanel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>
   {{if gt .UpdateCount 0}}<div hidden data-pdbulk="apply" data-host="{{.ID}}" hx-get="/hosts/{{.ID}}/apply/panel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}
   {{if and .RebootAny (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="reboot" data-host="{{.ID}}" hx-post="/hosts/{{.ID}}/reboot?ctx=bulk" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::after-request="document.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}
-  {{if .RestartOnly}}<div hidden data-pdbulk="restart" data-host="{{.ID}}" hx-post="/hosts/{{.ID}}/restart?ctx=bulk" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}{{end}}
+  {{if .RestartOnly}}<div hidden data-pdbulk="restart" data-host="{{.ID}}" hx-post="/hosts/{{.ID}}/restart?ctx=bulk" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::before-request="window.pdInflight('scanarea-{{.ID}}','Restarting services')"></div>{{end}}{{end}}
 </article>{{end}}
 
 {{define "applyconfirm"}}<div class="applyconfirm">
@@ -432,6 +432,10 @@
     };
     active=s; s.schedule();
   };
+  // Immediate in-flight panel for the restart action, which (unlike scan/apply/reboot) is a
+  // blocking request with no stream — without this the card sits silent for the whole SSH restart
+  // and looks like nothing happened. The result swaps this out when the request returns.
+  window.pdInflight=function(areaId,label){var a=document.getElementById(areaId);if(a)a.innerHTML='<div class="scanpanel"><div class="scanhead"><span class="spinner"></span> '+(label||'Working')+'&hellip;</div></div>';};
 })();
 </script>{{end}}
 
@@ -614,10 +618,10 @@
 </div>{{end}}
 
 {{define "actionresult"}}<div id="actn-{{.ID}}" class="scanpanel">
-  <div class="scanhead">{{if .Err}}<span class="dot dot-down"></span> {{.Title}}{{else}}{{template "check"}} {{.Title}}{{end}}</div>
+  <div class="scanhead">{{if or .Err .HasIssues}}<span class="dot dot-down"></span> {{.Title}}{{else}}{{template "check"}} {{.Title}}{{end}}</div>
   <div class="scanlog">
     {{if .Err}}<div class="ln err">{{.Err}}</div>
-    {{else}}<div class="ln ok">{{.OK}}</div>{{if .RebootRequired}}<div class="ln">{{len .RebootRequired}} unit(s) still need a reboot to fully apply:</div>{{range .RebootRequired}}<div class="ln">&bull; {{.}}</div>{{end}}{{end}}{{end}}
+    {{else}}<div class="ln ok">{{.OK}}</div>{{range .Breakdown}}<div class="ln">{{.}}</div>{{end}}{{if and (not .Breakdown) .RebootRequired}}<div class="ln">{{len .RebootRequired}} unit(s) still need a reboot to fully apply:</div>{{range .RebootRequired}}<div class="ln">&bull; {{.}}</div>{{end}}{{end}}{{end}}
   </div>
   {{/* Auto-rescan after the action, replacing this result in place. Target our own element so it
        works wherever the result was rendered (a bulk/dashboard card's #scanarea, or the detail

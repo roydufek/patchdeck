@@ -143,6 +143,12 @@ type RestartResult struct {
 	// destructive (e.g. dbus/logind — it severs the session bus and locks out SSH) and no
 	// needrestart coordinated-restart handler was available. The operator must reboot to apply.
 	RebootRequired []string `json:"reboot_required,omitempty"`
+	// Dispatched are the units a restart was actually issued for (mark these for the
+	// reboot-resistance reconcile); Failed are the units whose restart could not be issued
+	// (e.g. privilege escalation or a systemctl error) — surfaced so the UI can show a partial
+	// result rather than a blanket failure, and so we don't mark a unit we never restarted.
+	Dispatched []string `json:"dispatched,omitempty"`
+	Failed     []string `json:"failed,omitempty"`
 }
 
 type Job struct {

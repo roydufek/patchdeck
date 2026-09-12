@@ -79,40 +79,44 @@ func (a *app) nextRestartSmart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := a.sshClient.RestartDeferredDetached(host, a.secrets, restartable)
-	if err != nil {
-		msg := err.Error()
-		var hkErr *sshx.HostKeyError
-		if errors.As(err, &hkErr) {
-			msg = hkErr.Message
-		}
-		_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_fail", fmt.Sprintf("Smart restart failed: %v", err))
-		a.renderNext(w, "actionresult", map[string]any{"ID": host.ID, "Title": "Restart failed", "Err": msg})
+	// A host-key mismatch is the only thing that stops us cold — nothing was restarted, and it's
+	// an approval decision, not a per-service hiccup.
+	var hkErr *sshx.HostKeyError
+	if errors.As(err, &hkErr) {
+		_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_fail", fmt.Sprintf("Smart restart failed: %s", hkErr.Message))
+		a.renderNext(w, "actionresult", map[string]any{"ID": host.ID, "Title": "Restart failed", "Err": hkErr.Message})
 		return
 	}
-	// Mark every unit we actually dispatched a restart for (skip the ones the client refused as
-	// reboot-required — they weren't restarted). The mark is keyed to the boot_id we saw at scan
-	// time; the next scan's reconcile keeps it only if the unit is still flagged on that boot.
-	refused := map[string]bool{}
-	for _, s := range res.RebootRequired {
-		refused[s] = true
-	}
+	// Mark ONLY the units we actually dispatched a restart for (not the failed or reboot-required
+	// ones — we never restarted those). The mark is keyed to the boot_id we saw at scan time; the
+	// next scan's reconcile keeps it only if the unit is still flagged on that boot.
 	marked := 0
-	for _, svc := range restartable {
-		if refused[svc] {
-			continue
-		}
-		if err := db.SetRestartMark(a.db, host.ID, svc, snap.BootID); err == nil {
+	for _, svc := range res.Dispatched {
+		if e := db.SetRestartMark(a.db, host.ID, svc, snap.BootID); e == nil {
 			marked++
 		}
 	}
-	restarted := len(restartable) - len(res.RebootRequired)
-	_ = db.RecordActivity(a.db, host.ID, host.Name, "restart_ok", fmt.Sprintf("Smart restart of %d service(s); %d watched for reboot-resistance", restarted, marked))
-	// All restart paths (bulk "Restart all" and the single per-host restart) now auto-rescan to
-	// confirm — consistent with reboot recovery, and it drives the reboot-only learning without a
-	// manual click. Bulk re-scans into the card; the detail page re-scans and refreshes in place.
+	// Partial failure is NOT a hard failure: report the per-service breakdown, keep the successes,
+	// and auto-rescan regardless so the reboot-only learning still runs. Bulk re-scans into the
+	// card; the detail page re-scans and refreshes in place.
+	var breakdown []string
+	if s := strings.TrimSpace(res.Output); s != "" {
+		breakdown = strings.Split(s, "\n")
+	}
+	title, actKind := "Services restarted", "restart_ok"
+	okMsg := fmt.Sprintf("Restarted %d service(s). Re-scanning to confirm — any that come back flagged move to “reboot required”.", len(res.Dispatched))
+	if len(res.Failed) > 0 {
+		title, actKind = "Restart finished with issues", "restart_fail"
+		okMsg = fmt.Sprintf("Restarted %d of %d service(s); %d could not be restarted (see below). Re-scanning to confirm.",
+			len(res.Dispatched), len(res.Dispatched)+len(res.Failed), len(res.Failed))
+	}
+	_ = db.RecordActivity(a.db, host.ID, host.Name, actKind,
+		fmt.Sprintf("Smart restart: %d dispatched (%d watched), %d failed, %d reboot-required", len(res.Dispatched), marked, len(res.Failed), len(res.RebootRequired)))
 	a.renderNext(w, "actionresult", map[string]any{
-		"ID": host.ID, "Title": "Services restarted",
-		"OK":             fmt.Sprintf("Restarted %d service(s). Re-scanning to confirm — any that come back flagged move to “reboot required”.", restarted),
+		"ID": host.ID, "Title": title,
+		"OK":             okMsg,
+		"Breakdown":      breakdown,
+		"HasIssues":      len(res.Failed) > 0,
 		"RebootRequired": res.RebootRequired,
 		"AutoRescan":     true,
 		"Bulk":           bulk,

@@ -87,7 +87,7 @@ func Load() (Config, error) {
 		}
 	}
 	cfg := Config{
-		AppVersion:          envOr("PATCHDECK_VERSION", "2.6.3"),
+		AppVersion:          envOr("PATCHDECK_VERSION", "2.6.4"),
 		Port:                port,
 		DatabasePath:        envOr("PATCHDECK_DB_PATH", "/data/patchdeck.db"),
 		MasterKey:           os.Getenv("PATCHDECK_MASTER_KEY"),

@@ -620,41 +620,162 @@ func (c *Client) RestartAllViaNeedrestart(host models.Host, seal *crypto.SealBox
 	}
 }
 
+const restartBatchMarker = "PDSVCRESULT"
+
+// splitRestartBatch partitions restartable units into the ones we escalate-once-and-batch (the
+// common case: a detached `systemd-run systemctl restart`, safe to run many in a single root
+// session) versus the ones we still handle individually because their restart must go through
+// needrestart's coordinated handler and can sever the session (the D-Bus bus, logind).
+func splitRestartBatch(services []string) (batchable, special []string) {
+	for _, s := range services {
+		if isRiskyRestartUnit(s) {
+			special = append(special, s)
+			continue
+		}
+		batchable = append(batchable, s)
+	}
+	return
+}
+
+// batchRestartScript builds ONE root script that restarts every batchable unit in a single
+// session, so we escalate (su) only ONCE instead of once per unit. The old per-unit escalation
+// re-ran the whole sudo→su probe ladder for each service, which hammered `su` and failed
+// intermittently on small hosts (a 13-unit restart opened ~13 separate su sessions in a burst).
+// Each unit's restart is the same detached command deferredRestartCmd builds; we capture its
+// combined output + exit code and emit a tab-delimited, parseable result line. svc is
+// pre-validated by validServiceName (alnum plus . _ - @ : — no shell metacharacters), so
+// single-quoting it as a printf arg and interpolating it into the fixed command is
+// injection-safe.
+func batchRestartScript(services []string) string {
+	var b strings.Builder
+	b.WriteString("set +e\n")
+	for _, svc := range services {
+		b.WriteString("__pdout=$( { ")
+		b.WriteString(deferredRestartCmd(svc))
+		b.WriteString(" ; } 2>&1 ); __pdrc=$?; ")
+		b.WriteString("printf '" + restartBatchMarker + "\\t%s\\t%d\\t%s\\n' '" + svc + "' \"$__pdrc\" \"$(printf '%s' \"$__pdout\" | tr '\\n\\t' '  ')\"\n")
+	}
+	return b.String()
+}
+
+type restartLineResult struct {
+	rc  int
+	out string
+}
+
+// parseRestartBatch extracts the per-unit results emitted by batchRestartScript.
+func parseRestartBatch(output string) map[string]restartLineResult {
+	res := map[string]restartLineResult{}
+	for _, ln := range strings.Split(output, "\n") {
+		if !strings.HasPrefix(ln, restartBatchMarker+"\t") {
+			continue
+		}
+		parts := strings.SplitN(ln, "\t", 4)
+		if len(parts) < 3 {
+			continue
+		}
+		rc, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
+		out := ""
+		if len(parts) == 4 {
+			out = strings.TrimSpace(parts[3])
+		}
+		res[parts[1]] = restartLineResult{rc: rc, out: out}
+	}
+	return res
+}
+
+func isUnitNotFoundText(s string) bool {
+	m := strings.ToLower(s)
+	return strings.Contains(m, "not found") || strings.Contains(m, "not loaded") || strings.Contains(m, "no such")
+}
+
 // RestartDeferredDetached restarts needrestart-deferred (override_rc) units as an opt-in
-// alternative to a reboot. Each unit is restarted via its needrestart handler if it has one,
-// else a detached `systemd-run systemctl restart` (see deferredRestartCmd) — so a
-// connection-flapping unit completes regardless of the SSH session. dbus with no handler is
-// refused and returned in RebootRequired (a naive bus restart would lock out SSH). The caller
-// starts recovery monitoring afterward to reconnect and confirm.
+// alternative to a reboot. The ordinary units are restarted in ONE batched root session (a
+// single su escalation — see batchRestartScript); the risky ones (dbus/logind) are still handled
+// individually through their needrestart coordinated handler. Each unit is dispatched detached
+// (systemd-run) so a connection-flapping unit completes regardless of the SSH session. dbus with
+// no handler is refused and returned in RebootRequired (a naive bus restart would lock out SSH).
+// A per-unit failure no longer aborts the rest: successes, failures and refusals are all reported
+// (Dispatched/Failed/RebootRequired), and the caller starts recovery monitoring to confirm.
 func (c *Client) RestartDeferredDetached(host models.Host, seal *crypto.SealBox, services []string) (models.RestartResult, error) {
 	if len(services) == 0 {
 		return models.RestartResult{Success: true, Output: "no services selected"}, nil
 	}
-	var lines []string
-	var failures []string
-	var rebootRequired []string
-	for _, svc := range services {
+	batchable, special := splitRestartBatch(services)
+	done := map[string]string{}
+	var failures, failedSvcs, dispatched, rebootRequired []string
+	fail := func(svc, reason string) {
+		done[svc] = "✗ " + svc + " — " + reason
+		failures = append(failures, svc+": "+reason)
+		failedSvcs = append(failedSvcs, svc)
+	}
+	ok := func(svc string) {
+		done[svc] = "✓ " + svc + " — restart dispatched (detached; reconnecting to confirm)"
+		dispatched = append(dispatched, svc)
+	}
+
+	// Common units: one escalation, one session.
+	if len(batchable) > 0 {
+		out, err := c.runPrivileged(context.Background(), host, seal, batchRestartScript(batchable))
+		if isHostKeyErr(err) {
+			return models.RestartResult{}, err
+		}
+		parsed := parseRestartBatch(out)
+		escalationFailed := len(parsed) == 0 && err != nil
+		for _, svc := range batchable {
+			r, seen := parsed[svc]
+			switch {
+			case escalationFailed:
+				fail(svc, stripAuthPromptNoise(err.Error()))
+			case !seen && errors.Is(err, ErrConnectionLost):
+				done[svc] = "• " + svc + " — restart dispatched; connection dropped (reconnecting to confirm)"
+				dispatched = append(dispatched, svc)
+			case !seen:
+				fail(svc, "no result (restart may not have run)")
+			case r.rc == 0:
+				ok(svc)
+			case isUnitNotFoundText(r.out):
+				done[svc] = "• " + svc + " — not a loaded unit; skipped"
+			default:
+				reason := stripAuthPromptNoise(r.out)
+				if reason == "" {
+					reason = fmt.Sprintf("exit %d", r.rc)
+				}
+				fail(svc, reason)
+			}
+		}
+	}
+
+	// Risky units (dbus/logind): individual, via the coordinated handler.
+	for _, svc := range special {
 		out, err := c.runPrivileged(context.Background(), host, seal, deferredRestartCmd(svc))
 		switch {
 		case isHostKeyErr(err):
 			return models.RestartResult{}, err
 		case strings.Contains(out, needrestartHandlerAbsentMarker):
-			// dbus with no coordinated handler — refuse; a generic restart would sever the bus.
 			rebootRequired = append(rebootRequired, svc)
-			lines = append(lines, "⚠ "+svc+" — no coordinated handler on this host; reboot to apply (a naive restart would sever the D-Bus bus and lock out SSH)")
+			done[svc] = "⚠ " + svc + " — no coordinated handler on this host; reboot to apply (a naive restart would sever the D-Bus bus and lock out SSH)"
 		case err == nil:
-			lines = append(lines, "✓ "+svc+" — restart dispatched (detached; reconnecting to confirm)")
+			ok(svc)
 		case errors.Is(err, ErrConnectionLost):
-			// Expected for units whose restart flaps the connection — it was dispatched detached,
-			// so it runs to completion; recovery monitoring reconnects to confirm.
-			lines = append(lines, "• "+svc+" — restart dispatched; connection dropped as expected (reconnecting to confirm)")
+			done[svc] = "• " + svc + " — restart dispatched; connection dropped as expected (reconnecting to confirm)"
+			dispatched = append(dispatched, svc)
 		default:
-			reason := stripAuthPromptNoise(err.Error())
-			lines = append(lines, "✗ "+svc+" — "+reason)
-			failures = append(failures, svc+": "+reason)
+			fail(svc, stripAuthPromptNoise(err.Error()))
 		}
 	}
-	res := models.RestartResult{Services: services, Success: len(failures) == 0, Output: strings.Join(lines, "\n"), RebootRequired: rebootRequired}
+
+	// Reassemble the per-unit lines in the caller's original order.
+	var lines []string
+	for _, svc := range services {
+		if l, present := done[svc]; present {
+			lines = append(lines, l)
+		}
+	}
+	res := models.RestartResult{
+		Services: services, Success: len(failures) == 0, Output: strings.Join(lines, "\n"),
+		RebootRequired: rebootRequired, Dispatched: dispatched, Failed: failedSvcs,
+	}
 	if len(failures) > 0 {
 		return res, fmt.Errorf("some restarts failed — %s", strings.Join(failures, "; "))
 	}

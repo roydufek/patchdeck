@@ -126,6 +126,20 @@ func TestActionresultAutoRescan(t *testing.T) {
 	mustContain(t, "actionresult/detail", detail, "/hosts/h1/scanpanel?ctx=detail")
 	mustContain(t, "actionresult/detail", detail, `hx-target="#actn-h1"`)
 	mustNotContain(t, "actionresult/detail", detail, "Re-scan to refresh")
+
+	// Partial-failure: the per-service breakdown renders, the header shows a problem dot (not the
+	// check), and it STILL auto-rescans (never a blanket dead-end).
+	partial := exec(t, "actionresult", map[string]any{
+		"ID": "h1", "Title": "Restart finished with issues", "HasIssues": true,
+		"OK":         "Restarted 12 of 13 service(s); 1 could not be restarted (see below). Re-scanning to confirm.",
+		"Breakdown":  []string{"✓ cron.service — restart dispatched (detached; reconnecting to confirm)", "✗ apcupsd.service — Password: su: Authentication failure"},
+		"AutoRescan": true, "Bulk": true,
+	})
+	mustContain(t, "actionresult/partial", partial, "✓ cron.service")
+	mustContain(t, "actionresult/partial", partial, "✗ apcupsd.service")
+	mustContain(t, "actionresult/partial", partial, "1 could not be restarted")
+	mustContain(t, "actionresult/partial", partial, `hx-get="/hosts/h1/scanpanel"`) // still auto-rescans
+	mustContain(t, "actionresult/partial", partial, "dot-down")                      // problem indicator, not the check
 }
 
 // TestRebootWatchAutoScan verifies the reconnect branch auto-scans instead of offering Refresh,
