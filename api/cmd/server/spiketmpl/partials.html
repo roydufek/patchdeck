@@ -39,6 +39,10 @@
     --glow:rgba(55,204,214,.11);
   }
   *{box-sizing:border-box}
+  /* `hidden` must always win, even over a class that sets display (e.g. .btn{display:inline-flex}).
+     Without this, el.hidden=true / hidden attr silently fails to hide a styled element — that's why
+     the bulk buttons kept showing after their count hit 0 / while their confirm was open. */
+  [hidden]{display:none!important}
   html{overflow-x:hidden}
   body{background:var(--ground);color:var(--ink);font-family:var(--fsans);-webkit-font-smoothing:antialiased;margin:0;overflow-x:hidden}
   a{color:inherit;text-decoration:none}
