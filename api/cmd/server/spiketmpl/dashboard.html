@@ -43,11 +43,15 @@
   </div>
 
   {{if .AllHosts}}
+  {{/* Reboot/Restart-all carry an id + a .bulkn count span so pddash can live-update the count and
+       hide the button as hosts clear (e.g. after a Reboot all, as each host comes back and re-scans),
+       without a page reload. Counts are recomputed from the per-card bulk triggers — the exact set the
+       server gates on. */}}
   <div class="bulkbar">
     <button class="btn ghost" onclick="pdBulk('scan',{{.BulkConcurrency}},0,{{.WatchdogMs}})">{{template "i-scanall"}} Scan all</button>
-    {{if gt .Summary.Updates 0}}<button class="btn primary" onclick="document.getElementById('bulkconfirm').hidden=false;this.hidden=true">Apply all updates</button>{{end}}
-    {{if gt .Summary.RebootHosts 0}}<button class="btn ghost" onclick="document.getElementById('rebootconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Reboot all ({{.Summary.RebootHosts}})</button>{{end}}
-    {{if gt .Summary.RestartHosts 0}}<button class="btn ghost" onclick="document.getElementById('restartconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Restart all ({{.Summary.RestartHosts}})</button>{{end}}
+    {{if gt .Summary.Updates 0}}<button id="applyAllBtn" class="btn primary" onclick="document.getElementById('bulkconfirm').hidden=false;this.hidden=true">Apply all updates</button>{{end}}
+    {{if gt .Summary.RebootHosts 0}}<button id="rebootAllBtn" class="btn ghost" onclick="document.getElementById('rebootconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Reboot all (<span class="bulkn">{{.Summary.RebootHosts}}</span>)</button>{{end}}
+    {{if gt .Summary.RestartHosts 0}}<button id="restartAllBtn" class="btn ghost" onclick="document.getElementById('restartconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Restart all (<span class="bulkn">{{.Summary.RestartHosts}}</span>)</button>{{end}}
   </div>
   {{if gt .Summary.Updates 0}}
   <div id="bulkconfirm" class="applyconfirm" hidden style="margin-top:12px">
