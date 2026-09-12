@@ -82,11 +82,12 @@ func (a *app) totpData(r *http.Request, extra map[string]any) map[string]any {
 // nextSettings renders the full settings page (all cards).
 func (a *app) nextSettings(w http.ResponseWriter, r *http.Request) {
 	a.renderNext(w, "settings.html", map[string]any{
-		"Notif":  a.notifData("", ""),
-		"OIDC":   a.oidcData(r, "", ""),
-		"Tokens": a.tokensData("", ""),
-		"Audit":  a.auditData("", ""),
-		"TOTP":   a.totpData(r, nil),
+		"Notif":   a.notifData("", ""),
+		"OIDC":    a.oidcData(r, "", ""),
+		"Tokens":  a.tokensData("", ""),
+		"Audit":   a.auditData("", ""),
+		"TOTP":    a.totpData(r, nil),
+		"Version": a.cfg.AppVersion,
 	})
 }
 
