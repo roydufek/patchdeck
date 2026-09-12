@@ -337,7 +337,9 @@ func buildSummary(views []nextHostView) (nextSummary, []nextHostView, []nextHost
 			} else {
 				s.RebootHosts++
 			}
-		} else if v.RestartOnly {
+		} else if v.RestartOnly && !v.IsSelf && !v.ExcludeFromBulk {
+			// Match "Reboot all": the self-host and operator-protected hosts are never swept by a
+			// fleet-wide action (they still show a restart chip and can be restarted individually).
 			s.RestartHosts++
 		}
 		if v.PendingKey || v.Unverified || (v.HasScan && (v.UpdateCount > 0 || v.NeedsReboot || v.RestartCount > 0)) {

@@ -108,6 +108,18 @@ func TestCardRestartRebootPresentation(t *testing.T) {
 	mustContain(t, "card/healthy", out, "Up to date")
 	mustContain(t, "card/healthy", out, `data-reboot="0"`)
 	mustContain(t, "card/healthy", out, `data-restart="0"`)
+
+	// A restart-only host that is self / operator-protected still shows the restart chip + facet, but
+	// gets NO bulk restart trigger (never swept by "Restart all" — matches "Reboot all").
+	selfRestart := nextHostView{ID: "h-self", Name: "self", HasScan: true, RestartOnly: true, RestartServices: []string{"docker.service"}, IsSelf: true}
+	out = exec(t, "card", selfRestart)
+	mustContain(t, "card/self-restart", out, "1 restart")
+	mustContain(t, "card/self-restart", out, `data-restart="1"`)
+	mustNotContain(t, "card/self-restart", out, `data-pdbulk="restart"`)
+
+	protRestart := nextHostView{ID: "h-prot", Name: "prot", HasScan: true, RestartOnly: true, RestartServices: []string{"cron.service"}, ExcludeFromBulk: true}
+	out = exec(t, "card", protRestart)
+	mustNotContain(t, "card/protected-restart", out, `data-pdbulk="restart"`)
 }
 
 // TestActionresultAutoRescan verifies the bulk restart path auto-fires a scan (no manual button),

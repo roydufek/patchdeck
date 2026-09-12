@@ -107,8 +107,8 @@ func (a *app) nextRestartSmart(w http.ResponseWriter, r *http.Request) {
 	okMsg := fmt.Sprintf("Restarted %d service(s). Re-scanning to confirm — any that come back flagged move to “reboot required”.", len(res.Dispatched))
 	if len(res.Failed) > 0 {
 		title, actKind = "Restart finished with issues", "restart_fail"
-		okMsg = fmt.Sprintf("Restarted %d of %d service(s); %d could not be restarted (see below). Re-scanning to confirm.",
-			len(res.Dispatched), len(res.Dispatched)+len(res.Failed), len(res.Failed))
+		okMsg = fmt.Sprintf("Restarted %d service(s); %d could not be restarted (see below). Re-scanning to confirm.",
+			len(res.Dispatched), len(res.Failed))
 	}
 	_ = db.RecordActivity(a.db, host.ID, host.Name, actKind,
 		fmt.Sprintf("Smart restart: %d dispatched (%d watched), %d failed, %d reboot-required", len(res.Dispatched), marked, len(res.Failed), len(res.RebootRequired)))

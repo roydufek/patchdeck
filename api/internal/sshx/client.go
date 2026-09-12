@@ -459,11 +459,7 @@ func deferredRestartCmd(svc string) string {
 // exist / is not loaded — i.e. needrestart listed something that isn't a real restartable
 // unit. Such entries are skipped rather than reported as a hard failure.
 func isUnitNotFound(err error) bool {
-	if err == nil {
-		return false
-	}
-	m := strings.ToLower(err.Error())
-	return strings.Contains(m, "not found") || strings.Contains(m, "not loaded") || strings.Contains(m, "no such")
+	return err != nil && isUnitNotFoundText(err.Error())
 }
 
 // stripAuthPromptNoise removes the "Password:" prompt text that the `su` fallback writes to
