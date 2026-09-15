@@ -489,14 +489,27 @@
   // host clears (its re-scanned card drops the trigger) the count falls; at zero we hide the button
   // (and its confirm). Only ever hides — the buttons are server-rendered when first needed.
   function updateBulk(){
+    function setText(sel,val){ document.querySelectorAll(sel).forEach(function(e){ e.textContent=val; }); }
     function upd(btnId, confirmId, sel){
-      var b=document.getElementById(btnId); if(!b) return;
-      var n=document.querySelectorAll(sel).length, s=b.querySelector('.bulkn'); if(s) s.textContent=n;
-      if(n===0){ b.hidden=true; var cf=document.getElementById(confirmId); if(cf) cf.hidden=true; }
+      var b=document.getElementById(btnId); if(!b) return 0;
+      var cf=document.getElementById(confirmId);
+      var n=document.querySelectorAll(sel).length;
+      setText('#'+btnId+' .bulkn', n);            // count in the button label
+      if(cf) setText('#'+confirmId+' .bulkn', n); // count in the confirm sentence
+      // Only ever forced HIDDEN at 0; otherwise shown — unless its confirm is currently open (the
+      // button's own onclick hid it to reveal the confirm; don't re-show it underneath).
+      if(n===0){ b.hidden=true; if(cf) cf.hidden=true; }
+      else { b.hidden = !!(cf && !cf.hidden); }
+      return n;
     }
     upd('rebootAllBtn','rebootconfirm','[data-pdbulk="reboot"]');
     upd('restartAllBtn','restartconfirm','[data-pdbulk="restart"]');
-    upd('applyAllBtn','bulkconfirm','[data-pdbulk="apply"]');
+    var applyN = upd('applyAllBtn','bulkconfirm','[data-pdbulk="apply"]');
+    // The apply confirm carries its own host + total-update counts.
+    setText('#bulkconfirm .cf-hosts', applyN);
+    var totalUpd=0;
+    document.querySelectorAll('article.card').forEach(function(c){ totalUpd += (parseInt(c.getAttribute('data-updcount')||'0',10)||0); });
+    setText('#bulkconfirm .cf-updates', totalUpd);
   }
   function keyBefore(k,other){ // should section k sort before section `other`?
     var st=readState();
