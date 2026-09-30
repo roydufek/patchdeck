@@ -61,6 +61,11 @@ type app struct {
 const totpIssuer = "Patchdeck"
 
 func main() {
+	// `patchdeck healthcheck` — the image's HEALTHCHECK (see healthcheck.go). Handled before
+	// config.Load so a probe never opens the DB or needs the master key.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck())
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)

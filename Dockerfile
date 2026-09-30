@@ -31,4 +31,12 @@ COPY --from=api-build /out/patchdeck /app/patchdeck
 COPY entrypoint.sh /app/entrypoint.sh
 
 EXPOSE 6070
+
+# Baked-in healthcheck: the binary probes its own /healthz over loopback in whichever mode it
+# serves (plain HTTP, or the self-signed HTTPS default), so no curl/wget is needed in the image and
+# a generic probe can't false-fail on the cert. start-interval polls quickly while booting so a
+# health-aware proxy (Traefik skips non-healthy containers) routes it within seconds of a restart.
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=30s --start-interval=2s \
+  CMD ["/app/patchdeck", "healthcheck"]
+
 ENTRYPOINT ["/app/entrypoint.sh"]
