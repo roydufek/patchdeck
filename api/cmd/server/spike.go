@@ -26,6 +26,7 @@ import (
 // built under a /next path prefix (v2.0–v2.2) before it took over the root in v2.3.
 
 //go:embed spikeassets/htmx.min.js spikeassets/sse.min.js spikeassets/logo.png
+//go:embed spikeassets/icon-512.png spikeassets/icon-maskable-192.png spikeassets/icon-maskable-512.png spikeassets/apple-touch-icon.png
 var nextAssets embed.FS
 
 //go:embed spiketmpl/*.html
@@ -265,8 +266,8 @@ func (a *app) nextAsset(w http.ResponseWriter, r *http.Request) {
 		path, ctype = "spikeassets/htmx.min.js", "application/javascript; charset=utf-8"
 	case "sse.min.js":
 		path, ctype = "spikeassets/sse.min.js", "application/javascript; charset=utf-8"
-	case "logo.png":
-		path, ctype = "spikeassets/logo.png", "image/png"
+	case "logo.png", "icon-512.png", "icon-maskable-192.png", "icon-maskable-512.png", "apple-touch-icon.png":
+		path, ctype = "spikeassets/"+chi.URLParam(r, "file"), "image/png"
 	default:
 		http.NotFound(w, r)
 		return
@@ -293,6 +294,37 @@ func (a *app) nextFavicon(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	_, _ = w.Write(b)
 }
+
+// nextManifest serves the web app manifest so browsers offer "Install app" (full-screen,
+// own icon). It and the icons it names are public: Chrome fetches the manifest without
+// cookies, and a redirect to /login would make the app non-installable. Root-relative
+// URLs only, so it works on whatever host Patchdeck is served from. logo.png (192) and
+// icon-512.png are the transparent glyph; the maskable pair is full-bleed with the glyph
+// inside the 80% safe zone, for Android's adaptive-icon crop.
+func (a *app) nextManifest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/manifest+json")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	_, _ = w.Write([]byte(webManifest))
+}
+
+const webManifest = `{
+  "id": "/",
+  "name": "Patchdeck",
+  "short_name": "Patchdeck",
+  "description": "Agentless patch management for Debian and Ubuntu hosts",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0a0f14",
+  "theme_color": "#0a0f14",
+  "icons": [
+    {"src": "/assets/logo.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/assets/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable"},
+    {"src": "/assets/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
+`
 
 func (a *app) renderNext(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

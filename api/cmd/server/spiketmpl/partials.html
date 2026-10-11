@@ -315,6 +315,12 @@
 })();
 </script>{{end}}
 
+{{define "pwahead"}}<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="/assets/logo.png">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+<meta name="theme-color" content="#eceff1" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0a0f14" media="(prefers-color-scheme: dark)">{{end}}
+
 {{define "themeinit"}}<script>
   (function(){try{var t=localStorage.getItem('pd-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
   function pdCycleTheme(){var r=document.documentElement,cur=r.getAttribute('data-theme')||'system',nx=cur==='system'?'light':cur==='light'?'dark':'system';try{if(nx==='system'){r.removeAttribute('data-theme');localStorage.removeItem('pd-theme');}else{r.setAttribute('data-theme',nx);localStorage.setItem('pd-theme',nx);}}catch(e){if(nx==='system'){r.removeAttribute('data-theme');}else{r.setAttribute('data-theme',nx);}}pdSyncTheme();}

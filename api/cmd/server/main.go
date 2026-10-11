@@ -272,6 +272,7 @@ func main() {
 		http.Redirect(w, req, dst, http.StatusFound)
 	})
 	r.Get("/favicon.ico", a.nextFavicon)
+	r.Get("/manifest.webmanifest", a.nextManifest)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
