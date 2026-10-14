@@ -61,7 +61,7 @@ func TestDigestNotable(t *testing.T) {
 
 func TestDigestAllUpToDate(t *testing.T) {
 	d := Digest{Scheduled: true, UpToDate: 12}
-	if got := d.Title(); got != "Patchdeck: all 12 hosts up to date" {
+	if got := d.Title(); got != "Patchdeck: All 12 hosts up to date" {
 		t.Errorf("title %q", got)
 	}
 	if got := (&Digest{Scheduled: true, UpToDate: 1}).Title(); got != "Patchdeck: 1 host up to date" {
@@ -100,7 +100,7 @@ func TestDigestSingleHostTitles(t *testing.T) {
 		t.Errorf("title %q", got)
 	}
 	d = Digest{Applied: []AppliedHost{{Name: "nova", Changed: 4}}}
-	if got := d.Title(); got != "Patchdeck: updated nova (4 packages)" {
+	if got := d.Title(); got != "Patchdeck: Updated nova (4 packages)" {
 		t.Errorf("title %q", got)
 	}
 }
@@ -192,7 +192,15 @@ func TestSendDigestUsesSummaryAsTitle(t *testing.T) {
 	if err := NewDispatcher(2*time.Second).SendDigest(target, d); err != nil {
 		t.Fatal(err)
 	}
-	if got["title"] != d.Title() || got["message"] != d.Body() {
-		t.Errorf("payload %+v", got)
+	// Gotify already shows the app name above the message: the title is the bare summary.
+	if got["title"] != d.Summary() || got["message"] != d.Body() || strings.HasPrefix(d.Summary(), "Patchdeck") {
+		t.Errorf("gotify payload %+v", got)
+	}
+	// Any other destination keeps the prefix (an email subject must say who sent it).
+	if err := NewDispatcher(2*time.Second).SendDigest("json://"+strings.TrimPrefix(srv.URL, "http://")+"/hook", d); err != nil {
+		t.Fatal(err)
+	}
+	if got["title"] != "Patchdeck: "+d.Summary() {
+		t.Errorf("webhook title %q", got["title"])
 	}
 }

@@ -83,7 +83,7 @@ func TestScheduledRunSendsOneDigest(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("want exactly one message, got %d: %q", len(got), got)
 	}
-	if !strings.HasPrefix(got[0], "Patchdeck: 2 of 4 hosts need updates (3 packages, 3 security) · 1 needs a reboot · 1 failed|") ||
+	if !strings.HasPrefix(got[0], "2 of 4 hosts need updates (3 packages, 3 security) · 1 needs a reboot · 1 failed|") ||
 		!strings.Contains(got[0], "- orbit: scan failed (boom)") || !strings.Contains(got[0], "Up to date: 1 host") {
 		t.Errorf("digest:\n%s", got[0])
 	}
@@ -110,7 +110,7 @@ func TestScheduledRunQuietWhenNothingNew(t *testing.T) {
 		e.sendDigest(n)
 	}
 	got := titles()
-	if len(got) != 1 || !strings.HasPrefix(got[0], "Patchdeck: 1 of 1 hosts need updates") {
+	if len(got) != 1 || !strings.HasPrefix(got[0], "1 of 1 hosts need updates") {
 		t.Fatalf("nothing new: silent by default, one message with digest_always; got %q", got)
 	}
 }

@@ -92,8 +92,12 @@ func plural(n int, one, many string) string {
 	return fmt.Sprintf("%d %s", n, many)
 }
 
-// Title is the one-line summary — what a phone's lock screen shows, so it carries the totals.
-func (d Digest) Title() string {
+// Title is Summary prefixed with "Patchdeck: " — for destinations where the title alone must
+// say where the message came from (email subject, ntfy, webhooks…).
+func (d Digest) Title() string { return "Patchdeck: " + d.Summary() }
+
+// Summary is the one-line summary — what a phone's lock screen shows, so it carries the totals.
+func (d Digest) Summary() string {
 	var parts []string
 	if n := len(d.Pending); n > 0 {
 		pkgs, sec := 0, 0
@@ -155,7 +159,14 @@ func (d Digest) Title() string {
 			parts = append(parts, "nothing to report")
 		}
 	}
-	return "Patchdeck: " + strings.Join(parts, " · ")
+	s := strings.Join(parts, " · ")
+	// Capitalise a leading word ("Updated 3 hosts…"), never a leading host name ("nova needs…").
+	for _, w := range []string{"updated ", "all ", "nothing "} {
+		if strings.HasPrefix(s, w) {
+			return strings.ToUpper(s[:1]) + s[1:]
+		}
+	}
+	return s
 }
 
 // maxBody keeps a large fleet's digest under the smallest common limit (Telegram: 4096).

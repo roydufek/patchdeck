@@ -73,8 +73,15 @@ func (d *Dispatcher) Send(target, body string) error {
 }
 
 // SendDigest delivers a digest: its summary line as the title, the host list as the body.
+// Gotify shows the app's own name ("Patchdeck") above every message, so its title is the bare
+// summary; everywhere else the title carries the "Patchdeck: " prefix.
 func (d *Dispatcher) SendDigest(target string, dg Digest) error {
-	return d.SendTitled(target, dg.Title(), dg.Body())
+	title := dg.Title()
+	switch SchemeOf(strings.TrimSpace(target)) {
+	case "gotify", "gotifys":
+		title = dg.Summary()
+	}
+	return d.SendTitled(target, title, dg.Body())
 }
 
 // SendTitled is Send with a caller-chosen title.
