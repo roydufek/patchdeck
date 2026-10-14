@@ -12,6 +12,10 @@
     <label class="checkrow"><input type="checkbox" name="auto_apply_success" value="1"{{if .S.AutoApplySuccess}} checked{{end}}><span class="ctext"><b>Apply succeeded</b></span></label>
     <label class="checkrow"><input type="checkbox" name="auto_apply_failure" value="1"{{if .S.AutoApplyFailure}} checked{{end}}><span class="ctext"><b>Apply failed</b></span></label>
     <label class="checkrow"><input type="checkbox" name="scan_failure" value="1"{{if .S.ScanFailure}} checked{{end}}><span class="ctext"><b>Scan failed</b></span></label>
+    <div class="field" style="margin-top:6px"><label>Delivery</label></div>
+    <label class="checkrow"><input type="radio" name="delivery" value="digest"{{if ne .S.Delivery "per_host"}} checked{{end}}><span class="ctext"><b>Digest</b><span class="hint">One message per scheduled run listing every host that needs updates. Dashboard bulk actions are grouped into one message (~1 min).</span></span></label>
+    <label class="checkrow"><input type="radio" name="delivery" value="per_host"{{if eq .S.Delivery "per_host"}} checked{{end}}><span class="ctext"><b>Per host</b><span class="hint">A separate message for every host and event, sent immediately.</span></span></label>
+    <label class="checkrow"><input type="checkbox" name="digest_always" value="1"{{if .S.DigestAlways}} checked{{end}}><span class="ctext"><b>Send the scheduled digest every run</b><span class="hint">Even when nothing is new, as a daily "all good" check. Digest delivery only.</span></span></label>
     <div class="actionrow">
       <button type="submit" class="btn primary">Save</button>
       <button type="button" class="btn ghost" hx-post="/settings/notifications/test" hx-include="#apprise_url" hx-target="#card-notif" hx-swap="outerHTML">Send test</button>

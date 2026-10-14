@@ -51,12 +51,8 @@ func tmplDict(kv ...any) map[string]any {
 	return m
 }
 
-// isSecuritySource reports whether an apt suite string denotes a security update
-// (e.g. "jammy-security", "bookworm-security"). Patchdeck stores no dedicated security
-// flag, so this is derived from PackageInfo.Source.
-func isSecuritySource(source string) bool {
-	return strings.Contains(strings.ToLower(source), "security")
-}
+// isSecuritySource is models.IsSecuritySource, kept under this name for the templates.
+func isSecuritySource(source string) bool { return models.IsSecuritySource(source) }
 
 // nextHostView is the per-host summary a dashboard card renders — signal at rest.
 type nextHostView struct {
@@ -525,9 +521,7 @@ func (a *app) nextScanStream(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return // client disconnected — scan aborted on purpose, record nothing
 		}
-		if a.notificationEnabledForHostEvent(host.ID, "scan_failure") {
-			_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: scan FAILED on %s (%v)", host.Name, err))
-		}
+		a.notifyScanFailure(host, fmt.Sprintf("Patchdeck: scan FAILED on %s (%v)", host.Name, err), err.Error())
 		_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_fail", fmt.Sprintf("Scan failed: %v", err))
 		line("err", "Scan failed: "+err.Error())
 		done()
@@ -535,7 +529,7 @@ func (a *app) nextScanStream(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = db.UpsertScanResult(a.db, host.ID, res)
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scan completed: %d packages available", len(res.Packages)))
-	a.notifyIfNewUpdates(host, prev.Packages, res.Packages)
+	a.notifyIfNewUpdates(host, prev.Packages, res)
 	line("ok", fmt.Sprintf("Scan complete — %d update(s) available.", len(res.Packages)))
 	done()
 }

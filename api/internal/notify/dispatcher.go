@@ -69,6 +69,16 @@ func (d *Dispatcher) RuntimeInfo() RuntimeInfo {
 // no-op (notifications simply disabled). The error never includes the raw target URL,
 // which may embed tokens or passwords.
 func (d *Dispatcher) Send(target, body string) error {
+	return d.SendTitled(target, defaultTitle, body)
+}
+
+// SendDigest delivers a digest: its summary line as the title, the host list as the body.
+func (d *Dispatcher) SendDigest(target string, dg Digest) error {
+	return d.SendTitled(target, dg.Title(), dg.Body())
+}
+
+// SendTitled is Send with a caller-chosen title.
+func (d *Dispatcher) SendTitled(target, title, body string) error {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return nil
@@ -80,10 +90,10 @@ func (d *Dispatcher) Send(target, body string) error {
 
 	switch scheme {
 	case "mailto", "mailtos":
-		return d.sendEmail(target, defaultTitle, body)
+		return d.sendEmail(target, title, body)
 	}
 
-	msg, err := buildHTTP(scheme, target, defaultTitle, body)
+	msg, err := buildHTTP(scheme, target, title, body)
 	if err != nil {
 		return err
 	}

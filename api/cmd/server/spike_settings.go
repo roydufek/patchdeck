@@ -101,6 +101,8 @@ func (a *app) nextNotifSave(w http.ResponseWriter, r *http.Request) {
 		AutoApplySuccess: r.FormValue("auto_apply_success") != "",
 		AutoApplyFailure: r.FormValue("auto_apply_failure") != "",
 		ScanFailure:      r.FormValue("scan_failure") != "",
+		Delivery:         models.NormalizeDelivery(r.FormValue("delivery")),
+		DigestAlways:     r.FormValue("digest_always") != "",
 	}
 	if msg := validateAppriseTarget(req.AppriseURL, true); msg != "" {
 		a.renderNext(w, "notifcard", a.notifData("", msg))

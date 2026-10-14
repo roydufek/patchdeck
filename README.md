@@ -224,6 +224,8 @@ Patchdeck delivers alerts (updates available, apply success/failure, scan failur
 | **Email (SMTP)** | `mailtos://user:pass@smtp.host[:port]/?to=you@example.com` | `mailtos://` = TLS (465), `mailto://` = STARTTLS (587). Explicit SMTP host required |
 | **Webhook** | `jsons://host/path` or `forms://host/path` | `json*` posts JSON `{title,message,…}`, `form*` posts form data |
 
+**Digest delivery (default).** Instead of a push per host, each scheduled run sends **one message**: a title with the totals (`5 of 12 hosts need updates (24 packages, 4 security) · 1 failed`) and a body listing every host that needs updates — security count, reboot/restart flags, and which hosts are new since the last scan. It only sends when something is new, an apply ran, or something failed (or every run, with **Send the scheduled digest every run**). Dashboard bulk actions (Scan all / Apply all) are grouped too: events within about a minute of each other arrive as one message. Switch **Delivery** to **Per host** for the old one-message-per-event behaviour. Per-event and per-host toggles apply in both modes.
+
 > One destination per instance — use your notification backend (an ntfy topic, a webhook) for fan-out. Hit **Send test** to verify a URL before saving.
 
 ## API

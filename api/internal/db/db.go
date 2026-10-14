@@ -680,6 +680,15 @@ func GetNotificationSettings(db *sql.DB) (models.NotificationSettings, error) {
 	if err != nil {
 		return s, err
 	}
+	var delivery string
+	if err := db.QueryRow(`SELECT value FROM app_settings WHERE key='notif_delivery'`).Scan(&delivery); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return s, err
+	}
+	s.Delivery = models.NormalizeDelivery(delivery)
+	s.DigestAlways, err = getSettingBool(db, "notif_digest_always", false)
+	if err != nil {
+		return s, err
+	}
 	return s, nil
 }
 
@@ -693,6 +702,8 @@ func UpsertNotificationSettings(db *sql.DB, s models.NotificationSettings) error
 		{key: "notif_auto_apply_success", val: boolString(s.AutoApplySuccess)},
 		{key: "notif_auto_apply_failure", val: boolString(s.AutoApplyFailure)},
 		{key: "notif_scan_failure", val: boolString(s.ScanFailure)},
+		{key: "notif_delivery", val: models.NormalizeDelivery(s.Delivery)},
+		{key: "notif_digest_always", val: boolString(s.DigestAlways)},
 	}
 	for _, u := range updates {
 		if _, err := db.Exec(`INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, u.key, u.val); err != nil {

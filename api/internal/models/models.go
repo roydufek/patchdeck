@@ -1,6 +1,9 @@
 package models
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type User struct {
 	ID           string    `json:"id"`
@@ -80,8 +83,8 @@ type ScanHistoryEntry struct {
 }
 
 type ScanResult struct {
-	HostID           string        `json:"host_id"`
-	Packages         []PackageInfo `json:"packages"`
+	HostID   string        `json:"host_id"`
+	Packages []PackageInfo `json:"packages"`
 	// DeferredPackages are upgradable but won't be installed by Apply (apt-get
 	// dist-upgrade) right now — e.g. Ubuntu phased rollout. Kept out of Packages so
 	// they don't inflate the "needs action" count; surfaced separately in the UI.
@@ -124,8 +127,8 @@ type ScanSnapshot struct {
 	// RestartServices / RebootServices split NeedsRestart into the units a smart restart can act
 	// on vs the units that need a reboot (learned-resistant, or dbus-with-no-handler). Empty on
 	// pre-v2.1 snapshots — callers fall back to the flat NeedsRestart list.
-	RestartServices []string `json:"restart_services,omitempty"`
-	RebootServices  []string `json:"reboot_services,omitempty"`
+	RestartServices []string  `json:"restart_services,omitempty"`
+	RebootServices  []string  `json:"reboot_services,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
@@ -153,9 +156,9 @@ type RestartResult struct {
 
 type Job struct {
 	ID        string   `json:"id"`
-	HostID    string   `json:"host_id,omitempty"`       // legacy single-host (kept for compat)
-	HostIDs   []string `json:"host_ids,omitempty"`      // multi-host selection
-	TagFilter string   `json:"tag_filter,omitempty"`    // run on all hosts with this tag
+	HostID    string   `json:"host_id,omitempty"`    // legacy single-host (kept for compat)
+	HostIDs   []string `json:"host_ids,omitempty"`   // multi-host selection
+	TagFilter string   `json:"tag_filter,omitempty"` // run on all hosts with this tag
 	HostName  string   `json:"host_name,omitempty"`
 	Name      string   `json:"name"`
 	CronExpr  string   `json:"cron_expr"`
@@ -187,6 +190,42 @@ type NotificationSettings struct {
 	AutoApplySuccess bool   `json:"auto_apply_success"`
 	AutoApplyFailure bool   `json:"auto_apply_failure"`
 	ScanFailure      bool   `json:"scan_failure"`
+	// Delivery is DeliveryDigest (default: one message per scheduled run, dashboard bursts
+	// grouped) or DeliveryPerHost (a message per host and event, sent immediately).
+	Delivery string `json:"delivery"`
+	// DigestAlways sends a scheduled run's digest even when nothing is new.
+	DigestAlways bool `json:"digest_always"`
+}
+
+const (
+	DeliveryDigest  = "digest"
+	DeliveryPerHost = "per_host"
+)
+
+// NormalizeDelivery maps a stored/submitted delivery mode to a known value (unknown → digest).
+func NormalizeDelivery(v string) string {
+	if strings.ToLower(strings.TrimSpace(v)) == DeliveryPerHost {
+		return DeliveryPerHost
+	}
+	return DeliveryDigest
+}
+
+// IsSecuritySource reports whether an apt suite string denotes a security update
+// (e.g. "jammy-security", "bookworm-security"). Patchdeck stores no dedicated security
+// flag, so this is derived from PackageInfo.Source.
+func IsSecuritySource(source string) bool {
+	return strings.Contains(strings.ToLower(source), "security")
+}
+
+// SecurityCount counts the packages that come from a security suite.
+func SecurityCount(pkgs []PackageInfo) int {
+	n := 0
+	for _, p := range pkgs {
+		if IsSecuritySource(p.Source) {
+			n++
+		}
+	}
+	return n
 }
 
 // OIDCConfig is the persisted OpenID Connect configuration. ClientSecretEnc holds the

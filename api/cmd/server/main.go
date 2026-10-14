@@ -46,6 +46,7 @@ type app struct {
 	secrets      *crypto.SealBox
 	sshClient    *sshx.Client
 	notifier     *notify.Dispatcher
+	coalescer    *notify.Coalescer // groups dashboard/API notifications in digest delivery
 	sched        *scheduler.Engine
 	limiter      *ratelimit.HostLimiter
 	loginLimiter *ratelimit.LoginLimiter
@@ -121,6 +122,14 @@ func main() {
 	}
 	a.sshClient = sshx.NewClient(cfg.SSHTimeout, cfg.ExecTimeout, a.verifyHostKey)
 	a.sched = scheduler.NewEngine(database, a.sshClient, seal, notifier, cfg.AppriseURL)
+	a.coalescer = notify.NewCoalescer(coalesceQuiet, coalesceMaxHold, func(d notify.Digest) {
+		if !d.Notable() { // e.g. only "Apply" on hosts that had nothing to apply
+			return
+		}
+		if err := a.notifier.SendDigest(a.currentAppriseURL(), d); err != nil {
+			log.Printf("notifications: digest send failed: %v", err)
+		}
+	})
 
 	// Best-effort purge of expired web sessions on startup.
 	_ = db.DeleteExpiredSessions(database)
@@ -813,16 +822,12 @@ func (a *app) scanHost(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var hkErr *sshx.HostKeyError
 		if errors.As(err, &hkErr) {
-			if a.notificationEnabledForHostEvent(host.ID, "scan_failure") {
-				_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: scan FAILED on %s (%s)", host.Name, hkErr.Message))
-			}
+			a.notifyScanFailure(host, fmt.Sprintf("Patchdeck: scan FAILED on %s (%s)", host.Name, hkErr.Message), hkErr.Message)
 			_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_fail", fmt.Sprintf("Scan failed: %s", hkErr.Message))
 			writeJSON(w, 409, map[string]any{"error": hkErr.Message, "code": "host_key_mismatch", "operator_action_required": true, "expected_fingerprint": hkErr.ExpectedFingerprint, "presented_fingerprint": hkErr.PresentedFingerprint, "actions": []string{"accept_new_fingerprint", "deny_new_fingerprint"}})
 			return
 		}
-		if a.notificationEnabledForHostEvent(host.ID, "scan_failure") {
-			_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: scan FAILED on %s (%v)", host.Name, err))
-		}
+		a.notifyScanFailure(host, fmt.Sprintf("Patchdeck: scan FAILED on %s (%v)", host.Name, err), err.Error())
 		_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_fail", fmt.Sprintf("Scan failed: %v", err))
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -830,7 +835,7 @@ func (a *app) scanHost(w http.ResponseWriter, r *http.Request) {
 	prev, _, _ := db.GetScanSnapshot(a.db, host.ID)
 	_ = db.UpsertScanResult(a.db, host.ID, res)
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scan completed: %d packages available", len(res.Packages)))
-	a.notifyIfNewUpdates(host, prev.Packages, res.Packages)
+	a.notifyIfNewUpdates(host, prev.Packages, res)
 	writeJSON(w, 200, res)
 }
 
@@ -858,15 +863,11 @@ func (a *app) applyUpdates(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_fail", fmt.Sprintf("Apply failed: %v", err))
-		if a.notificationEnabledForHostEvent(host.ID, "auto_apply_failure") {
-			_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: apply FAILED on %s (%v)", host.Name, err))
-		}
+		a.notifyApplyFailure(host, err)
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	if a.notificationEnabledForHostEvent(host.ID, "auto_apply_success") {
-		_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: updates applied on %s. %d packages changed", host.Name, res.ChangedPackages))
-	}
+	a.notifyApplied(host, res)
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_ok", fmt.Sprintf("Applied updates: %d packages changed", res.ChangedPackages))
 	writeJSON(w, 200, res)
 }
@@ -1295,14 +1296,64 @@ func (a *app) currentAppriseURL() string {
 	return a.cfg.AppriseURL
 }
 
+// Digest delivery groups dashboard/API events: a batch goes out once nothing new has arrived
+// for coalesceQuiet ("Apply all" on 7 hosts = one message), or coalesceMaxHold after its
+// first event at the latest.
+const (
+	coalesceQuiet   = 60 * time.Second
+	coalesceMaxHold = 5 * time.Minute
+)
+
+// notifyHost routes one dashboard/API host event (after the global + per-host toggles). In
+// per-host delivery it sends legacyBody immediately (the pre-2.7 behaviour; "" = stay silent);
+// in digest delivery add puts the event into the current coalesced batch.
+func (a *app) notifyHost(hostID, eventKey, legacyBody string, add func(*notify.Digest)) {
+	if !a.notificationEnabledForHostEvent(hostID, eventKey) {
+		return
+	}
+	s, err := db.GetNotificationSettings(a.db)
+	if err == nil && s.Delivery != models.DeliveryPerHost && a.coalescer != nil {
+		a.coalescer.Add(add)
+		return
+	}
+	if legacyBody != "" {
+		_ = a.notifier.Send(a.currentAppriseURL(), legacyBody)
+	}
+}
+
+func (a *app) notifyScanFailure(host models.Host, legacyBody, reason string) {
+	a.notifyHost(host.ID, "scan_failure", legacyBody, func(d *notify.Digest) {
+		d.Failed = append(d.Failed, notify.FailedHost{Name: host.Name, Phase: "scan", Err: reason})
+	})
+}
+
+func (a *app) notifyApplyFailure(host models.Host, err error) {
+	a.notifyHost(host.ID, "auto_apply_failure", fmt.Sprintf("Patchdeck: apply FAILED on %s (%v)", host.Name, err), func(d *notify.Digest) {
+		d.Failed = append(d.Failed, notify.FailedHost{Name: host.Name, Phase: "apply", Err: err.Error()})
+	})
+}
+
+func (a *app) notifyApplied(host models.Host, res models.ApplyResult) {
+	a.notifyHost(host.ID, "auto_apply_success", fmt.Sprintf("Patchdeck: updates applied on %s. %d packages changed", host.Name, res.ChangedPackages), func(d *notify.Digest) {
+		d.AddApplied(notify.AppliedHost{Name: host.Name, Changed: res.ChangedPackages, Reboot: res.NeedsReboot})
+	})
+}
+
 // notifyIfNewUpdates sends the "updates available" alert only when a scan surfaced updates that
 // weren't present at the previous scan (models.HasNewUpdates), so re-scanning the same pending
 // set — manually or on a schedule — doesn't re-ping. prevPkgs is the package list from before
 // this scan's UpsertScanResult; every scan path (GUI stream + JSON API) routes through here.
-func (a *app) notifyIfNewUpdates(host models.Host, prevPkgs, curr []models.PackageInfo) {
-	if len(curr) > 0 && models.HasNewUpdates(prevPkgs, curr) && a.notificationEnabledForHostEvent(host.ID, "updates_available") {
-		_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: updates available on %s (%d packages)", host.Name, len(curr)))
+func (a *app) notifyIfNewUpdates(host models.Host, prevPkgs []models.PackageInfo, res models.ScanResult) {
+	curr := res.Packages
+	if len(curr) == 0 || !models.HasNewUpdates(prevPkgs, curr) {
+		return
 	}
+	a.notifyHost(host.ID, "updates_available", fmt.Sprintf("Patchdeck: updates available on %s (%d packages)", host.Name, len(curr)), func(d *notify.Digest) {
+		d.Pending = append(d.Pending, notify.PendingHost{
+			Name: host.Name, Packages: len(curr), Security: models.SecurityCount(curr),
+			New: true, Reboot: res.NeedsReboot, Restarts: len(res.NeedsRestart),
+		})
+	})
 }
 
 func (a *app) notificationEnabledForHostEvent(hostID, eventKey string) bool {
@@ -1363,8 +1414,18 @@ func (a *app) getNotificationRuntime(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (a *app) putNotificationSettings(w http.ResponseWriter, r *http.Request) {
-	var req models.NotificationSettings
+	// Start from the stored settings so a field the payload omits keeps its value (clients
+	// written before delivery/digest_always existed don't silently reset them).
+	req, err := db.GetNotificationSettings(a.db)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": "Failed to load notification settings"})
+		return
+	}
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if d := strings.TrimSpace(req.Delivery); d != models.DeliveryDigest && d != models.DeliveryPerHost {
+		writeJSON(w, 400, map[string]string{"error": `delivery must be "digest" or "per_host"`})
 		return
 	}
 	if errMsg := validateAppriseTarget(req.AppriseURL, true); errMsg != "" {
@@ -2353,18 +2414,14 @@ func (a *app) scanHostStream(w http.ResponseWriter, r *http.Request) {
 		}
 		var hkErr *sshx.HostKeyError
 		if errors.As(err, &hkErr) {
-			if a.notificationEnabledForHostEvent(host.ID, "scan_failure") {
-				_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: scan FAILED on %s (%s)", host.Name, hkErr.Message))
-			}
+			a.notifyScanFailure(host, fmt.Sprintf("Patchdeck: scan FAILED on %s (%s)", host.Name, hkErr.Message), hkErr.Message)
 			sseWrite(w, flusher, "error", map[string]any{
 				"error": hkErr.Message, "code": "host_key_mismatch",
 				"expected_fingerprint":  hkErr.ExpectedFingerprint,
 				"presented_fingerprint": hkErr.PresentedFingerprint,
 			})
 		} else {
-			if a.notificationEnabledForHostEvent(host.ID, "scan_failure") {
-				_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: scan FAILED on %s (%v)", host.Name, err))
-			}
+			a.notifyScanFailure(host, fmt.Sprintf("Patchdeck: scan FAILED on %s (%v)", host.Name, err), err.Error())
 			sseWrite(w, flusher, "error", map[string]string{"error": err.Error()})
 		}
 		sseWrite(w, flusher, "done", map[string]string{})
@@ -2374,7 +2431,7 @@ func (a *app) scanHostStream(w http.ResponseWriter, r *http.Request) {
 	prev, _, _ := db.GetScanSnapshot(a.db, host.ID)
 	_ = db.UpsertScanResult(a.db, host.ID, res)
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scan completed: %d packages available", len(res.Packages)))
-	a.notifyIfNewUpdates(host, prev.Packages, res.Packages)
+	a.notifyIfNewUpdates(host, prev.Packages, res)
 	sseWrite(w, flusher, "result", res)
 	sseWrite(w, flusher, "done", map[string]string{})
 }
@@ -2451,7 +2508,11 @@ func (a *app) applyStream(w http.ResponseWriter, r *http.Request) {
 		case errors.As(err, &interrupted):
 			// The SSH connection dropped mid-apply (service restart or reboot) — the apply
 			// almost certainly finished on the host. Don't cry FAILED; record it and tell
-			// the client to verify by awaiting recovery + re-scanning. No failure alert.
+			// the client to verify by awaiting recovery + re-scanning. No failure alert (the
+			// digest lists it as applied, flagged; per-host delivery stays silent as before).
+			a.notifyHost(host.ID, "auto_apply_success", "", func(d *notify.Digest) {
+				d.AddApplied(notify.AppliedHost{Name: host.Name, Changed: interrupted.ChangedSoFar, Interrupted: true})
+			})
 			_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_interrupted",
 				fmt.Sprintf("Connection lost during apply (%d package(s) installed before drop) — host likely restarting/rebooting; verifying", interrupted.ChangedSoFar))
 			sseWrite(w, flusher, "interrupted", map[string]any{
@@ -2460,9 +2521,7 @@ func (a *app) applyStream(w http.ResponseWriter, r *http.Request) {
 				"message":        "Connection lost during apply — the host may be restarting a service or rebooting. Verifying…",
 			})
 		default:
-			if a.notificationEnabledForHostEvent(host.ID, "auto_apply_failure") {
-				_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: apply FAILED on %s (%v)", host.Name, err))
-			}
+			a.notifyApplyFailure(host, err)
 			_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_fail", fmt.Sprintf("Apply failed: %v", err))
 			sseWrite(w, flusher, "error", map[string]string{"error": err.Error()})
 		}
@@ -2470,9 +2529,7 @@ func (a *app) applyStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if a.notificationEnabledForHostEvent(host.ID, "auto_apply_success") {
-		_ = a.notifier.Send(a.currentAppriseURL(), fmt.Sprintf("Patchdeck: updates applied on %s. %d packages changed", host.Name, res.ChangedPackages))
-	}
+	a.notifyApplied(host, res)
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_ok", fmt.Sprintf("Applied updates: %d packages changed", res.ChangedPackages))
 	sseWrite(w, flusher, "result", res)
 	sseWrite(w, flusher, "done", map[string]string{})

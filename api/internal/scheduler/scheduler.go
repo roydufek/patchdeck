@@ -163,34 +163,88 @@ func (e *Engine) maybePurgeActivity(now time.Time) {
 	}
 }
 
-func (e *Engine) sendNotification(hostID, eventKey, body string) {
-	if e.notifier == nil {
+// runNotes routes one run's notifications. In digest delivery (the default) host events are
+// collected and sent as ONE message when the run ends; in per-host delivery each event is
+// sent immediately with its legacy one-line body.
+type runNotes struct {
+	perHost bool
+	always  bool
+	digest  notify.Digest
+}
+
+func (e *Engine) newRunNotes(j models.Job) *runNotes {
+	n := &runNotes{digest: notify.Digest{Scheduled: true, Job: j.Name}}
+	if s, err := db.GetNotificationSettings(e.db); err == nil {
+		n.perHost = s.Delivery == models.DeliveryPerHost
+		n.always = s.DigestAlways
+	}
+	return n
+}
+
+// note records one host event. legacyBody is what per-host delivery sends ("" = per-host
+// delivery stays silent for this event); add puts the event into the run's digest.
+func (e *Engine) note(n *runNotes, hostID, eventKey, legacyBody string, add func(*notify.Digest)) {
+	if n.perHost {
+		if legacyBody != "" {
+			e.sendNotification(hostID, eventKey, legacyBody)
+		}
 		return
 	}
+	if e.eventEnabled(hostID, eventKey) {
+		add(&n.digest)
+	}
+}
+
+// sendDigest sends the run's digest when it says something new (or the operator asked for
+// every run). Per-host delivery already sent everything as it happened.
+func (e *Engine) sendDigest(n *runNotes) {
+	if n.perHost || e.notifier == nil || n.digest.Empty() {
+		return
+	}
+	if !n.always && !n.digest.Notable() {
+		return
+	}
+	if err := e.notifier.SendDigest(e.target(), n.digest); err != nil {
+		log.Printf("scheduler: digest notification failed: %v", err)
+	}
+}
+
+func (e *Engine) target() string {
+	if s, err := db.GetNotificationSettings(e.db); err == nil && strings.TrimSpace(s.AppriseURL) != "" {
+		return strings.TrimSpace(s.AppriseURL)
+	}
+	return e.defaultAppriseURL
+}
+
+// eventEnabled applies the global then the per-host toggle for an event.
+func (e *Engine) eventEnabled(hostID, eventKey string) bool {
 	settings, err := db.GetNotificationSettings(e.db)
 	if err != nil {
 		log.Printf("scheduler: load notification settings failed: %v", err)
-		return
+		return false
 	}
 	if !globalEventEnabled(settings, eventKey) {
-		return
+		return false
 	}
 	prefs, err := db.GetHostNotificationPrefs(e.db, hostID)
 	if err != nil {
 		log.Printf("scheduler: load host notification prefs failed host=%s: %v", hostID, err)
+		return false
+	}
+	return hostEventEnabled(prefs, eventKey)
+}
+
+func (e *Engine) sendNotification(hostID, eventKey, body string) {
+	if e.notifier == nil || !e.eventEnabled(hostID, eventKey) {
 		return
 	}
-	if !hostEventEnabled(prefs, eventKey) {
-		return
-	}
-	target := strings.TrimSpace(settings.AppriseURL)
-	if target == "" {
-		target = e.defaultAppriseURL
-	}
-	if err := e.notifier.Send(target, body); err != nil {
+	if err := e.notifier.Send(e.target(), body); err != nil {
 		log.Printf("scheduler: notification failed: %v", err)
 	}
 }
+
+// hostKeyChanged is the digest's reason line for a blocked (host-key mismatch) scan or apply.
+const hostKeyChanged = "SSH host key changed — review it in Patchdeck"
 
 func globalEventEnabled(settings models.NotificationSettings, eventKey string) bool {
 	switch eventKey {
@@ -256,6 +310,7 @@ func (e *Engine) runJob(ctx context.Context, j models.Job) {
 		return
 	}
 
+	notes := e.newRunNotes(j)
 	total, ok, failed := 0, 0, 0
 	var details []string
 	for _, host := range hosts {
@@ -267,11 +322,11 @@ func (e *Engine) runJob(ctx context.Context, j models.Job) {
 		var hostOK bool
 		switch mode {
 		case "scan":
-			hostOK = e.runScan(j, host)
+			hostOK = e.runScan(j, host, notes)
 		case "apply":
-			hostOK = e.runApply(j, host)
+			hostOK = e.runApply(j, host, notes)
 		case "scan_apply":
-			hostOK = e.runScanApply(j, host)
+			hostOK = e.runScanApply(j, host, notes)
 		default:
 			log.Printf("scheduler: job=%s unknown mode=%q", j.ID, j.Mode)
 			details = append(details, host.Name+": unknown mode")
@@ -293,6 +348,7 @@ func (e *Engine) runJob(ctx context.Context, j models.Job) {
 		status = "failed"
 	}
 	e.finishRun(runID, status, total, ok, failed, strings.Join(details, "; "))
+	e.sendDigest(notes)
 	_ = db.PruneJobRuns(e.db, j.ID, 50)
 	_ = ctx
 }
@@ -350,17 +406,48 @@ func (e *Engine) resolveJobHosts(j models.Job) ([]models.Host, error) {
 	return full, nil
 }
 
-func (e *Engine) runScan(j models.Job, host models.Host) bool {
+// noteScanFailure records a failed scan. Host-key mismatches pass legacyBody "" — digest
+// delivery lists them, per-host delivery keeps its old behaviour of staying silent on them.
+func (e *Engine) noteScanFailure(n *runNotes, host models.Host, legacyBody, reason string) {
+	e.note(n, host.ID, "scan_failure", legacyBody, func(d *notify.Digest) {
+		d.Failed = append(d.Failed, notify.FailedHost{Name: host.Name, Phase: "scan", Err: reason})
+	})
+}
+
+// notePending records a scan's result: a host with updates is listed (its New flag decides
+// whether the digest is worth sending), a host without counts as up to date.
+func (e *Engine) notePending(n *runNotes, host models.Host, prev []models.PackageInfo, res models.ScanResult) {
+	if len(res.Packages) == 0 {
+		if !n.perHost {
+			n.digest.UpToDate++
+		}
+		return
+	}
+	isNew := models.HasNewUpdates(prev, res.Packages)
+	legacy := ""
+	if isNew { // per-host delivery only pings on genuinely new updates
+		legacy = fmt.Sprintf("Patchdeck: updates available on %s (%d packages)", host.Name, len(res.Packages))
+	}
+	e.note(n, host.ID, "updates_available", legacy, func(d *notify.Digest) {
+		d.Pending = append(d.Pending, notify.PendingHost{
+			Name: host.Name, Packages: len(res.Packages), Security: models.SecurityCount(res.Packages),
+			New: isNew, Reboot: res.NeedsReboot, Restarts: len(res.NeedsRestart),
+		})
+	})
+}
+
+func (e *Engine) runScan(j models.Job, host models.Host, n *runNotes) bool {
 	res, err := e.ssh.ScanHost(host, e.secrets)
 	if err != nil {
 		var hkErr *sshx.HostKeyError
 		if errors.As(err, &hkErr) {
 			log.Printf("scheduler: job=%s scan blocked host=%s host key mismatch expected=%s presented=%s", j.ID, host.Name, hkErr.ExpectedFingerprint, hkErr.PresentedFingerprint)
+			e.noteScanFailure(n, host, "", hostKeyChanged)
 			_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_fail", "Scheduled scan blocked: SSH host key mismatch")
 			return false
 		}
 		log.Printf("scheduler: job=%s scan host=%s failed: %v", j.ID, host.Name, err)
-		e.sendNotification(host.ID, "scan_failure", fmt.Sprintf("Patchdeck scheduled scan FAILED: %s (%v)", host.Name, err))
+		e.noteScanFailure(n, host, fmt.Sprintf("Patchdeck scheduled scan FAILED: %s (%v)", host.Name, err), err.Error())
 		_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_fail", fmt.Sprintf("Scheduled scan failed: %v", err))
 		return false
 	}
@@ -369,21 +456,21 @@ func (e *Engine) runScan(j models.Job, host models.Host) bool {
 		log.Printf("scheduler: job=%s save scan host=%s failed: %v", j.ID, host.Name, err)
 		return false
 	}
-	// Only ping on genuinely new updates, so a recurring scan of the same pending set stays quiet.
-	if len(res.Packages) > 0 && models.HasNewUpdates(prev.Packages, res.Packages) {
-		e.sendNotification(host.ID, "updates_available", fmt.Sprintf("Patchdeck: updates available on %s (%d packages)", host.Name, len(res.Packages)))
-	}
+	e.notePending(n, host, prev.Packages, res)
 	_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scheduled scan completed: %d packages available", len(res.Packages)))
 	log.Printf("scheduler: job=%s scan complete host=%s packages=%d reboot=%v", j.ID, host.Name, len(res.Packages), res.NeedsReboot)
 	return true
 }
 
-func (e *Engine) runApply(j models.Job, host models.Host) bool {
+func (e *Engine) runApply(j models.Job, host models.Host, n *runNotes) bool {
 	res, err := e.ssh.ApplyUpdates(host, e.secrets)
 	if err != nil {
 		var hkErr *sshx.HostKeyError
 		if errors.As(err, &hkErr) {
 			log.Printf("scheduler: job=%s apply blocked host=%s host key mismatch expected=%s presented=%s", j.ID, host.Name, hkErr.ExpectedFingerprint, hkErr.PresentedFingerprint)
+			e.note(n, host.ID, "auto_apply_failure", "", func(d *notify.Digest) {
+				d.Failed = append(d.Failed, notify.FailedHost{Name: host.Name, Phase: "apply", Err: hostKeyChanged})
+			})
 			_ = db.RecordActivity(e.db, host.ID, host.Name, "apply_fail", "Scheduled apply blocked: SSH host key mismatch")
 			return false
 		}
@@ -391,34 +478,42 @@ func (e *Engine) runApply(j models.Job, host models.Host) bool {
 		if errors.As(err, &interrupted) {
 			// Connection dropped mid-apply (service restart or reboot) — the apply almost
 			// certainly completed. Don't send a FAILED alert; the next scheduled scan will
-			// reconcile the host's real state.
+			// reconcile the host's real state. (The digest lists it as applied, flagged.)
+			e.note(n, host.ID, "auto_apply_success", "", func(d *notify.Digest) {
+				d.AddApplied(notify.AppliedHost{Name: host.Name, Changed: interrupted.ChangedSoFar, Interrupted: true})
+			})
 			_ = db.RecordActivity(e.db, host.ID, host.Name, "apply_interrupted",
 				fmt.Sprintf("Scheduled apply: connection lost (%d package(s) installed) — host likely rebooting; will reconcile on next scan", interrupted.ChangedSoFar))
 			log.Printf("scheduler: job=%s apply host=%s interrupted (connection lost, %d changed): %v", j.ID, host.Name, interrupted.ChangedSoFar, err)
 			return true
 		}
-		e.sendNotification(host.ID, "auto_apply_failure", fmt.Sprintf("Patchdeck scheduled apply FAILED: %s (%v)", host.Name, err))
+		e.note(n, host.ID, "auto_apply_failure", fmt.Sprintf("Patchdeck scheduled apply FAILED: %s (%v)", host.Name, err), func(d *notify.Digest) {
+			d.Failed = append(d.Failed, notify.FailedHost{Name: host.Name, Phase: "apply", Err: err.Error()})
+		})
 		_ = db.RecordActivity(e.db, host.ID, host.Name, "apply_fail", fmt.Sprintf("Scheduled apply failed: %v", err))
 		log.Printf("scheduler: job=%s apply host=%s failed: %v", j.ID, host.Name, err)
 		return false
 	}
-	e.sendNotification(host.ID, "auto_apply_success", fmt.Sprintf("Patchdeck scheduled apply success: %s (%d package changes)", host.Name, res.ChangedPackages))
+	e.note(n, host.ID, "auto_apply_success", fmt.Sprintf("Patchdeck scheduled apply success: %s (%d package changes)", host.Name, res.ChangedPackages), func(d *notify.Digest) {
+		d.AddApplied(notify.AppliedHost{Name: host.Name, Changed: res.ChangedPackages, Reboot: res.NeedsReboot})
+	})
 	_ = db.RecordActivity(e.db, host.ID, host.Name, "apply_ok", fmt.Sprintf("Scheduled apply completed: %d packages changed", res.ChangedPackages))
 	log.Printf("scheduler: job=%s apply complete host=%s changed=%d reboot=%v", j.ID, host.Name, res.ChangedPackages, res.NeedsReboot)
 	return true
 }
 
-func (e *Engine) runScanApply(j models.Job, host models.Host) bool {
+func (e *Engine) runScanApply(j models.Job, host models.Host, n *runNotes) bool {
 	scanRes, err := e.ssh.ScanHost(host, e.secrets)
 	if err != nil {
 		var hkErr *sshx.HostKeyError
 		if errors.As(err, &hkErr) {
 			log.Printf("scheduler: job=%s scan_apply scan blocked host=%s host key mismatch", j.ID, host.Name)
+			e.noteScanFailure(n, host, "", hostKeyChanged)
 			_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_fail", "Scheduled scan_apply blocked: SSH host key mismatch")
 			return false
 		}
 		log.Printf("scheduler: job=%s scan_apply scan host=%s failed: %v", j.ID, host.Name, err)
-		e.sendNotification(host.ID, "scan_failure", fmt.Sprintf("Patchdeck scheduled scan FAILED: %s (%v)", host.Name, err))
+		e.noteScanFailure(n, host, fmt.Sprintf("Patchdeck scheduled scan FAILED: %s (%v)", host.Name, err), err.Error())
 		_ = db.RecordActivity(e.db, host.ID, host.Name, "scan_fail", fmt.Sprintf("Scheduled scan failed: %v", err))
 		return false
 	}
@@ -431,11 +526,17 @@ func (e *Engine) runScanApply(j models.Job, host models.Host) bool {
 
 	if len(scanRes.Packages) == 0 {
 		log.Printf("scheduler: job=%s scan_apply no packages to apply host=%s", j.ID, host.Name)
+		if !n.perHost {
+			n.digest.UpToDate++
+		}
 		return true // nothing to apply = success
 	}
 
-	e.sendNotification(host.ID, "updates_available", fmt.Sprintf("Patchdeck: updates available on %s (%d packages), applying...", host.Name, len(scanRes.Packages)))
-	return e.runApply(j, host)
+	// Per-host delivery keeps its "applying..." heads-up; the digest reports the apply's outcome instead.
+	if n.perHost {
+		e.sendNotification(host.ID, "updates_available", fmt.Sprintf("Patchdeck: updates available on %s (%d packages), applying...", host.Name, len(scanRes.Packages)))
+	}
+	return e.runApply(j, host, n)
 }
 
 // NextRun returns the next time the cron expression fires at or after `from`
