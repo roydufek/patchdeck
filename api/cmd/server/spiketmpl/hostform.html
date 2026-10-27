@@ -69,7 +69,7 @@
       <div id="grp-key" class="field">
         <label for="private_key_pem">Private key (PEM)</label>
         <textarea id="private_key_pem" name="private_key_pem" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;…" autocomplete="off" spellcheck="false"></textarea>
-        {{if eq .Mode "edit"}}<span class="hint">Leave blank to keep the current key.</span>{{end}}
+        {{if eq .Mode "edit"}}<span class="hint">{{if .HasKey}}A key is stored &mdash; leave blank to keep it.{{else}}No key stored.{{end}}</span>{{end}}
         {{if .HasKey}}<label class="checkrow" style="margin-top:6px"><input type="checkbox" name="clear_private_key" value="1"><span class="ctext"><b>Clear stored key on save</b></span></label>{{end}}
         <div style="margin-top:6px">
           <label for="passphrase" style="font-size:12.5px;font-weight:600;color:var(--ink-2)">Key passphrase <span class="hint" style="font-weight:400">(optional)</span></label>
@@ -79,13 +79,13 @@
 
       <div id="grp-pw" class="field">
         <label for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="new-password" placeholder="{{if eq .Mode "edit"}}leave blank to keep current{{else}}SSH password{{end}}">
+        <input id="password" name="password" type="password" autocomplete="new-password" placeholder="{{if eq .Mode "edit"}}{{if .HasPassword}}stored &mdash; leave blank to keep{{else}}none stored{{end}}{{else}}SSH password{{end}}">
         {{if .HasPassword}}<label class="checkrow" style="margin-top:6px"><input type="checkbox" name="clear_password" value="1"><span class="ctext"><b>Clear stored password on save</b></span></label>{{end}}
       </div>
 
       <div class="field">
         <label for="sudo_password">Sudo / root password <span class="hint" style="font-weight:400">(optional)</span></label>
-        <input id="sudo_password" name="sudo_password" type="password" autocomplete="new-password" placeholder="{{if eq .Mode "edit"}}leave blank to keep current{{else}}if sudo needs one, or for su to root{{end}}">
+        <input id="sudo_password" name="sudo_password" type="password" autocomplete="new-password" placeholder="{{if eq .Mode "edit"}}{{if .HasSudo}}stored &mdash; leave blank to keep{{else}}none stored{{end}}{{else}}if sudo needs one, or for su to root{{end}}">
         <span class="hint">Not needed when Patchdeck logs in as root (e.g. through Warpgate).</span>
         {{if .HasSudo}}<label class="checkrow" style="margin-top:6px"><input type="checkbox" name="clear_sudo_password" value="1"><span class="ctext"><b>Clear stored password on save</b></span></label>{{end}}
       </div>

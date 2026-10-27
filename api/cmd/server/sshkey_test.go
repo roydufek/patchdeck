@@ -162,4 +162,8 @@ func TestHostFormRendersKeyAndClearBoxes(t *testing.T) {
 	if strings.Contains(h, `name="clear_private_key"`) {
 		t.Error("no stored key → no clear-key box")
 	}
+	// The form says whether each secret is stored.
+	if !strings.Contains(h, "stored — leave blank to keep") || !strings.Contains(h, "No key stored.") {
+		t.Error("edit form should state what's stored")
+	}
 }
