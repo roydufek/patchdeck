@@ -86,6 +86,7 @@ func (a *app) nextSettings(w http.ResponseWriter, r *http.Request) {
 		"OIDC":    a.oidcData(r, "", ""),
 		"Tokens":  a.tokensData("", ""),
 		"Audit":   a.auditData("", ""),
+		"SSHKey":  a.sshKeyData("", "", nil, false),
 		"TOTP":    a.totpData(r, nil),
 		"Version": a.cfg.AppVersion,
 	})

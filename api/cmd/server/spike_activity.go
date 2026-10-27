@@ -33,6 +33,8 @@ var eventLabels = map[string]string{
 	"shutdown_ok": "Shutdown", "shutdown_fail": "Shutdown failed",
 	"host_added": "Host added", "host_updated": "Host updated", "host_deleted": "Host deleted",
 	"host_key_rotation_accepted": "Host key accepted", "host_key_mismatch_denied": "Host key denied",
+	"ssh_key_generated": "SSH key created", "ssh_key_rotation_started": "SSH key rotation started",
+	"ssh_key_rotated": "SSH key rotated", "ssh_key_rotation_cancelled": "SSH key rotation cancelled",
 }
 
 // eventLabel humanizes an event_type for display.

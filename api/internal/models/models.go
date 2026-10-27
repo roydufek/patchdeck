@@ -202,6 +202,17 @@ const (
 	DeliveryPerHost = "per_host"
 )
 
+// AuthAppKey is the host auth type that logs in with Patchdeck's own SSH keypair
+// (internal/appkey) instead of a per-host pasted key or password.
+const AuthAppKey = "app_key"
+
+// AppKeyState is the persisted state of Patchdeck's own SSH keypair: SealBox ciphertexts of
+// the OpenSSH private keys plus RFC 3339 creation times. Next* is set only mid-rotation.
+type AppKeyState struct {
+	CurrentCipher, CurrentCreated string
+	NextCipher, NextCreated       string
+}
+
 // NormalizeDelivery maps a stored/submitted delivery mode to a known value (unknown → digest).
 func NormalizeDelivery(v string) string {
 	if strings.ToLower(strings.TrimSpace(v)) == DeliveryPerHost {

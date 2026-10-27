@@ -227,6 +227,15 @@
   .tokenshow{background:var(--accent-bg);border:1px solid var(--accent);border-radius:11px;padding:11px 12px;margin-bottom:13px}
   .tokenshow .lbl{font-size:11.5px;color:var(--accent-2);font-weight:600;margin-bottom:5px}
   .tokenshow code{font-family:var(--fmono);font-size:12px;word-break:break-all;color:var(--ink)}
+  .keybox{background:var(--surface-2);border:1px solid var(--border);border-radius:11px;padding:11px 12px;margin-bottom:10px}
+  .keybox .lbl{font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:5px}
+  .keybox .lbl .hint,.tokenshow .lbl .hint{display:block;font-weight:400;margin-top:2px;word-break:break-all}
+  .keybox code,.tokenshow code{display:block;font-family:var(--fmono);font-size:12px;word-break:break-all;color:var(--ink)}
+  .keybox .actionrow,.tokenshow .actionrow{margin-top:8px}
+  .keychecks{margin:4px 0 10px}
+  .keychecks .kc{font-size:12.5px;padding:3px 0;color:var(--ink-2)}
+  .kc.ok b{color:var(--good)}.kc.bad b{color:var(--crit)}.kc.bad span{color:var(--muted)}
+  .wghint{background:var(--accent-bg);border:1px solid var(--accent);border-radius:11px;padding:10px 12px;font-size:12.5px;color:var(--ink-2)}
   .qrwrap{display:flex;flex-direction:column;align-items:center;gap:11px;background:var(--surface-2);border-radius:13px;padding:16px;margin-bottom:13px}
   .qrwrap img{width:180px;height:180px;border-radius:8px;background:#fff;padding:6px}
   .recovery{display:grid;grid-template-columns:1fr 1fr;gap:7px 14px;font-family:var(--fmono);font-size:12.5px;background:var(--surface-2);border-radius:12px;padding:14px;margin:12px 0}
@@ -320,6 +329,15 @@
 <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
 <meta name="theme-color" content="#eceff1" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#0a0f14" media="(prefers-color-scheme: dark)">{{end}}
+
+{{define "copyjs"}}<script>
+  // pdCopy copies an element's text (a public key, a command) to the clipboard, with a
+  // select-and-copy fallback where the Clipboard API is unavailable.
+  function pdCopyFallback(el){var r=document.createRange();r.selectNodeContents(el);var s=window.getSelection();s.removeAllRanges();s.addRange(r);try{document.execCommand('copy')}catch(e){}}
+  function pdCopy(id,btn){var el=document.getElementById(id);if(!el)return;var t=el.textContent.trim();
+    var done=function(){if(btn){var o=btn.textContent;btn.textContent='Copied';setTimeout(function(){btn.textContent=o},1500);}};
+    if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t).then(done,function(){pdCopyFallback(el);done();});}else{pdCopyFallback(el);done();}}
+</script>{{end}}
 
 {{define "themeinit"}}<script>
   (function(){try{var t=localStorage.getItem('pd-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();

@@ -22,6 +22,7 @@ import (
 	// fire in the operator's timezone via the TZ env var.
 	_ "time/tzdata"
 
+	"patchdeck/api/internal/appkey"
 	"patchdeck/api/internal/auth"
 	"patchdeck/api/internal/config"
 	"patchdeck/api/internal/crypto"
@@ -47,6 +48,7 @@ type app struct {
 	sshClient    *sshx.Client
 	notifier     *notify.Dispatcher
 	coalescer    *notify.Coalescer // groups dashboard/API notifications in digest delivery
+	appKeys      *appkey.Store     // Patchdeck's own SSH keypair (auth_type "app_key")
 	sched        *scheduler.Engine
 	limiter      *ratelimit.HostLimiter
 	loginLimiter *ratelimit.LoginLimiter
@@ -121,6 +123,17 @@ func main() {
 		log.Printf("self boot_id %s — a managed host reporting this boot_id is the machine Patchdeck runs on and is auto-excluded from fleet reboots", a.selfBootID)
 	}
 	a.sshClient = sshx.NewClient(cfg.SSHTimeout, cfg.ExecTimeout, a.verifyHostKey)
+	keys, generated, err := appkey.Open(database, seal)
+	if err != nil {
+		log.Fatalf("Patchdeck SSH key: %v", err)
+	}
+	a.appKeys = keys
+	a.sshClient.SetAppKeySource(keys.Signers)
+	if generated {
+		cur := keys.Current()
+		_ = db.RecordActivity(database, "", "Patchdeck", "ssh_key_generated", "Generated Patchdeck's SSH key "+cur.Fingerprint+" ("+cur.Comment()+")")
+		log.Printf("generated Patchdeck's SSH key %s — public key in Settings → SSH key", cur.Fingerprint)
+	}
 	a.sched = scheduler.NewEngine(database, a.sshClient, seal, notifier, cfg.AppriseURL)
 	a.coalescer = notify.NewCoalescer(coalesceQuiet, coalesceMaxHold, func(d notify.Digest) {
 		if !d.Notable() { // e.g. only "Apply" on hosts that had nothing to apply
@@ -179,6 +192,11 @@ func main() {
 		pr.Get("/api/settings/notifications/runtime", a.getNotificationRuntime)
 		pr.Put("/api/settings/notifications", a.putNotificationSettings)
 		pr.Post("/api/settings/notifications/test", a.testNotificationSettings)
+		pr.Get("/api/settings/ssh-key", a.getSSHKey)
+		pr.Post("/api/settings/ssh-key/rotate", a.apiKeyRotate)
+		pr.Post("/api/settings/ssh-key/check", a.apiKeyCheck)
+		pr.Post("/api/settings/ssh-key/finish", a.apiKeyFinish)
+		pr.Post("/api/settings/ssh-key/cancel", a.apiKeyCancel)
 		pr.Get("/api/settings/audit", a.getAuditRetention)
 		pr.Put("/api/settings/audit", a.putAuditRetention)
 		pr.Get("/api/settings/oidc", a.getOIDCSettings)
@@ -256,6 +274,10 @@ func main() {
 		nr.Post("/settings/tokens", a.nextTokenCreate)
 		nr.Post("/settings/tokens/{id}/revoke", a.nextTokenRevoke)
 		nr.Post("/settings/audit", a.nextAuditSave)
+		nr.Post("/settings/sshkey/rotate", a.nextKeyRotate)
+		nr.Post("/settings/sshkey/check", a.nextKeyCheck)
+		nr.Post("/settings/sshkey/finish", a.nextKeyFinish)
+		nr.Post("/settings/sshkey/cancel", a.nextKeyCancel)
 		nr.Post("/settings/totp/setup", a.nextTotpSetup)
 		nr.Post("/settings/totp/confirm", a.nextTotpConfirm)
 		nr.Post("/settings/totp/disable", a.nextTotpDisable)
@@ -518,7 +540,7 @@ func (a *app) hostConnectivity(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	quickTimeout := a.cfg.ConnectivityTimeout
-	checker := sshx.NewClient(quickTimeout, quickTimeout, a.verifyHostKey)
+	checker := a.sshClient.WithTimeouts(quickTimeout, quickTimeout)
 	results := make([]hostConnectivityStatus, len(hosts))
 
 	var wg sync.WaitGroup
@@ -542,7 +564,7 @@ func (a *app) hostConnectivity(w http.ResponseWriter, _ *http.Request) {
 // hostage behind one blocking response.
 func (a *app) hostConnectivityOne(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
+	checker := a.sshClient.WithTimeouts(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout)
 	writeJSON(w, http.StatusOK, a.probeConnectivity(checker, id))
 }
 
@@ -556,19 +578,23 @@ func (a *app) listScans(w http.ResponseWriter, _ *http.Request) {
 }
 
 type hostUpsertRequest struct {
-	Name             string   `json:"name"`
-	Address          string   `json:"address"`
-	Port             int      `json:"port"`
-	SSHUser          string   `json:"ssh_user"`
-	AuthType         string   `json:"auth_type"`
-	Password         string   `json:"password"`
-	PrivateKeyPEM    string   `json:"private_key_pem"`
-	Passphrase       string   `json:"passphrase"`
-	SudoPassword     string   `json:"sudo_password"`
-	HostKeyRequired  *bool    `json:"host_key_required"`
-	HostKeyTrustMode string   `json:"host_key_trust_mode"`
-	HostKeyPinned    string   `json:"host_key_pinned_fingerprint"`
-	Tags             []string `json:"tags"`
+	Name          string `json:"name"`
+	Address       string `json:"address"`
+	Port          int    `json:"port"`
+	SSHUser       string `json:"ssh_user"`
+	AuthType      string `json:"auth_type"`
+	Password      string `json:"password"`
+	PrivateKeyPEM string `json:"private_key_pem"`
+	Passphrase    string `json:"passphrase"`
+	SudoPassword  string `json:"sudo_password"`
+	// Clear* remove a stored secret on update (a blank secret field otherwise keeps it).
+	ClearPassword     bool     `json:"clear_password"`
+	ClearPrivateKey   bool     `json:"clear_private_key"`
+	ClearSudoPassword bool     `json:"clear_sudo_password"`
+	HostKeyRequired   *bool    `json:"host_key_required"`
+	HostKeyTrustMode  string   `json:"host_key_trust_mode"`
+	HostKeyPinned     string   `json:"host_key_pinned_fingerprint"`
+	Tags              []string `json:"tags"`
 }
 
 func normalizeHostRequest(req *hostUpsertRequest) {
@@ -603,8 +629,8 @@ func validateHostRequest(req hostUpsertRequest) string {
 	if req.Name == "" || req.Address == "" || req.SSHUser == "" {
 		return "name,address,ssh_user required"
 	}
-	if req.AuthType != "password" && req.AuthType != "key" {
-		return "auth_type must be password|key"
+	if req.AuthType != "password" && req.AuthType != "key" && req.AuthType != models.AuthAppKey {
+		return "auth_type must be password|key|app_key"
 	}
 	if req.AuthType == "password" && req.Password == "" {
 		return "password required when auth_type=password"
@@ -625,6 +651,52 @@ func encryptHostSecrets(secrets *crypto.SealBox, req hostUpsertRequest) (string,
 	secretBlob := map[string]string{"password": req.Password, "private_key_pem": req.PrivateKeyPEM, "passphrase": req.Passphrase, "sudo_password": req.SudoPassword}
 	b, _ := json.Marshal(secretBlob)
 	return secrets.Encrypt(b)
+}
+
+// scrubForAuth drops the secrets the chosen auth type doesn't use, so a host never keeps a
+// stale credential encrypted in the DB (e.g. a pasted key after switching to "Patchdeck key").
+// The sudo/root password is independent of the login method and always kept.
+func scrubForAuth(req *hostUpsertRequest) {
+	switch req.AuthType {
+	case "password":
+		req.PrivateKeyPEM, req.Passphrase = "", ""
+	case "key":
+		req.Password = ""
+	case models.AuthAppKey:
+		req.Password, req.PrivateKeyPEM, req.Passphrase = "", "", ""
+	}
+}
+
+// mergeHostSecrets applies an update's secrets over the stored ones: a blank field keeps the
+// stored value unless its Clear* flag is set, a new private key never inherits the old key's
+// passphrase, and scrubForAuth then drops what the auth type doesn't use. It returns the
+// stored secrets that were removed (names only, for the activity log).
+func mergeHostSecrets(req *hostUpsertRequest, stored map[string]string) []string {
+	newKey := req.PrivateKeyPEM != ""
+	if req.Password == "" && !req.ClearPassword {
+		req.Password = stored["password"]
+	}
+	if !newKey && !req.ClearPrivateKey {
+		req.PrivateKeyPEM = stored["private_key_pem"]
+		if req.Passphrase == "" {
+			req.Passphrase = stored["passphrase"]
+		}
+	}
+	if req.SudoPassword == "" && !req.ClearSudoPassword {
+		req.SudoPassword = stored["sudo_password"]
+	}
+	scrubForAuth(req)
+	var removed []string
+	for _, s := range []struct{ key, label, now string }{
+		{"password", "login password", req.Password},
+		{"private_key_pem", "private key", req.PrivateKeyPEM},
+		{"sudo_password", "sudo/root password", req.SudoPassword},
+	} {
+		if stored[s.key] != "" && s.now == "" {
+			removed = append(removed, s.label)
+		}
+	}
+	return removed
 }
 
 func decodeHostSecrets(secrets *crypto.SealBox, cipher string) (map[string]string, error) {
@@ -655,13 +727,7 @@ func (a *app) createHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
 		return
 	}
-	if req.AuthType == "password" {
-		req.PrivateKeyPEM = ""
-		req.Passphrase = ""
-	}
-	if req.AuthType == "key" {
-		req.Password = ""
-	}
+	scrubForAuth(&req)
 	enc, err := encryptHostSecrets(a.secrets, req)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to encrypt host credentials"})
@@ -726,18 +792,7 @@ func (a *app) updateHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to read existing host credentials"})
 		return
 	}
-	if req.Password == "" {
-		req.Password = storedSecrets["password"]
-	}
-	if req.PrivateKeyPEM == "" {
-		req.PrivateKeyPEM = storedSecrets["private_key_pem"]
-	}
-	if req.Passphrase == "" {
-		req.Passphrase = storedSecrets["passphrase"]
-	}
-	if req.SudoPassword == "" {
-		req.SudoPassword = storedSecrets["sudo_password"]
-	}
+	removed := mergeHostSecrets(&req, storedSecrets)
 	if req.HostKeyTrustMode == "" {
 		req.HostKeyTrustMode = existing.HostKeyTrustMode
 	}
@@ -752,13 +807,7 @@ func (a *app) updateHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
 		return
 	}
-	if req.AuthType == "password" {
-		req.PrivateKeyPEM = ""
-		req.Passphrase = ""
-	}
-	if req.AuthType == "key" {
-		req.Password = ""
-	}
+	scrubForAuth(&req)
 	enc, err := encryptHostSecrets(a.secrets, req)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to encrypt host credentials"})
@@ -783,6 +832,9 @@ func (a *app) updateHost(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Tags != nil {
 		_ = db.UpdateHostTags(a.db, id, req.Tags)
+	}
+	if len(removed) > 0 {
+		_ = db.RecordActivity(a.db, id, req.Name, "host_updated", fmt.Sprintf("Host %s updated (removed stored %s)", req.Name, strings.Join(removed, ", ")))
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "host updated"})
 }
@@ -2575,7 +2627,7 @@ func (a *app) awaitRecovery(w http.ResponseWriter, r *http.Request) {
 
 	// Connectivity-check timeout (configurable; default 15s) — generous enough that
 	// slow-but-reachable hosts aren't falsely reported as down.
-	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
+	checker := a.sshClient.WithTimeouts(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout)
 
 	ctx := r.Context()
 	start := time.Now()

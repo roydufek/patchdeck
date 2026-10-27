@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <script src="/assets/htmx.min.js"></script>
 {{template "themeinit"}}
+{{template "copyjs"}}
 {{template "styles"}}
 </head>
 <body>
@@ -24,6 +25,11 @@
     {{if .Err}}<div class="formerr" style="margin-bottom:14px">{{.Err}}</div>{{end}}
 
     <form class="form" hx-post="{{if eq .Mode "edit"}}/hosts/{{.ID}}/edit{{else}}/hosts{{end}}" hx-target="body" hx-swap="outerHTML">
+      <div class="field">
+        <label for="sshpaste">Paste an SSH command <span class="hint" style="font-weight:400">(optional)</span></label>
+        <input id="sshpaste" placeholder="ssh 'patchdeck:web-01@warpgate.example.com' -p 2222" autocomplete="off" spellcheck="false" oninput="pdApplySSH()">
+        <span class="hint">Fills in the user, address and port below &mdash; works for Warpgate <span class="mono">user:target</span> logins too.</span>
+      </div>
       <div class="field">
         <label for="name">Name</label>
         <input id="name" name="name" value="{{.Name}}" placeholder="web-01" autocomplete="off" required>
@@ -39,20 +45,32 @@
       </div>
       <div class="field">
         <label for="ssh_user">SSH user</label>
-        <input id="ssh_user" name="ssh_user" value="{{.SSHUser}}" placeholder="root or a sudo user" autocomplete="off" required>
+        <input id="ssh_user" name="ssh_user" value="{{.SSHUser}}" placeholder="root or a sudo user" autocomplete="off" required oninput="pdWGHint()">
+      </div>
+      <div id="wg-hint" class="wghint" hidden>
+        <b>Warpgate target.</b> The host key you&rsquo;ll approve is Warpgate&rsquo;s own &mdash; the same for every target. Warpgate logs in as root, so no sudo/root password is needed. Use <b>Patchdeck key</b> and add its public key to your Warpgate user.
       </div>
       <div class="field">
         <label for="auth_type">Authentication</label>
         <select id="auth_type" name="auth_type" onchange="pdAuthToggle()">
-          <option value="key"{{if eq .AuthType "key"}} selected{{end}}>SSH private key</option>
+          <option value="app_key"{{if eq .AuthType "app_key"}} selected{{end}}>Patchdeck key</option>
+          <option value="key"{{if eq .AuthType "key"}} selected{{end}}>SSH private key (paste)</option>
           <option value="password"{{if eq .AuthType "password"}} selected{{end}}>Password</option>
         </select>
+      </div>
+
+      <div id="grp-app" class="field">
+        <label>Patchdeck&rsquo;s public key <span class="hint" style="font-weight:400">{{.AppKeyFP}}</span></label>
+        <div class="keybox" style="margin:0"><code id="pk-form">{{.AppKeyPub}}</code>
+          <div class="actionrow"><button type="button" class="btn ghost" onclick="pdCopy('pk-form',this)">Copy</button></div></div>
+        <span class="hint">Add it to this host&rsquo;s <span class="mono">~/.ssh/authorized_keys</span> (or your Warpgate user). Nothing to paste here &mdash; manage and rotate it in Settings &rarr; SSH key.</span>
       </div>
 
       <div id="grp-key" class="field">
         <label for="private_key_pem">Private key (PEM)</label>
         <textarea id="private_key_pem" name="private_key_pem" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;…" autocomplete="off" spellcheck="false"></textarea>
         {{if eq .Mode "edit"}}<span class="hint">Leave blank to keep the current key.</span>{{end}}
+        {{if .HasKey}}<label class="checkrow" style="margin-top:6px"><input type="checkbox" name="clear_private_key" value="1"><span class="ctext"><b>Clear stored key on save</b></span></label>{{end}}
         <div style="margin-top:6px">
           <label for="passphrase" style="font-size:12.5px;font-weight:600;color:var(--ink-2)">Key passphrase <span class="hint" style="font-weight:400">(optional)</span></label>
           <input id="passphrase" name="passphrase" type="password" autocomplete="new-password" placeholder="only if the key is encrypted" style="margin-top:6px">
@@ -62,11 +80,14 @@
       <div id="grp-pw" class="field">
         <label for="password">Password</label>
         <input id="password" name="password" type="password" autocomplete="new-password" placeholder="{{if eq .Mode "edit"}}leave blank to keep current{{else}}SSH password{{end}}">
+        {{if .HasPassword}}<label class="checkrow" style="margin-top:6px"><input type="checkbox" name="clear_password" value="1"><span class="ctext"><b>Clear stored password on save</b></span></label>{{end}}
       </div>
 
       <div class="field">
-        <label for="sudo_password">Sudo password <span class="hint" style="font-weight:400">(optional)</span></label>
-        <input id="sudo_password" name="sudo_password" type="password" autocomplete="new-password" placeholder="{{if eq .Mode "edit"}}leave blank to keep current{{else}}if sudo needs a password{{end}}">
+        <label for="sudo_password">Sudo / root password <span class="hint" style="font-weight:400">(optional)</span></label>
+        <input id="sudo_password" name="sudo_password" type="password" autocomplete="new-password" placeholder="{{if eq .Mode "edit"}}leave blank to keep current{{else}}if sudo needs one, or for su to root{{end}}">
+        <span class="hint">Not needed when Patchdeck logs in as root (e.g. through Warpgate).</span>
+        {{if .HasSudo}}<label class="checkrow" style="margin-top:6px"><input type="checkbox" name="clear_sudo_password" value="1"><span class="ctext"><b>Clear stored password on save</b></span></label>{{end}}
       </div>
 
       {{if eq .Mode "new"}}
@@ -110,8 +131,52 @@
   {{end}}
 </div>
 <script>
-  function pdAuthToggle(){var t=document.getElementById('auth_type').value;document.getElementById('grp-key').hidden=(t!=='key');document.getElementById('grp-pw').hidden=(t!=='password');}
-  pdAuthToggle();
+  function pdAuthToggle(){var t=document.getElementById('auth_type').value;document.getElementById('grp-key').hidden=(t!=='key');document.getElementById('grp-pw').hidden=(t!=='password');document.getElementById('grp-app').hidden=(t!=='app_key');}
+
+  // pdSplitArgs splits a pasted command line like a POSIX shell would (quotes, backslashes).
+  function pdSplitArgs(s){var out=[],cur='',q=null,has=false;
+    for(var i=0;i<s.length;i++){var ch=s[i];
+      if(q){if(ch===q){q=null;}else if(ch==='\\'&&q==='"'&&i+1<s.length){cur+=s[++i];}else{cur+=ch;}continue;}
+      if(ch==="'"||ch==='"'){q=ch;has=true;continue;}
+      if(ch==='\\'&&i+1<s.length){cur+=s[++i];has=true;continue;}
+      if(/\s/.test(ch)){if(cur!==''||has){out.push(cur);cur='';has=false;}continue;}
+      cur+=ch;}
+    if(cur!==''||has)out.push(cur);return out;}
+
+  // pdParseSSH reads `ssh [opts] [user@]host [-p N]` (incl. Warpgate's 'user:target@host',
+  // -l user, -o Port=/User=/HostName=, host:port, [v6]:port, ssh://user@host:port) into
+  // {user, host, port, name}; name is the Warpgate target, else the host's first label.
+  function pdParseSSH(s){var a=pdSplitArgs(String(s||'').trim());if(!a.length)return null;
+    if(a[0]==='ssh'||/\/ssh$/.test(a[0]))a.shift();
+    var user='',host='',port=0,withArg='BbcDEeFIiJLlmOopQRSWw';
+    for(var i=0;i<a.length;i++){var t=a[i];
+      if(t.charAt(0)==='-'&&t.length>1){var f=t.charAt(1);
+        if(withArg.indexOf(f)>=0){var v=t.length>2?t.slice(2):a[++i];v=v||'';
+          if(f==='p')port=parseInt(v,10)||port;
+          else if(f==='l')user=v;
+          else if(f==='o'){var m=/^\s*(\w+)\s*[= ]\s*(.+)$/.exec(v);if(m){var k=m[1].toLowerCase();if(k==='port')port=parseInt(m[2],10)||port;else if(k==='user')user=m[2];else if(k==='hostname')host=m[2];}}}
+        continue;}
+      if(host)break; // anything after the destination is a remote command
+      var d=t;
+      if(/^ssh:\/\//i.test(d)){d=d.slice(6);var sl=d.indexOf('/');if(sl>=0)d=d.slice(0,sl);try{d=decodeURIComponent(d);}catch(e){}}
+      var at=d.lastIndexOf('@');if(at>=0){user=d.slice(0,at);d=d.slice(at+1);}
+      var m6=/^\[([^\]]+)\](?::(\d+))?$/.exec(d);
+      if(m6){host=m6[1];if(m6[2])port=parseInt(m6[2],10);}
+      else{var c=d.split(':');if(c.length===2&&/^\d+$/.test(c[1])){host=c[0];port=parseInt(c[1],10);}else{host=d;}}}
+    if(!host)return null;
+    var name=user.indexOf(':')>=0?user.slice(user.indexOf(':')+1):host.split('.')[0];
+    return {user:user,host:host,port:port||22,name:name};}
+
+  function pdWGHint(){document.getElementById('wg-hint').hidden=document.getElementById('ssh_user').value.indexOf(':')<0;}
+
+  function pdApplySSH(){var r=pdParseSSH(document.getElementById('sshpaste').value);if(!r)return;
+    var set=function(id,v){var el=document.getElementById(id);if(el&&v!==''&&v!==undefined)el.value=v;};
+    set('address',r.host);set('port',r.port);if(r.user)set('ssh_user',r.user);
+    var nm=document.getElementById('name');if(nm&&!nm.value)nm.value=r.name;
+    if(r.user.indexOf(':')>=0){var at=document.getElementById('auth_type');if(at)at.value='app_key';pdAuthToggle();}
+    pdWGHint();}
+
+  pdAuthToggle();pdWGHint();
 </script>
 </body>
 </html>

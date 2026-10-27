@@ -92,3 +92,40 @@
     <button type="submit" class="btn primary">Save</button>
   </form>
 </section>{{end}}
+
+{{define "sshkeycard"}}<section id="card-sshkey" class="scard">
+  <div class="scard-h">{{template "i-key"}}<h2>SSH key</h2></div>
+  <p class="scard-sub">Patchdeck&rsquo;s own keypair, for hosts set to <b>Patchdeck key</b>. Add the public key to the host&rsquo;s <span class="mono">~/.ssh/authorized_keys</span> &mdash; or, for hosts behind Warpgate, to Patchdeck&rsquo;s Warpgate user. The private key never leaves Patchdeck.</p>
+  {{if .Flash}}<div class="flash ok">{{.Flash}}</div>{{end}}{{if .Err}}<div class="flash err">{{.Err}}</div>{{end}}
+  <div class="keybox">
+    <div class="lbl">{{if .Rotating}}Current key{{else}}Public key{{end}}<span class="hint">{{.Cur.Fingerprint}} &middot; created {{.Cur.Created.Format "2006-01-02"}}</span></div>
+    <code id="pk-cur">{{.Cur.AuthorizedKey}}</code>
+    <div class="actionrow"><button type="button" class="btn ghost" onclick="pdCopy('pk-cur',this)">Copy</button></div>
+  </div>
+  <div class="keybox">
+    <div class="lbl">Install on a host<span class="hint">run as the SSH user Patchdeck logs in as</span></div>
+    <code id="pk-cmd">mkdir -p ~/.ssh &amp;&amp; chmod 700 ~/.ssh &amp;&amp; echo '{{.Cur.AuthorizedKey}}' &gt;&gt; ~/.ssh/authorized_keys</code>
+    <div class="actionrow"><button type="button" class="btn ghost" onclick="pdCopy('pk-cmd',this)">Copy</button></div>
+  </div>
+  {{if .Hosts}}<p class="scard-sub">Used by {{len .Hosts}} host{{if ne (len .Hosts) 1}}s{{end}}: {{range $i, $h := .Hosts}}{{if $i}}, {{end}}{{$h}}{{end}}</p>{{else}}<p class="scard-sub">No hosts use it yet &mdash; choose <b>Patchdeck key</b> when adding or editing a host.</p>{{end}}
+
+  <div class="grp-h" style="margin-top:6px">Rotation</div>
+  {{if .Rotating}}
+  <div class="tokenshow">
+    <div class="lbl">New key &mdash; install it everywhere, then finish<span class="hint">{{.Next.Fingerprint}}</span></div>
+    <code id="pk-next">{{.Next.AuthorizedKey}}</code>
+    <div class="actionrow"><button type="button" class="btn ghost" onclick="pdCopy('pk-next',this)">Copy</button></div>
+  </div>
+  <p class="scard-sub">Until you finish, Patchdeck offers both keys, so nothing breaks while the new one rolls out. <b>Check hosts</b> logs into each host with only the new key.</p>
+  {{if .Checks}}<div class="keychecks">{{range .Checks}}<div class="kc {{if .OK}}ok{{else}}bad{{end}}"><b>{{if .OK}}&#10003;{{else}}&#10007;{{end}} {{.Name}}</b> {{if .OK}}accepts the new key{{else}}<span>{{.Error}}</span>{{end}}</div>{{end}}</div>{{end}}
+  <div class="actionrow">
+    <button class="btn ghost" hx-post="/settings/sshkey/check" hx-target="#card-sshkey" hx-swap="outerHTML">Check hosts</button>
+    <button class="btn primary" hx-post="/settings/sshkey/finish" hx-target="#card-sshkey" hx-swap="outerHTML">Finish rotation</button>
+    {{if .NeedForce}}<button class="btn danger" hx-post="/settings/sshkey/finish" hx-vals='{"force":"1"}' hx-confirm="Retire the old key now? The hosts marked ✗ lose access until the new key is installed there." hx-target="#card-sshkey" hx-swap="outerHTML">Finish anyway</button>{{end}}
+    <button class="btn ghost" hx-post="/settings/sshkey/cancel" hx-confirm="Discard the new key? The current key stays." hx-target="#card-sshkey" hx-swap="outerHTML">Cancel rotation</button>
+  </div>
+  {{else}}
+  <p class="scard-sub">Rotating creates a new key. Both work until you finish, so hosts don&rsquo;t lose access mid-way. Through Warpgate it&rsquo;s one edit: swap the key on Patchdeck&rsquo;s Warpgate user.</p>
+  <button class="btn ghost" hx-post="/settings/sshkey/rotate" hx-target="#card-sshkey" hx-swap="outerHTML">Rotate key&hellip;</button>
+  {{end}}
+</section>{{end}}

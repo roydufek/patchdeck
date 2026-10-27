@@ -315,10 +315,12 @@ type Client struct {
 	timeout      time.Duration // TCP/SSH handshake dial timeout
 	execTimeout  time.Duration // max wall-clock for a single remote command (0 = no cap)
 	hostVerifier HostKeyVerifier
+	appSigners   func() []ssh.Signer // Patchdeck's own keypair (auth_type "app_key"); see SetAppKeySource
+	pool         *connPool           // per-host connection reuse (pool.go)
 }
 
 func NewClient(dialTimeout, execTimeout time.Duration, verifier HostKeyVerifier) *Client {
-	return &Client{timeout: dialTimeout, execTimeout: execTimeout, hostVerifier: verifier}
+	return &Client{timeout: dialTimeout, execTimeout: execTimeout, hostVerifier: verifier, pool: newConnPool()}
 }
 
 type secretBlob struct {
@@ -821,6 +823,39 @@ func runAsRootCommand(command string) string {
 	return "sh -lc " + shellSingleQuote(command)
 }
 
+// escalationProbe decides HOW to get root in one round trip: already root (e.g. a Warpgate
+// target, which logs in as root), passwordless sudo, or neither (password sudo / su follow).
+// Wrapped in `sh -c` so it works whatever the login shell is.
+var escalationProbe = "sh -c " + shellSingleQuote(`if [ "$(id -u)" = 0 ]; then echo __PD_ROOT__; elif sudo -n true 2>/dev/null; then echo __PD_SUDO__; else echo __PD_NOSUDO__; fi`)
+
+const (
+	escRoot = "root"
+	escSudo = "sudo"
+	escNone = "none"
+)
+
+// escalation runs the probe. A connection-level failure (auth, host key, unreachable) is
+// returned as-is, instead of falling through the ladder and surfacing as a generic
+// "privilege escalation failed".
+func (c *Client) escalation(ctx context.Context, host models.Host, seal *crypto.SealBox) (string, error) {
+	out, err := c.run(ctx, host, seal, escalationProbe)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case strings.Contains(out, "__PD_ROOT__"):
+		return escRoot, nil
+	case strings.Contains(out, "__PD_SUDO__"):
+		return escSudo, nil
+	default:
+		return escNone, nil
+	}
+}
+
+// suCommand runs cmd as root via su. The root password goes to su on stdin — never on the
+// command line, where other local users could read it in /proc while it runs.
+func suCommand(cmd string) string { return "su -c " + shellSingleQuote(cmd) + " root" }
+
 func (c *Client) runPrivileged(ctx context.Context, host models.Host, seal *crypto.SealBox, command string) (string, error) {
 	sec, err := decodeSecrets(host.SecretCipher, seal)
 	if err != nil {
@@ -829,12 +864,19 @@ func (c *Client) runPrivileged(ctx context.Context, host models.Host, seal *cryp
 
 	rootCmd := runAsRootCommand(command)
 
-	// Each escalation method is PROBED with a no-op (`true`) first; on success we commit
-	// to that method and run the real command, returning ITS result. This is what lets a
-	// command that legitimately exits non-zero (e.g. `systemctl restart` of a refused or
-	// missing unit) surface its OWN error, instead of being masked as "privilege escalation
-	// failed" after we needlessly re-run it under every method. Mirrors runPrivilegedStreaming.
-	if _, err := c.run(ctx, host, seal, "sudo -n true"); err == nil {
+	// Each escalation method is PROBED first; on success we commit to that method and run the
+	// real command, returning ITS result. This is what lets a command that legitimately exits
+	// non-zero (e.g. `systemctl restart` of a refused or missing unit) surface its OWN error,
+	// instead of being masked as "privilege escalation failed" after we needlessly re-run it
+	// under every method. Mirrors runPrivilegedStreaming. All of it shares one pooled connection.
+	method, err := c.escalation(ctx, host, seal)
+	if err != nil {
+		return "", err
+	}
+	switch method {
+	case escRoot:
+		return c.run(ctx, host, seal, rootCmd)
+	case escSudo:
 		return c.run(ctx, host, seal, "sudo -n "+rootCmd)
 	}
 
@@ -849,11 +891,9 @@ func (c *Client) runPrivileged(ctx context.Context, host models.Host, seal *cryp
 		return c.runWithStdin(ctx, host, seal, "sudo -S -p '' "+rootCmd, strings.NewReader(sudoPass+"\n"))
 	}
 
-	// su fallback (root password == sudoPass on many single-admin hosts).
-	suProbe := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote("true"))
-	if _, err := c.run(ctx, host, seal, suProbe); err == nil {
-		suCmd := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote(rootCmd))
-		return c.run(ctx, host, seal, suCmd)
+	// su fallback (root password == sudoPass on many single-admin hosts), password on stdin.
+	if _, err := c.runWithStdin(ctx, host, seal, suCommand("true"), strings.NewReader(sudoPass+"\n")); err == nil {
+		return c.runWithStdin(ctx, host, seal, suCommand(rootCmd), strings.NewReader(sudoPass+"\n"))
 	}
 
 	return "", fmt.Errorf("privilege escalation failed: sudo -n, sudo -S, and su fallback all failed (verify sudo/root password and host policy)")
@@ -892,32 +932,12 @@ func (c *Client) runWithStdin(ctx context.Context, host models.Host, seal *crypt
 		return "", err
 	}
 
-	cfg := &ssh.ClientConfig{User: host.SSHUser, HostKeyCallback: c.verifyingHostKeyCallback(host), Timeout: c.timeout}
-	if host.AuthType == "password" {
-		cfg.Auth = []ssh.AuthMethod{ssh.Password(sec.Password)}
-	} else {
-		signer, err := parseSigner([]byte(sec.PrivateKeyPEM), sec.Passphrase)
-		if err != nil {
-			return "", err
-		}
-		cfg.Auth = []ssh.AuthMethod{ssh.PublicKeys(signer)}
-	}
-	addr := net.JoinHostPort(host.Address, fmt.Sprintf("%d", host.Port))
-	cli, err := ssh.Dial("tcp", addr, cfg)
+	pc, sess, err := c.openSession(host, sec)
 	if err != nil {
-		// Wrap raw SSH/network dial errors in user-friendly messages,
-		// but pass through HostKeyError as-is (already user-friendly).
-		var hkErr *HostKeyError
-		if errors.As(err, &hkErr) {
-			return "", err
-		}
-		return "", fmt.Errorf("%s", FriendlySSHError(err))
+		return "", err
 	}
-	defer cli.Close()
-	sess, err := cli.NewSession()
-	if err != nil {
-		return "", fmt.Errorf("SSH session error: %s", FriendlySSHError(err))
-	}
+	broken := false
+	defer func() { c.release(pc, broken) }()
 	defer sess.Close()
 	// Capture stdout and stderr separately so diagnostic noise (e.g. apt-get
 	// update progress, apt's "unstable CLI" warning) never pollutes the stdout
@@ -928,9 +948,12 @@ func (c *Client) runWithStdin(ctx context.Context, host models.Host, seal *crypt
 	if stdin != nil {
 		sess.Stdin = stdin
 	}
-	runErr := c.runWithDeadline(ctx, cli, func() error { return sess.Run(command) })
+	runErr := c.runWithDeadline(ctx, func() { broken = true; c.abort(pc) }, func() error { return sess.Run(command) })
 	out := strings.TrimSpace(outBuf.String())
 	if runErr != nil {
+		if isConnectionLost(runErr) {
+			broken = true
+		}
 		// Errors usually land on stderr — prefer it for the human-facing snippet,
 		// then fall back to stdout, then the raw error.
 		var built error
@@ -1008,7 +1031,7 @@ func (e *ApplyInterruptedError) Unwrap() error { return e.Underlying }
 // runWithDeadline runs fn (sess.Run or sess.Wait) but aborts after c.execTimeout
 // by closing the underlying connection — the only reliable way to unblock an SSH
 // command stuck on, e.g., a held apt/dpkg lock. A zero execTimeout disables the cap.
-func (c *Client) runWithDeadline(ctx context.Context, cli *ssh.Client, fn func() error) error {
+func (c *Client) runWithDeadline(ctx context.Context, abort func(), fn func() error) error {
 	done := make(chan error, 1)
 	go func() { done <- fn() }()
 
@@ -1026,12 +1049,12 @@ func (c *Client) runWithDeadline(ctx context.Context, cli *ssh.Client, fn func()
 	case <-ctx.Done():
 		// Caller cancelled (e.g. SSE client disconnected). Close the connection to
 		// unblock the in-flight Run/Wait, then let the goroutine drain.
-		cli.Close()
+		abort()
 		<-done
 		return fmt.Errorf("operation cancelled")
 	case <-timeout:
-		cli.Close() // force-unblock the stuck Run/Wait
-		<-done      // let the goroutine observe the closed conn and exit
+		abort() // force-unblock the stuck Run/Wait
+		<-done  // let the goroutine observe the closed conn and exit
 		return fmt.Errorf("command timed out after %s (host may have a held apt/dpkg lock or be unresponsive)", c.execTimeout)
 	}
 }
@@ -1079,30 +1102,12 @@ func (c *Client) runStreamingWithStdin(ctx context.Context, host models.Host, se
 		return "", err
 	}
 
-	cfg := &ssh.ClientConfig{User: host.SSHUser, HostKeyCallback: c.verifyingHostKeyCallback(host), Timeout: c.timeout}
-	if host.AuthType == "password" {
-		cfg.Auth = []ssh.AuthMethod{ssh.Password(sec.Password)}
-	} else {
-		signer, err := parseSigner([]byte(sec.PrivateKeyPEM), sec.Passphrase)
-		if err != nil {
-			return "", err
-		}
-		cfg.Auth = []ssh.AuthMethod{ssh.PublicKeys(signer)}
-	}
-	addr := net.JoinHostPort(host.Address, fmt.Sprintf("%d", host.Port))
-	cli, err := ssh.Dial("tcp", addr, cfg)
+	pc, sess, err := c.openSession(host, sec)
 	if err != nil {
-		var hkErr *HostKeyError
-		if errors.As(err, &hkErr) {
-			return "", err
-		}
-		return "", fmt.Errorf("%s", FriendlySSHError(err))
+		return "", err
 	}
-	defer cli.Close()
-	sess, err := cli.NewSession()
-	if err != nil {
-		return "", fmt.Errorf("SSH session error: %s", FriendlySSHError(err))
-	}
+	broken := false
+	defer func() { c.release(pc, broken) }()
 	defer sess.Close()
 
 	// Separate pipes for stdout and stderr. Both are streamed live to the UI (so the
@@ -1160,10 +1165,13 @@ func (c *Client) runStreamingWithStdin(ctx context.Context, host models.Host, se
 		}
 	}()
 
-	waitErr := c.runWithDeadline(ctx, cli, func() error { return sess.Wait() })
+	waitErr := c.runWithDeadline(ctx, func() { broken = true; c.abort(pc) }, func() error { return sess.Wait() })
 	outPw.Close()
 	errPw.Close()
 	wg.Wait()
+	if waitErr != nil && isConnectionLost(waitErr) {
+		broken = true
+	}
 
 	out := strings.TrimSpace(accumulated.String())
 	if waitErr != nil {
@@ -1193,10 +1201,16 @@ func (c *Client) runPrivilegedStreaming(ctx context.Context, host models.Host, s
 
 	rootCmd := runAsRootCommand(command)
 
-	// Test passwordless sudo with a no-op command — do NOT run the real command
-	// non-streaming first, as that would execute it twice (wasting time and producing
-	// inconsistent results if apt state changes between runs).
-	if _, err := c.run(ctx, host, seal, "sudo -n true"); err == nil {
+	// Probe with a no-op — do NOT run the real command non-streaming first, as that would
+	// execute it twice (wasting time and producing inconsistent results if apt state changes).
+	method, err := c.escalation(ctx, host, seal)
+	if err != nil {
+		return "", err
+	}
+	switch method {
+	case escRoot:
+		return c.RunStreaming(ctx, host, seal, rootCmd, onLine)
+	case escSudo:
 		return c.RunStreaming(ctx, host, seal, "sudo -n "+rootCmd, onLine)
 	}
 
@@ -1213,11 +1227,9 @@ func (c *Client) runPrivilegedStreaming(ctx context.Context, host models.Host, s
 		return c.runStreamingWithStdin(ctx, host, seal, "sudo -S -p '' "+rootCmd, onLine, strings.NewReader(sudoPass+"\n"))
 	}
 
-	// su fallback (root password == sudoPass on many single-admin hosts).
-	suProbe := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote("true"))
-	if _, err := c.run(ctx, host, seal, suProbe); err == nil {
-		suCmd := fmt.Sprintf("printf '%%s\\n' %s | su -c %s root", shellSingleQuote(sudoPass), shellSingleQuote(rootCmd))
-		return c.RunStreaming(ctx, host, seal, suCmd, onLine)
+	// su fallback (root password == sudoPass on many single-admin hosts), password on stdin.
+	if _, err := c.runWithStdin(ctx, host, seal, suCommand("true"), strings.NewReader(sudoPass+"\n")); err == nil {
+		return c.runStreamingWithStdin(ctx, host, seal, suCommand(rootCmd), onLine, strings.NewReader(sudoPass+"\n"))
 	}
 
 	return "", fmt.Errorf("privilege escalation failed: sudo -n, sudo -S, and su fallback all failed (verify sudo/root password and host policy)")

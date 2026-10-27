@@ -87,7 +87,7 @@ func (a *app) nextShutdown(w http.ResponseWriter, r *http.Request) {
 // trigger), so polling stops by construction. Each host's watcher runs on its own.
 func (a *app) nextRebootWatch(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
+	checker := a.sshClient.WithTimeouts(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout)
 	st := a.probeConnectivity(checker, id)
 	a.renderNext(w, "rebootwatch", map[string]any{"ID": id, "Connected": st.Connected, "Ctx": r.URL.Query().Get("ctx")})
 }

@@ -11,7 +11,6 @@ import (
 
 	"patchdeck/api/internal/db"
 	"patchdeck/api/internal/models"
-	"patchdeck/api/internal/sshx"
 )
 
 // spike_hosts.go — /next host management (add / edit / delete) plus host-key
@@ -29,6 +28,18 @@ type hostFormView struct {
 	Tags                                               string // comma-separated, for the input
 	ChecksEnabled                                      bool
 	Err                                                string
+	// Edit only: which secrets are stored (each gets a "clear on save" checkbox).
+	HasPassword, HasKey, HasSudo bool
+	// Patchdeck's own public key, shown under the "Patchdeck key" auth option.
+	AppKeyPub, AppKeyFP string
+}
+
+// withStored marks which secrets a host has stored, for the form's clear checkboxes.
+func withStored(v hostFormView, stored map[string]string) hostFormView {
+	v.HasPassword = stored["password"] != ""
+	v.HasKey = stored["private_key_pem"] != ""
+	v.HasSudo = stored["sudo_password"] != ""
+	return v
 }
 
 // splitTags parses a comma-separated tag string into a trimmed, de-duplicated list.
@@ -46,6 +57,10 @@ func splitTags(s string) []string {
 }
 
 func (a *app) renderHostForm(w http.ResponseWriter, v hostFormView) {
+	if a.appKeys != nil {
+		k := a.appKeys.Current()
+		v.AppKeyPub, v.AppKeyFP = k.AuthorizedKey, k.Fingerprint
+	}
 	a.renderNext(w, "hostform.html", v)
 }
 
@@ -53,18 +68,21 @@ func (a *app) renderHostForm(w http.ResponseWriter, v hostFormView) {
 func formHostReq(r *http.Request) hostUpsertRequest {
 	port, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("port")))
 	return hostUpsertRequest{
-		Name:             r.FormValue("name"),
-		Address:          r.FormValue("address"),
-		Port:             port,
-		SSHUser:          r.FormValue("ssh_user"),
-		AuthType:         r.FormValue("auth_type"),
-		Password:         r.FormValue("password"),
-		PrivateKeyPEM:    r.FormValue("private_key_pem"),
-		Passphrase:       r.FormValue("passphrase"),
-		SudoPassword:     r.FormValue("sudo_password"),
-		HostKeyTrustMode: r.FormValue("host_key_trust_mode"),
-		HostKeyPinned:    r.FormValue("host_key_pinned_fingerprint"),
-		Tags:             splitTags(r.FormValue("tags")),
+		Name:              r.FormValue("name"),
+		Address:           r.FormValue("address"),
+		Port:              port,
+		SSHUser:           r.FormValue("ssh_user"),
+		AuthType:          r.FormValue("auth_type"),
+		Password:          r.FormValue("password"),
+		PrivateKeyPEM:     r.FormValue("private_key_pem"),
+		Passphrase:        r.FormValue("passphrase"),
+		SudoPassword:      r.FormValue("sudo_password"),
+		ClearPassword:     r.FormValue("clear_password") != "",
+		ClearPrivateKey:   r.FormValue("clear_private_key") != "",
+		ClearSudoPassword: r.FormValue("clear_sudo_password") != "",
+		HostKeyTrustMode:  r.FormValue("host_key_trust_mode"),
+		HostKeyPinned:     r.FormValue("host_key_pinned_fingerprint"),
+		Tags:              splitTags(r.FormValue("tags")),
 	}
 }
 
@@ -109,12 +127,7 @@ func (a *app) nextHostCreate(w http.ResponseWriter, r *http.Request) {
 		a.renderHostForm(w, formViewFromReq("new", "", req, checks, policy, msg))
 		return
 	}
-	if req.AuthType == "password" {
-		req.PrivateKeyPEM, req.Passphrase = "", ""
-	}
-	if req.AuthType == "key" {
-		req.Password = ""
-	}
+	scrubForAuth(&req)
 	enc, err := encryptHostSecrets(a.secrets, req)
 	if err != nil {
 		a.renderHostForm(w, formViewFromReq("new", "", req, checks, policy, "Failed to encrypt host credentials."))
@@ -159,11 +172,12 @@ func (a *app) nextHostEdit(w http.ResponseWriter, r *http.Request) {
 	if mode == "" {
 		mode = "tofu"
 	}
-	a.renderHostForm(w, hostFormView{
+	stored, _ := decodeHostSecrets(a.secrets, host.SecretCipher)
+	a.renderHostForm(w, withStored(hostFormView{
 		Mode: "edit", ID: host.ID, Name: host.Name, Address: host.Address, Port: host.Port,
 		SSHUser: host.SSHUser, AuthType: host.AuthType, HostKeyTrustMode: mode, HostKeyPinned: host.HostKeyPinned,
 		Tags: strings.Join(host.Tags, ", "), ChecksEnabled: host.ChecksEnabled, AutoUpdatePolicy: policy,
-	})
+	}, stored))
 }
 
 // nextHostUpdate mirrors the JSON updateHost: blank secrets keep the stored ones, then
@@ -211,31 +225,14 @@ func (a *app) nextHostUpdate(w http.ResponseWriter, r *http.Request) {
 		a.renderHostForm(w, formViewFromReq("edit", id, req, checks, policy, "Failed to read existing host credentials."))
 		return
 	}
-	if req.Password == "" {
-		req.Password = stored["password"]
-	}
-	if req.PrivateKeyPEM == "" {
-		req.PrivateKeyPEM = stored["private_key_pem"]
-	}
-	if req.Passphrase == "" {
-		req.Passphrase = stored["passphrase"]
-	}
-	if req.SudoPassword == "" {
-		req.SudoPassword = stored["sudo_password"]
-	}
+	removed := mergeHostSecrets(&req, stored)
 	// Host-key policy isn't edited here — it's owned by the approval workflow. Use dummy
 	// valid values so shared validation passes; the stored policy is left untouched.
 	req.HostKeyTrustMode = "tofu"
 	req.HostKeyPinned = ""
 	if msg := validateHostRequest(req); msg != "" {
-		a.renderHostForm(w, formViewFromReq("edit", id, req, checks, policy, msg))
+		a.renderHostForm(w, withStored(formViewFromReq("edit", id, req, checks, policy, msg), stored))
 		return
-	}
-	if req.AuthType == "password" {
-		req.PrivateKeyPEM, req.Passphrase = "", ""
-	}
-	if req.AuthType == "key" {
-		req.Password = ""
 	}
 	enc, err := encryptHostSecrets(a.secrets, req)
 	if err != nil {
@@ -256,7 +253,11 @@ func (a *app) nextHostUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = db.UpdateHostOperationalControls(a.db, id, checks, policy)
 	_ = db.UpdateHostTags(a.db, id, req.Tags)
-	_ = db.RecordActivity(a.db, id, req.Name, "host_updated", fmt.Sprintf("Host %s updated", req.Name))
+	summary := fmt.Sprintf("Host %s updated", req.Name)
+	if len(removed) > 0 {
+		summary += " (removed stored " + strings.Join(removed, ", ") + ")"
+	}
+	_ = db.RecordActivity(a.db, id, req.Name, "host_updated", summary)
 	w.Header().Set("HX-Redirect", "/hosts/"+id)
 	w.WriteHeader(http.StatusOK)
 }
@@ -311,7 +312,7 @@ func (a *app) nextHostNotifPrefs(w http.ResponseWriter, r *http.Request) {
 // it, which pins that fingerprint. Reused for re-checking after a key rotation.
 func (a *app) nextHostVerify(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
+	checker := a.sshClient.WithTimeouts(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout)
 	_ = a.probeConnectivity(checker, id) // side effect: captures pending key (or verifies)
 	w.Header().Set("HX-Redirect", "/hosts/"+id)
 	w.WriteHeader(http.StatusOK)

@@ -449,7 +449,7 @@ func (a *app) nextScanPanel(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) nextDot(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
+	checker := a.sshClient.WithTimeouts(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout)
 	st := a.probeConnectivity(checker, id)
 	a.renderNext(w, "dot", map[string]any{"HostID": id, "Connected": st.Connected})
 }
@@ -458,7 +458,7 @@ func (a *app) nextDot(w http.ResponseWriter, r *http.Request) {
 // (with the failure reason) + live uptime + a manual recheck button.
 func (a *app) nextConnLine(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	checker := sshx.NewClient(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout, a.verifyHostKey)
+	checker := a.sshClient.WithTimeouts(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout)
 	st := a.probeConnectivity(checker, id)
 	a.renderNext(w, "connline", map[string]any{
 		"ID": id, "Connected": st.Connected, "Reason": st.Error, "Uptime": humanUptime(st.UptimeSeconds),

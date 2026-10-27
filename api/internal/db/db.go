@@ -1319,6 +1319,42 @@ func setAppSetting(db *sql.DB, key, value string) error {
 	return err
 }
 
+var appKeySettings = [4]string{"ssh_key_current", "ssh_key_current_created", "ssh_key_next", "ssh_key_next_created"}
+
+// GetAppKeyState reads Patchdeck's own SSH keypair state (ciphertexts, never plaintext).
+func GetAppKeyState(db *sql.DB) (models.AppKeyState, error) {
+	var v [4]string
+	for i, k := range appKeySettings {
+		s, err := getAppSetting(db, k)
+		if err != nil {
+			return models.AppKeyState{}, err
+		}
+		v[i] = s
+	}
+	return models.AppKeyState{CurrentCipher: v[0], CurrentCreated: v[1], NextCipher: v[2], NextCreated: v[3]}, nil
+}
+
+// PutAppKeyState writes the whole keypair state in one transaction, so a rotation step can
+// never leave a half-swapped key on disk. Empty values delete their row.
+func PutAppKeyState(db *sql.DB, s models.AppKeyState) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for i, v := range [4]string{s.CurrentCipher, s.CurrentCreated, s.NextCipher, s.NextCreated} {
+		if v == "" {
+			_, err = tx.Exec(`DELETE FROM app_settings WHERE key=?`, appKeySettings[i])
+		} else {
+			_, err = tx.Exec(`INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, appKeySettings[i], v)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // GetOIDCConfig reads the OIDC settings from app_settings. The client secret comes back
 // as stored (AES-GCM ciphertext in ClientSecretEnc); the caller decrypts it.
 func GetOIDCConfig(db *sql.DB) (models.OIDCConfig, error) {

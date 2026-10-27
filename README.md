@@ -48,7 +48,8 @@ It's **agentless**: nothing to install on your hosts, no daemon phoning home. Pa
 
 ### Fits the way you already run things
 
-- **Point it at your fleet over SSH** — password or key auth, per host. First connection to a host pauses so **you review and approve its SSH key** before Patchdeck ever uses it.
+- **Point it at your fleet over SSH** — with **Patchdeck's own key** (generated on first start, rotatable), a pasted key, or a password, per host. First connection to a host pauses so **you review and approve its SSH key** before Patchdeck ever uses it.
+- **Through your SSH bastion** — works through [Warpgate](https://github.com/warp-tech/warpgate) (`user:target@host -p 2222`): paste the `ssh` command and Patchdeck fills in the host. One connection per operation, so the bastion records one session per scan, not a handful.
 - **Behind your reverse proxy** — Traefik, Caddy, Nginx Proxy Manager. Serves HTTPS on its own by default; flip one env var to let your proxy terminate TLS.
 - **Through your notification stack** — native alerts to Gotify, ntfy, Discord, Telegram, Slack, Pushover, email, or a webhook. No Apprise/python container to babysit.
 - **With your homelab login** — optional single sign-on via any OIDC provider (Authentik, Authelia, Keycloak, Pocket ID, …), or a local admin with TOTP two-factor.
@@ -69,7 +70,9 @@ It's **agentless**: nothing to install on your hosts, no daemon phoning home. Pa
 - **Single sign-on** — optional OIDC (Authorization Code + PKCE) alongside local password login
 - **Two-factor auth** — optional TOTP with one-time recovery codes on the local admin
 - **API tokens** — programmatic access with `Bearer` auth
-- **Encrypted secrets** — AES-256-GCM at rest for every SSH credential
+- **Patchdeck's own SSH key** — an Ed25519 keypair generated on first start; pick **Patchdeck key** for a host and copy the public key from Settings. **Two-phase rotation** (both keys work until you finish, with a per-host "is the new key installed?" check) so rotating never locks you out
+- **Bastion / Warpgate support** — `user:target` logins, paste-to-fill from an `ssh` command, root-aware escalation (no sudo needed when the bastion logs in as root), and connection reuse so each operation is a single bastion session
+- **Encrypted secrets** — AES-256-GCM at rest for every SSH credential; stored passwords and keys can be **cleared on save**
 - **HTTPS by default** — auto-generated self-signed cert out of the box; one env var to defer to your reverse proxy
 
 ## Quick Start
@@ -134,7 +137,7 @@ Open the web UI and create the first admin account. You can turn on TOTP two-fac
 
 ### 6. Add hosts
 
-Hit **+** to add a server's SSH details. Patchdeck encrypts the credentials at rest, then walks you through **approving the host's SSH key** on first connect before it scans.
+Hit **+** to add a server's SSH details — or paste the `ssh …` command you'd use and let Patchdeck fill them in. The simplest auth is **Patchdeck key**: copy its public key from **Settings → SSH key** into the host's `~/.ssh/authorized_keys` (the card has a ready-made one-liner). Patchdeck encrypts any credentials at rest, then walks you through **approving the host's SSH key** on first connect before it scans.
 
 ## Building from Source
 
@@ -205,9 +208,25 @@ All configuration is via environment variables. Only `PATCHDECK_MASTER_KEY` is r
 - **Cookie sessions** — httpOnly, Secure, SameSite=Lax, server-side store with a sliding 7-day expiry (no JWT, no token in URLs)
 - **Login brute-force lockout** — per-IP sliding-window lockout after repeated failures
 - **TOTP two-factor** — optional, with one-time recovery codes; plus optional OIDC SSO
+- **Root passwords never on a command line** — sudo and `su` passwords are fed on stdin, so other users on the host can't read them from `/proc`
 - **Command-injection guards** — strict validation of service names and power actions sent over SSH
 - **Parameterized SQL**, **bcrypt** password hashing, per-host scan/apply rate limiting, and a full **audit trail**
 - **Minimal runtime** — a static Go binary on Alpine, no interpreter or JS runtime in the image; both `trivy` and `grype` gate every release for fixable HIGH/CRITICAL CVEs
+
+## SSH keys & Warpgate
+
+**Patchdeck key.** On first start Patchdeck generates an Ed25519 keypair. The private key is encrypted with `PATCHDECK_MASTER_KEY` and never leaves Patchdeck. The public key — and an install one-liner — is in **Settings → SSH key**. Choose **Patchdeck key** as a host's authentication and there's nothing to paste.
+
+**Rotation** is two-phase, so it never locks you out:
+1. **Rotate key** creates a new key. From then on Patchdeck offers *both* keys on every connection.
+2. Install the new public key on your hosts (or on your bastion user). **Check hosts** logs into each "Patchdeck key" host with *only* the new key and shows ✓/✗.
+3. **Finish rotation** retires the old key — it refuses while any host still rejects the new one (or finish anyway, e.g. after a compromise). Then remove the old line (`patchdeck-<timestamp>`) from `authorized_keys`.
+
+**Warpgate.** Add a host with user `<warpgate-user>:<target>`, Warpgate's address, and its SSH port (e.g. paste `ssh 'patchdeck:web-01@warpgate.example.com' -p 2222`). Put Patchdeck's public key on that Warpgate user and give it a role covering the targets. Notes:
+- The host key you approve is Warpgate's own — the same for every target.
+- Warpgate logs into targets as root, so no sudo/root password is needed; Patchdeck detects that it's already root.
+- Each operation (probe + scan, or an apply and its follow-ups) shares one SSH connection — one recorded Warpgate session.
+- Rotating through Warpgate is a single edit: swap the key on the Warpgate user.
 
 ## Notifications
 
@@ -242,6 +261,9 @@ The web UI authenticates via an httpOnly session cookie. For automation, create 
 | `POST` | `/api/hosts/:id/power` | Reboot or shutdown |
 | `GET` | `/api/activity` · `/api/activity/export` | Activity log (paginated) · CSV export |
 | `GET/POST` | `/api/jobs` · `/api/jobs/:id/runs` | Scheduled jobs · run history |
+| `PUT` | `/api/hosts/:id` | Update a host; blank secrets keep the stored ones, `clear_password` / `clear_private_key` / `clear_sudo_password: true` remove them |
+| `GET` | `/api/settings/ssh-key` | Patchdeck's public key (and the rotation's new key, if one is in progress) |
+| `POST` | `/api/settings/ssh-key/rotate` · `/check` · `/finish` · `/cancel` | Key rotation — `finish` takes optional `{"force": true}` |
 | `GET/PUT` | `/api/settings/*` | Notification, OIDC, audit, and token settings |
 
 ## Development
