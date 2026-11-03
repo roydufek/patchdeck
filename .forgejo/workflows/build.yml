@@ -39,9 +39,16 @@ jobs:
           # alpine doesn't ship it. docker-cli-buildx adds the BuildKit plugin so
           # `docker buildx build` works (legacy `docker build` is deprecated).
           apk add --no-cache docker-cli docker-cli-buildx git curl jq bash ca-certificates nodejs
-          # Two scanners, different vuln DBs — they catch different things, so we
-          # gate on both. Each install script drops a pinned binary in /usr/local/bin.
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+          # Two scanners, different vuln DBs — they catch different things, so we gate on both.
+          # Trivy = latest release straight from GitHub, checksum-verified. NOT trivy's install.sh: it
+          # downloads from get.trivy.dev, which went NXDOMAIN on 2026-11-03 and failed CI fleet-wide.
+          # The redirect gives the tag (no jq, no GitHub API rate limit).
+          TV=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/aquasecurity/trivy/releases/latest); TV=${TV##*/}; TVN=${TV#v}
+          TT="trivy_${TVN}_Linux-64bit.tar.gz"; TU="https://github.com/aquasecurity/trivy/releases/download/${TV}"
+          (cd /tmp && curl -fsSLO "$TU/$TT" && curl -fsSLO "$TU/trivy_${TVN}_checksums.txt" \
+            && grep "  ${TT}\$" "trivy_${TVN}_checksums.txt" | sha256sum -c - \
+            && tar -xzf "$TT" -C /usr/local/bin trivy && rm -f "$TT" "trivy_${TVN}_checksums.txt")
+          trivy --version | head -1
           curl -sfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
       - name: checkout
@@ -72,17 +79,51 @@ jobs:
             -t forgejo.devbox.roydufek.com/roydufek/patchdeck:latest \
             .
 
+      # Waivers: .trivyignore = dated, reasoned, ≤30-day waivers only (hub standard § Scanner waivers).
+      # Validates them, drops expired ones, and writes the active set for BOTH scanners. No file → no waivers.
+      - name: scanner waivers
+        run: |
+          set -eu
+          src=.trivyignore
+          today=$(date -u +%Y-%m-%d)
+          max=$(date -u -d "@$(( $(date -u +%s) + 30 * 86400 ))" +%Y-%m-%d)
+          : > /tmp/trivy-waivers; ids=""; bad=0
+          if [ -f "$src" ]; then
+            while IFS= read -r line || [ -n "$line" ]; do
+              case "$line" in ''|'#'*) continue ;; esac
+              id=$(printf '%s\n' "$line" | awk '{print $1}')
+              exp=$(printf '%s\n' "$line" | sed -n 's/.*exp:\([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\).*/\1/p')
+              reason=$(printf '%s\n' "$line" | sed -n 's/^[^#]*#[[:space:]]*\(..*\)$/\1/p')
+              if [ -z "$exp" ] || [ -z "$reason" ]; then echo "WAIVER INVALID (needs exp:YYYY-MM-DD and '# reason'): $line"; bad=1; continue; fi
+              if expr "$exp" \> "$max" >/dev/null; then echo "WAIVER TOO LONG (max 30 days, until $max): $line"; bad=1; continue; fi
+              if expr "$exp" \< "$today" >/dev/null; then echo "waiver EXPIRED $exp - no longer applied (fix it or renew deliberately): $id"; continue; fi
+              echo "waiver active until $exp: $id - $reason"
+              echo "$id" >> /tmp/trivy-waivers; ids="$ids $id"
+            done < "$src"
+          fi
+          if [ -n "$ids" ]; then
+            echo "ignore:" > /tmp/grype-waivers.yaml
+            for id in $ids; do printf '  - vulnerability: %s\n' "$id" >> /tmp/grype-waivers.yaml; done
+          else
+            echo "ignore: []" > /tmp/grype-waivers.yaml
+          fi
+          [ "$bad" -eq 0 ] || { echo "fix .trivyignore (standards/app-build-reference.md § Scanner waivers)"; exit 1; }
+
       # ── Security gates: fail the build only on FIXABLE High/Critical CVEs.
       # --ignore-unfixed / --only-fixed: don't block on CVEs with no upstream fix
       # (an OS base can accrete unfixable HIGH/CRITICAL in packages the app never
       # runs). Anything with a fix still fails the gate — that's the actionable
       # pressure that keeps the image at zero fixable HIGH/CRITICAL.
+      # `unset GITHUB_TOKEN` in EVERY trivy step: Forgejo injects its own token, Trivy hands it to
+      # ghcr.io whenever the mirror.gcr.io DB copy fails, and ghcr answers DENIED (2026-11-03).
       - name: trivy scan (gate — fixable HIGH/CRITICAL)
         run: |
+          unset GITHUB_TOKEN
           trivy image \
             --scanners vuln \
             --ignore-unfixed \
             --severity HIGH,CRITICAL \
+            --ignorefile /tmp/trivy-waivers \
             --exit-code 1 \
             forgejo.devbox.roydufek.com/roydufek/patchdeck:v${{ steps.version.outputs.app_version }}
 
@@ -91,12 +132,14 @@ jobs:
           grype \
             --only-fixed \
             --fail-on high \
+            -c /tmp/grype-waivers.yaml \
             forgejo.devbox.roydufek.com/roydufek/patchdeck:v${{ steps.version.outputs.app_version }}
 
       # Non-gating visibility pass: prints EVERYTHING (incl. unfixable + lower
       # severities) so any backlog stays visible in the CI log without blocking.
       - name: trivy scan (report — all findings, non-gating)
         run: |
+          unset GITHUB_TOKEN   # see the gate step
           trivy image \
             --scanners vuln \
             --severity LOW,MEDIUM,HIGH,CRITICAL \
