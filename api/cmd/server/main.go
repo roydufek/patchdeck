@@ -135,6 +135,7 @@ func main() {
 		log.Printf("generated Patchdeck's SSH key %s — public key in Settings → SSH key", cur.Fingerprint)
 	}
 	a.sched = scheduler.NewEngine(database, a.sshClient, seal, notifier, cfg.AppriseURL)
+	a.sched.SetSelfBootID(a.selfBootID)
 	a.coalescer = notify.NewCoalescer(coalesceQuiet, coalesceMaxHold, func(d notify.Digest) {
 		if !d.Notable() { // e.g. only "Apply" on hosts that had nothing to apply
 			return
@@ -2566,11 +2567,11 @@ func (a *app) applyStream(w http.ResponseWriter, r *http.Request) {
 				d.AddApplied(notify.AppliedHost{Name: host.Name, Changed: interrupted.ChangedSoFar, Interrupted: true})
 			})
 			_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_interrupted",
-				fmt.Sprintf("Connection lost during apply (%d package(s) installed before drop) — host likely restarting/rebooting; verifying", interrupted.ChangedSoFar))
+				fmt.Sprintf("Lost the running upgrade and couldn't reattach within 5 min (%d package(s) seen set up) — host may be rebooting or unreachable; verifying", interrupted.ChangedSoFar))
 			sseWrite(w, flusher, "interrupted", map[string]any{
 				"host_id":        host.ID,
 				"changed_so_far": interrupted.ChangedSoFar,
-				"message":        "Connection lost during apply — the host may be restarting a service or rebooting. Verifying…",
+				"message":        "Couldn't reattach to the running upgrade for 5 minutes — the host may be rebooting or unreachable. Verifying…",
 			})
 		default:
 			a.notifyApplyFailure(host, err)

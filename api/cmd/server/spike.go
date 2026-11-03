@@ -558,7 +558,8 @@ func (a *app) nextApplyPanel(w http.ResponseWriter, r *http.Request) {
 // nextApplyStream runs apt upgrade and streams it as HTML fragments, then re-scans so the
 // card/detail reflects the new (lower) update count. Reuses the same backend apply as the
 // SPA; apply runs on a background context (aborting mid-configure risks a half-configured
-// dpkg), and a dropped connection is reported as "likely restarting" rather than a failure.
+// dpkg). The upgrade runs detached on the host; a dropped connection reattaches, and only a host
+// unreachable for 5 minutes is reported as interrupted (verify by re-scanning) rather than a failure.
 func (a *app) nextApplyStream(w http.ResponseWriter, r *http.Request) {
 	host, err := db.GetHost(a.db, chi.URLParam(r, "id"))
 	if err != nil {
@@ -591,8 +592,8 @@ func (a *app) nextApplyStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var interrupted *sshx.ApplyInterruptedError
 		if errors.As(err, &interrupted) {
-			_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_interrupted", fmt.Sprintf("Connection lost during apply (%d changed) — host likely restarting", interrupted.ChangedSoFar))
-			line("ok", "Connection dropped mid-apply — the host may be restarting a service or rebooting. Re-scan to verify.")
+			_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_interrupted", fmt.Sprintf("Lost the running upgrade and couldn't reattach within 5 min (%d changed so far) — host may be rebooting or unreachable", interrupted.ChangedSoFar))
+			line("ok", "Couldn't reattach to the running upgrade for 5 minutes — the host may be rebooting or unreachable. Re-scan to verify.")
 		} else {
 			_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_fail", fmt.Sprintf("Apply failed: %v", err))
 			line("err", "Apply failed: "+err.Error())

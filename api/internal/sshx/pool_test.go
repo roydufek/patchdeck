@@ -101,6 +101,11 @@ func (f *fakeSSH) serve(nc net.Conn, cfg *ssh.ServerConfig) {
 				f.mu.Unlock()
 				out, code := h(p.Cmd, string(in))
 				_, _ = ch.Write([]byte(out))
+				if code == dropConn { // simulate the path dying mid-command (tailscale restart, reboot…)
+					time.Sleep(50 * time.Millisecond)
+					sc.Close()
+					return
+				}
 				_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{code}))
 				ch.Close()
 				return
@@ -124,6 +129,10 @@ func (f *fakeSSH) commands() ([]string, []string) {
 	defer f.mu.Unlock()
 	return append([]string(nil), f.cmds...), append([]string(nil), f.stdins...)
 }
+
+// dropConn as a handler exit code makes the fake server cut the whole connection after writing
+// the output, without sending an exit status.
+const dropConn = 999
 
 func newSigner(t *testing.T) ssh.Signer {
 	_, k, _ := ed25519.GenerateKey(rand.Reader)

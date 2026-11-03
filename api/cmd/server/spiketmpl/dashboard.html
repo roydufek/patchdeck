@@ -55,7 +55,7 @@
     <button id="restartAllBtn" class="btn ghost"{{if not (gt .Summary.RestartHosts 0)}} hidden{{end}} onclick="document.getElementById('restartconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Restart all (<span class="bulkn">{{.Summary.RestartHosts}}</span>)</button>
   </div>
   <div id="bulkconfirm" class="applyconfirm" hidden style="margin-top:12px">
-    <p class="confirm-q">Apply updates on the <b><span class="cf-hosts">{{.Summary.NeedAttention}}</span> host(s)</b> that need them (<span class="cf-updates">{{.Summary.Updates}}</span> update(s) total)? Each host runs <span class="mono">apt upgrade</span> independently and streams on its own card{{if gt .BulkConcurrency 0}}, up to {{.BulkConcurrency}} at a time{{end}}{{if gt .ApplyStagger 0}}, staggered {{.ApplyStagger}}s apart{{end}}.</p>
+    <p class="confirm-q">Apply updates on the <b><span class="cf-hosts">{{.Summary.NeedAttention}}</span> host(s)</b> that need them (<span class="cf-updates">{{.Summary.Updates}}</span> update(s) total)? Each host runs <span class="mono">apt upgrade</span> independently and streams on its own card{{if gt .BulkConcurrency 0}}, up to {{.BulkConcurrency}} at a time{{end}}{{if gt .ApplyStagger 0}}, staggered {{.ApplyStagger}}s apart{{end}}. The host Patchdeck runs on goes last, once the others finish.</p>
     <div class="c-actions">
       <button class="btn danger" onclick="pdBulk('apply',{{.BulkConcurrency}},{{.ApplyStagger}}*1000,{{.WatchdogMs}});document.getElementById('bulkconfirm').hidden=true">Apply all now</button>
       <button class="btn ghost" onclick="document.getElementById('bulkconfirm').hidden=true">Cancel</button>

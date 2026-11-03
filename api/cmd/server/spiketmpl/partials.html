@@ -404,7 +404,7 @@
   </div>
   <div id="scanarea-{{.ID}}"></div>
   {{if not .Unverified}}<div hidden data-pdbulk="scan" data-host="{{.ID}}" hx-get="/hosts/{{.ID}}/scanpanel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>
-  {{if gt .UpdateCount 0}}<div hidden data-pdbulk="apply" data-host="{{.ID}}" hx-get="/hosts/{{.ID}}/apply/panel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}
+  {{if gt .UpdateCount 0}}<div hidden data-pdbulk="apply" data-host="{{.ID}}"{{if .IsSelf}} data-pdlast="1"{{end}} hx-get="/hosts/{{.ID}}/apply/panel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}
   {{if and .RebootAny (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="reboot" data-host="{{.ID}}" hx-post="/hosts/{{.ID}}/reboot?ctx=bulk" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::after-request="document.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}
   {{if and .RestartOnly (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="restart" data-host="{{.ID}}" hx-post="/hosts/{{.ID}}/restart?ctx=bulk" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::before-request="window.pdInflight('scanarea-{{.ID}}','Restarting services')" hx-on::after-request="document.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}{{end}}
 </article>{{end}}
@@ -428,7 +428,10 @@
      so peak concurrency stays bounded on large fleets. scan/apply "finish" when their card
      swaps back in (htmx:afterSettle on #card-<id>); reboot "finishes" when its dispatch returns
      (a pd:done beacon), since the recovery watch then runs on its own. staggerMs adds a minimum
-     gap between successive starts (apply uses it to avoid bouncing services fleet-wide at once). */}}
+     gap between successive starts (apply uses it to avoid bouncing services fleet-wide at once).
+     A trigger marked data-pdlast (the host Patchdeck itself runs on — often the bastion too) starts
+     only after every other host has finished, so its own network/docker restarts can't cut other
+     hosts' applies mid-flight. */}}
 {{define "bulkjs"}}<script>
 (function(){
   var active=null;
@@ -447,12 +450,14 @@
   window.pdBulk=function(kind,cap,staggerMs,watchdogMs){
     var els=[].slice.call(document.querySelectorAll('[data-pdbulk="'+kind+'"]'));
     if(!els.length) return;
+    els.sort(function(a,b){return (a.hasAttribute('data-pdlast')?1:0)-(b.hasAttribute('data-pdlast')?1:0);});
     cap=(cap&&cap>0)?cap:els.length; staggerMs=staggerMs||0; watchdogMs=watchdogMs||0;
     var s={inflight:{},timers:{},pending:els.slice(),total:els.length,finished:0,last:0,timer:null};
     s.count=function(){var n=0;for(var k in s.inflight){n++;} return n;};
     s.schedule=function(){
       if(s.timer) return;
       while(s.pending.length && s.count()<cap){
+        if(s.pending[0].hasAttribute('data-pdlast') && s.count()>0) return; // waits for the rest; markDone re-schedules
         var wait=staggerMs-(Date.now()-s.last);
         if(staggerMs>0 && wait>0){ s.timer=setTimeout(function(){s.timer=null;s.schedule();},wait); return; }
         var el=s.pending.shift(), h=el.getAttribute('data-host');

@@ -30,6 +30,26 @@ type Engine struct {
 	running       map[string]bool   // jobs currently executing — prevents overlap
 	lastPurgeDate string            // "2006-01-02" — run once per day
 	sem           chan struct{}     // bounds concurrent job execution
+	selfBootID    string            // the machine Patchdeck runs on (see SetSelfBootID)
+}
+
+// SetSelfBootID tells the engine which managed host is the machine Patchdeck itself runs on
+// (matched by its scanned boot_id), so apply jobs patch that host LAST — its own network or
+// docker restarts would otherwise cut the other hosts' applies mid-run.
+func (e *Engine) SetSelfBootID(id string) { e.selfBootID = strings.TrimSpace(id) }
+
+// selfLast moves the hosts isSelf reports to the end, keeping everyone's relative order.
+func selfLast(hosts []models.Host, isSelf func(models.Host) bool) []models.Host {
+	out := make([]models.Host, 0, len(hosts))
+	var self []models.Host
+	for _, h := range hosts {
+		if isSelf(h) {
+			self = append(self, h)
+		} else {
+			out = append(out, h)
+		}
+	}
+	return append(out, self...)
 }
 
 func NewEngine(dbConn *sql.DB, ssh *sshx.Client, secrets *crypto.SealBox, notifier *notify.Dispatcher, defaultAppriseURL string) *Engine {
@@ -310,6 +330,12 @@ func (e *Engine) runJob(ctx context.Context, j models.Job) {
 		return
 	}
 
+	if (mode == "apply" || mode == "scan_apply") && e.selfBootID != "" {
+		hosts = selfLast(hosts, func(h models.Host) bool {
+			snap, _, err := db.GetScanSnapshot(e.db, h.ID)
+			return err == nil && snap.BootID == e.selfBootID
+		})
+	}
 	notes := e.newRunNotes(j)
 	total, ok, failed := 0, 0, 0
 	var details []string
@@ -483,7 +509,7 @@ func (e *Engine) runApply(j models.Job, host models.Host, n *runNotes) bool {
 				d.AddApplied(notify.AppliedHost{Name: host.Name, Changed: interrupted.ChangedSoFar, Interrupted: true})
 			})
 			_ = db.RecordActivity(e.db, host.ID, host.Name, "apply_interrupted",
-				fmt.Sprintf("Scheduled apply: connection lost (%d package(s) installed) — host likely rebooting; will reconcile on next scan", interrupted.ChangedSoFar))
+				fmt.Sprintf("Scheduled apply: lost the running upgrade and couldn't reattach within 5 min (%d package(s) seen set up) — will reconcile on next scan", interrupted.ChangedSoFar))
 			log.Printf("scheduler: job=%s apply host=%s interrupted (connection lost, %d changed): %v", j.ID, host.Name, interrupted.ChangedSoFar, err)
 			return true
 		}

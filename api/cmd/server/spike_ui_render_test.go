@@ -120,6 +120,12 @@ func TestCardRestartRebootPresentation(t *testing.T) {
 	protRestart := nextHostView{ID: "h-prot", Name: "prot", HasScan: true, RestartOnly: true, RestartServices: []string{"cron.service"}, ExcludeFromBulk: true}
 	out = exec(t, "card", protRestart)
 	mustNotContain(t, "card/protected-restart", out, `data-pdbulk="restart"`)
+
+	// "Apply all" patches the Patchdeck host last: only its apply trigger carries data-pdlast.
+	selfUpd := nextHostView{ID: "h-self", Name: "self", HasScan: true, UpdateCount: 3, IsSelf: true}
+	mustContain(t, "card/self-apply", exec(t, "card", selfUpd), `data-pdbulk="apply" data-host="h-self" data-pdlast="1"`)
+	otherUpd := nextHostView{ID: "h-o", Name: "o", HasScan: true, UpdateCount: 3}
+	mustNotContain(t, "card/other-apply", exec(t, "card", otherUpd), `data-pdlast`)
 }
 
 // TestActionresultAutoRescan verifies the bulk restart path auto-fires a scan (no manual button),

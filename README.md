@@ -58,7 +58,8 @@ It's **agentless**: nothing to install on your hosts, no daemon phoning home. Pa
 ## Features
 
 - **Agentless scanning** — connects out over SSH; nothing to deploy or maintain on your hosts
-- **One-click patching** — apply `apt` updates with real-time streaming output, right in the browser
+- **One-click patching** — apply `apt` updates with real-time streaming output, right in the browser. The upgrade runs **detached on the host** (refreshing package lists first), so a dropped connection — a tailscale or network restart mid-upgrade, a bastion hiccup — never kills `apt` or loses the result: Patchdeck reattaches and records what actually happened
+- **Self-aware fleet apply** — **Apply all** (and scheduled apply jobs) patch the host Patchdeck runs on **last**, so its own network/docker restarts can't cut the other hosts' upgrades
 - **Intelligent service restart** — one **Restart services** action picks the right method per unit (a clean restart where it's safe, needrestart's coordinated handler where a naive restart would sever the session). Anything that comes back still flagged is **learned** and moved to a **reboot-required** bucket on its own — so you never have to guess which services actually need a reboot. A reboot (via Patchdeck or out-of-band) clears the learned set automatically.
 - **Reboot detection &amp; scoped fleet reboot** — surfaces `reboot-required` plus the exact services needing attention, split into restart-now vs reboot-required. **Reboot all** reboots only the hosts that need it — and never the host Patchdeck runs on, which it detects automatically (you can protect any other host too), each with its own "waiting for it to come back" watch
 - **First-connection host-key approval** — every new host's SSH key is captured and **held for your approval** before it's trusted; a changed key later pauses operations for re-approval (fail-closed, no silent trust)

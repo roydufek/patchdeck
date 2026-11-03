@@ -345,12 +345,6 @@ if command -v needrestart >/dev/null 2>&1; then NR=$(needrestart -b 2>/dev/null 
 echo "__BOOTID_START__"; cat /proc/sys/kernel/random/boot_id 2>/dev/null || true; echo "__BOOTID_END__"
 echo "__SYSINFO_START__"; cat /etc/os-release 2>/dev/null || true; echo "__SYSINFO_SEP__"; uptime -p 2>/dev/null || uptime 2>/dev/null || true; echo "__SYSINFO_SEP__"; uname -r 2>/dev/null || true; echo "__SYSINFO_END__"`
 
-// applyCmd installs all available upgrades. LANG=C keeps the "Setting up " markers
-// (used to count changed packages) stable across locales.
-const applyCmd = `export LANG=C LC_ALL=C DEBIAN_FRONTEND=noninteractive
-apt-get -y dist-upgrade
-test -f /var/run/reboot-required && echo __REBOOT__ || true`
-
 func (c *Client) ScanHost(host models.Host, seal *crypto.SealBox) (models.ScanResult, error) {
 	raw, err := c.runPrivileged(context.Background(), host, seal, scanCmd)
 	if err != nil {
@@ -361,21 +355,7 @@ func (c *Client) ScanHost(host models.Host, seal *crypto.SealBox) (models.ScanRe
 }
 
 func (c *Client) ApplyUpdates(host models.Host, seal *crypto.SealBox) (models.ApplyResult, error) {
-	raw, err := c.runPrivileged(context.Background(), host, seal, applyCmd)
-	if err != nil {
-		if errors.Is(err, ErrConnectionLost) {
-			return models.ApplyResult{}, &ApplyInterruptedError{
-				Underlying:   err,
-				ChangedSoFar: strings.Count(raw, "Setting up "),
-				DpkgStarted:  strings.Contains(raw, "Unpacking ") || strings.Contains(raw, "Setting up "),
-			}
-		}
-		return models.ApplyResult{}, err
-	}
-	// Count only "Setting up" — each package prints both "Unpacking" and "Setting up",
-	// so counting both doubles the result. "Setting up" is the final installation step.
-	changed := strings.Count(raw, "Setting up ")
-	return models.ApplyResult{ChangedPackages: changed, RawOutput: raw, NeedsReboot: strings.Contains(raw, "__REBOOT__")}, nil
+	return c.applyDetached(context.Background(), host, seal, nil)
 }
 
 // isSystemdManagerUnit reports whether a needrestart-listed "service" is really the
@@ -1023,7 +1003,7 @@ type ApplyInterruptedError struct {
 }
 
 func (e *ApplyInterruptedError) Error() string {
-	return fmt.Sprintf("connection lost during apply after %d package(s) began installing (host likely restarting a service or rebooting): %v", e.ChangedSoFar, e.Underlying)
+	return fmt.Sprintf("lost the running upgrade after %d package(s) were set up (the host may be rebooting or unreachable — re-scan to verify): %v", e.ChangedSoFar, e.Underlying)
 }
 
 func (e *ApplyInterruptedError) Unwrap() error { return e.Underlying }
@@ -1245,21 +1225,8 @@ func (c *Client) ScanHostStreaming(ctx context.Context, host models.Host, seal *
 	return result, nil
 }
 
-// ApplyUpdatesStreaming runs apply with streaming output via onLine callback.
+// ApplyUpdatesStreaming runs apply with streaming output via onLine callback. The upgrade runs
+// detached on the host (apply.go), so a dropped connection reattaches instead of losing the result.
 func (c *Client) ApplyUpdatesStreaming(ctx context.Context, host models.Host, seal *crypto.SealBox, onLine func(line string)) (models.ApplyResult, error) {
-	raw, err := c.runPrivilegedStreaming(ctx, host, seal, applyCmd, onLine)
-	if err != nil {
-		if errors.Is(err, ErrConnectionLost) {
-			return models.ApplyResult{}, &ApplyInterruptedError{
-				Underlying:   err,
-				ChangedSoFar: strings.Count(raw, "Setting up "),
-				DpkgStarted:  strings.Contains(raw, "Unpacking ") || strings.Contains(raw, "Setting up "),
-			}
-		}
-		return models.ApplyResult{}, err
-	}
-	// Count only "Setting up" — each package prints both "Unpacking" and "Setting up",
-	// so counting both doubles the result. "Setting up" is the final installation step.
-	changed := strings.Count(raw, "Setting up ")
-	return models.ApplyResult{ChangedPackages: changed, RawOutput: raw, NeedsReboot: strings.Contains(raw, "__REBOOT__")}, nil
+	return c.applyDetached(ctx, host, seal, onLine)
 }
