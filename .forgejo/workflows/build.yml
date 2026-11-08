@@ -3,7 +3,8 @@
 #
 # Runner: instance-level Forgejo runner with the `docker` label resolving to
 # alpine:latest, force_pull: true, host docker socket mounted into the job
-# container. Tools install per-step so we always pull the latest patched versions.
+# container. Build tools install per-run; the scanners run as --pull=always images,
+# so every run gets the latest patched versions.
 #
 # Secrets used:
 #   REGISTRY_TOKEN — Forgejo PAT with package R/W, stored at repo level.
@@ -38,18 +39,9 @@ jobs:
           # nodejs is required by actions/checkout (a JavaScript action) — bare
           # alpine doesn't ship it. docker-cli-buildx adds the BuildKit plugin so
           # `docker buildx build` works (legacy `docker build` is deprecated).
+          # The scanners are NOT installed here: they run as aquasec/trivy + anchore/grype images
+          # (--pull=always) in the gate steps, so a GitHub outage can't block CI (2026-11-07).
           apk add --no-cache docker-cli docker-cli-buildx git curl jq bash ca-certificates nodejs
-          # Two scanners, different vuln DBs — they catch different things, so we gate on both.
-          # Trivy = latest release straight from GitHub, checksum-verified. NOT trivy's install.sh: it
-          # downloads from get.trivy.dev, which went NXDOMAIN on 2026-11-03 and failed CI fleet-wide.
-          # The redirect gives the tag (no jq, no GitHub API rate limit).
-          TV=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/aquasecurity/trivy/releases/latest); TV=${TV##*/}; TVN=${TV#v}
-          TT="trivy_${TVN}_Linux-64bit.tar.gz"; TU="https://github.com/aquasecurity/trivy/releases/download/${TV}"
-          (cd /tmp && curl -fsSLO "$TU/$TT" && curl -fsSLO "$TU/trivy_${TVN}_checksums.txt" \
-            && grep "  ${TT}\$" "trivy_${TVN}_checksums.txt" | sha256sum -c - \
-            && tar -xzf "$TT" -C /usr/local/bin trivy && rm -f "$TT" "trivy_${TVN}_checksums.txt")
-          trivy --version | head -1
-          curl -sfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
       - name: checkout
         uses: actions/checkout@v4
@@ -114,36 +106,32 @@ jobs:
       # (an OS base can accrete unfixable HIGH/CRITICAL in packages the app never
       # runs). Anything with a fix still fails the gate — that's the actionable
       # pressure that keeps the image at zero fixable HIGH/CRITICAL.
-      # `unset GITHUB_TOKEN` in EVERY trivy step: Forgejo injects its own token, Trivy hands it to
-      # ghcr.io whenever the mirror.gcr.io DB copy fails, and ghcr answers DENIED (2026-11-03).
+      # Each scanner runs in its own throwaway container on the host's docker (--pull=always = latest
+      # program + a fresh DB, no cache). The waiver files go in with `docker cp`: a `-v /tmp/...` bind
+      # would resolve on the devbox HOST, not in this job container. The scanner container doesn't get
+      # the job's env, so Forgejo's GITHUB_TOKEN can't reach Trivy (the 2026-11-03 ghcr DENIED).
       - name: trivy scan (gate — fixable HIGH/CRITICAL)
         run: |
-          unset GITHUB_TOKEN
-          trivy image \
-            --scanners vuln \
-            --ignore-unfixed \
-            --severity HIGH,CRITICAL \
-            --ignorefile /tmp/trivy-waivers \
-            --exit-code 1 \
-            forgejo.devbox.roydufek.com/roydufek/patchdeck:v${{ steps.version.outputs.app_version }}
+          C=$(docker create --pull=always --quiet -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest \
+            image --scanners vuln --ignore-unfixed --severity HIGH,CRITICAL --ignorefile /trivy-waivers --exit-code 1 \
+            forgejo.devbox.roydufek.com/roydufek/patchdeck:v${{ steps.version.outputs.app_version }})
+          docker cp /tmp/trivy-waivers "$C:/trivy-waivers"
+          rc=0; docker start -a "$C" || rc=$?; docker rm -v "$C" >/dev/null; exit $rc
 
       - name: grype scan (gate — fixable HIGH/CRITICAL)
         run: |
-          grype \
-            --only-fixed \
-            --fail-on high \
-            -c /tmp/grype-waivers.yaml \
-            forgejo.devbox.roydufek.com/roydufek/patchdeck:v${{ steps.version.outputs.app_version }}
+          C=$(docker create --pull=always --quiet -v /var/run/docker.sock:/var/run/docker.sock anchore/grype:latest \
+            --only-fixed --fail-on high -c /grype-waivers.yaml \
+            forgejo.devbox.roydufek.com/roydufek/patchdeck:v${{ steps.version.outputs.app_version }})
+          docker cp /tmp/grype-waivers.yaml "$C:/grype-waivers.yaml"
+          rc=0; docker start -a "$C" || rc=$?; docker rm -v "$C" >/dev/null; exit $rc
 
       # Non-gating visibility pass: prints EVERYTHING (incl. unfixable + lower
       # severities) so any backlog stays visible in the CI log without blocking.
       - name: trivy scan (report — all findings, non-gating)
         run: |
-          unset GITHUB_TOKEN   # see the gate step
-          trivy image \
-            --scanners vuln \
-            --severity LOW,MEDIUM,HIGH,CRITICAL \
-            --exit-code 0 \
+          docker run --rm --pull=always --quiet -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest \
+            image --scanners vuln --severity LOW,MEDIUM,HIGH,CRITICAL --exit-code 0 \
             forgejo.devbox.roydufek.com/roydufek/patchdeck:v${{ steps.version.outputs.app_version }}
 
       - name: push image
