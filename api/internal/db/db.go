@@ -148,6 +148,18 @@ func Migrate(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS restart_marks (host_id TEXT NOT NULL, service TEXT NOT NULL, boot_id TEXT NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY(host_id, service))`); err != nil {
 		return err
 	}
+	// One-time (v2.9.2): forget marks learned before restarts were verified. Until then a restart
+	// that failed on the host (journald racing a systemd re-exec) was still marked, so the next scan
+	// wrongly promoted the unit to reboot-only. A mark costs at most one restart to relearn.
+	var verified string
+	if err := db.QueryRow(`SELECT value FROM app_settings WHERE key='restart_marks_verified'`).Scan(&verified); errors.Is(err, sql.ErrNoRows) {
+		if _, err := db.Exec(`DELETE FROM restart_marks`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`INSERT INTO app_settings(key,value) VALUES('restart_marks_verified','1')`); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

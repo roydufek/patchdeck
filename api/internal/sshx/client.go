@@ -437,6 +437,60 @@ func deferredRestartCmd(svc string) string {
 	return "if [ -x \"" + h + "\" ]; then DEBIAN_FRONTEND=noninteractive \"" + h + "\"; else " + detached + "; fi"
 }
 
+// waitPID1Cmd waits (up to ~30 s) until systemd answers on its bus again after a daemon-reexec.
+// `systemctl daemon-reexec` returns before the new PID 1 is serving, and a restart sent in that
+// gap fails with "Transport endpoint is not connected" (journald, 2026-11-07, on 3 of 4 hosts).
+const waitPID1Cmd = "__pdw=0; sleep 1; until systemctl show --property=Version --value >/dev/null 2>&1 || [ \"$__pdw\" -ge 30 ]; do sleep 1; __pdw=$((__pdw+1)); done"
+
+// unitSafe turns a service name into something usable inside a transient unit name or a file
+// name: `@`, `.` and `:` become `_`. svc is pre-validated by validServiceName.
+func unitSafe(svc string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			return r
+		}
+		return '_'
+	}, svc)
+}
+
+// restartResultPath is where a batched detached restart leaves its exit code (.rc) and stderr
+// (.err) for the batch's wait phase. $$ (the batch script's PID) keeps reruns apart; /run is
+// tmpfs, so anything left behind dies with the boot.
+func restartResultPath(svc string) string { return "/run/patchdeck-restart-" + unitSafe(svc) + "-$$" }
+
+// verifiedRestartCmd is deferredRestartCmd for the batch: same handler-or-detached rule, but the
+// detached restart records its outcome so the batch can confirm it instead of assuming success.
+// A dispatch that "worked" while the restart itself failed got marked, and the next scan then
+// wrongly learned the unit as reboot-only. The restart retries once after 2 s, which absorbs a
+// PID 1 that was briefly unreachable.
+func verifiedRestartCmd(svc string) string {
+	if isDbusFamily(svc) {
+		return deferredRestartCmd(svc)
+	}
+	h := "/etc/needrestart/restart.d/" + svc
+	f := restartResultPath(svc)
+	inner := "{ systemctl restart " + svc + " || { sleep 2; systemctl restart " + svc + "; }; } 2>" + f + ".err; echo \\$? >" + f + ".rc"
+	detached := "systemd-run --collect --quiet --unit=pdrestart-" + unitSafe(svc) + "-$$ --description=\"patchdeck restart " + svc + "\" /bin/sh -c \"" + inner + "\""
+	return "if [ -x \"" + h + "\" ]; then DEBIAN_FRONTEND=noninteractive \"" + h + "\"; else " + detached + "; fi"
+}
+
+// managersFirst returns services with the systemd manager entries moved to the front (order
+// otherwise kept), so PID 1 re-execs before anything else is restarted.
+func managersFirst(services []string) []string {
+	out := make([]string, 0, len(services))
+	for _, s := range services {
+		if isSystemdManagerUnit(s) {
+			out = append(out, s)
+		}
+	}
+	for _, s := range services {
+		if !isSystemdManagerUnit(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // isUnitNotFound reports whether a `systemctl restart` failure means the unit does not
 // exist / is not loaded — i.e. needrestart listed something that isn't a real restartable
 // unit. Such entries are skipped rather than reported as a hard failure.
@@ -469,7 +523,7 @@ func (c *Client) RestartServices(host models.Host, seal *crypto.SealBox, service
 	var failures []string
 	var rebootRequired []string
 	skipped := 0
-	for _, svc := range services {
+	for _, svc := range managersFirst(services) {
 		// The per-user manager (systemd-user) isn't a restartable system unit — skip it
 		// cleanly rather than attempt a doomed restart.
 		if isUserManagerUnit(svc) {
@@ -505,7 +559,7 @@ func (c *Client) RestartServices(host models.Host, seal *crypto.SealBox, service
 		cmd := "systemctl restart " + svc
 		label := svc
 		if isSystemdManagerUnit(svc) {
-			cmd = "systemctl daemon-reexec"
+			cmd = "systemctl daemon-reexec; __pdrc=$?; " + waitPID1Cmd + "; exit $__pdrc"
 			label = svc + " (daemon-reexec)"
 		}
 		_, err := c.runPrivileged(context.Background(), host, seal, cmd)
@@ -619,21 +673,81 @@ func splitRestartBatch(services []string) (batchable, special []string) {
 // session, so we escalate (su) only ONCE instead of once per unit. The old per-unit escalation
 // re-ran the whole sudo→su probe ladder for each service, which hammered `su` and failed
 // intermittently on small hosts (a 13-unit restart opened ~13 separate su sessions in a burst).
-// Each unit's restart is the same detached command deferredRestartCmd builds; we capture its
-// combined output + exit code and emit a tab-delimited, parseable result line. svc is
-// pre-validated by validServiceName (alnum plus . _ - @ : — no shell metacharacters), so
-// single-quoting it as a printf arg and interpolating it into the fixed command is
-// injection-safe.
+// It runs in three phases (2026-11-07 fix):
+//  1. The systemd manager re-execs FIRST, and the script waits until PID 1 answers again. Fired
+//     alongside the others, the re-exec cut off journald's restart on 3 of 4 hosts.
+//  2. Every other unit is dispatched with verifiedRestartCmd (detached, records its outcome).
+//  3. The script waits (up to 90 s in total) for each detached restart to finish and reports its
+//     real result on a restartDoneMarker line.
+//
+// Each dispatch emits a tab-delimited restartBatchMarker line with its combined output + exit
+// code. svc is pre-validated by validServiceName (alnum plus . _ - @ : — no shell
+// metacharacters), so single-quoting it as a printf arg and interpolating it into the fixed
+// command is injection-safe.
 func batchRestartScript(services []string) string {
 	var b strings.Builder
 	b.WriteString("set +e\n")
-	for _, svc := range services {
-		b.WriteString("__pdout=$( { ")
-		b.WriteString(deferredRestartCmd(svc))
-		b.WriteString(" ; } 2>&1 ); __pdrc=$?; ")
+	result := func(svc string) {
 		b.WriteString("printf '" + restartBatchMarker + "\\t%s\\t%d\\t%s\\n' '" + svc + "' \"$__pdrc\" \"$(printf '%s' \"$__pdout\" | tr '\\n\\t' '  ')\"\n")
 	}
+	var units []string
+	for _, svc := range services {
+		if !isSystemdManagerUnit(svc) {
+			units = append(units, svc)
+			continue
+		}
+		b.WriteString("__pdout=$( { systemctl daemon-reexec ; } 2>&1 ); __pdrc=$?; " + waitPID1Cmd + "; ")
+		result(svc)
+	}
+	for i, svc := range units {
+		b.WriteString("__pdout=$( { ")
+		b.WriteString(verifiedRestartCmd(svc))
+		b.WriteString(fmt.Sprintf(" ; } 2>&1 ); __pdrc=$?; __pdrc%d=$__pdrc; ", i))
+		result(svc)
+	}
+	b.WriteString("__pdend=$(( $(date +%s) + 90 ))\n")
+	for i, svc := range units {
+		if isDbusFamily(svc) {
+			continue
+		}
+		h := "/etc/needrestart/restart.d/" + svc
+		f := restartResultPath(svc)
+		// Only a detached restart that was dispatched (rc 0, no needrestart handler) leaves a result.
+		b.WriteString(fmt.Sprintf("if [ \"$__pdrc%d\" = 0 ] && [ ! -x \"%s\" ]; then ", i, h))
+		b.WriteString("while [ ! -s " + f + ".rc ] && [ \"$(date +%s)\" -lt \"$__pdend\" ]; do sleep 1; done; ")
+		b.WriteString("if [ -s " + f + ".rc ]; then printf '" + restartDoneMarker + "\\t%s\\t%s\\t%s\\n' '" + svc + "' \"$(cat " + f + ".rc)\" \"$(tr '\\n\\t' '  ' < " + f + ".err 2>/dev/null)\"; rm -f " + f + ".rc " + f + ".err; ")
+		b.WriteString("else printf '" + restartDoneMarker + "\\t%s\\tpending\\t\\n' '" + svc + "'; fi; fi\n")
+	}
 	return b.String()
+}
+
+// restartDoneMarker prefixes the wait phase's per-unit outcome line: svc, then the restart's exit
+// code (or "pending" if it was still running at the deadline), then its stderr.
+const restartDoneMarker = "PDSVCDONE"
+
+// parseRestartDone extracts the outcomes of the detached restarts from batchRestartScript's wait
+// phase. A unit with no entry was not detached (handler, manager) or the session dropped first.
+func parseRestartDone(output string) map[string]restartLineResult {
+	res := map[string]restartLineResult{}
+	for _, ln := range strings.Split(output, "\n") {
+		if !strings.HasPrefix(ln, restartDoneMarker+"\t") {
+			continue
+		}
+		parts := strings.SplitN(ln, "\t", 4)
+		if len(parts) < 3 || strings.TrimSpace(parts[2]) == "pending" {
+			continue
+		}
+		rc, err := strconv.Atoi(strings.TrimSpace(parts[2]))
+		if err != nil {
+			continue
+		}
+		out := ""
+		if len(parts) == 4 {
+			out = strings.TrimSpace(parts[3])
+		}
+		res[parts[1]] = restartLineResult{rc: rc, out: out}
+	}
+	return res
 }
 
 type restartLineResult struct {
@@ -699,9 +813,11 @@ func (c *Client) RestartDeferredDetached(host models.Host, seal *crypto.SealBox,
 			return models.RestartResult{}, err
 		}
 		parsed := parseRestartBatch(out)
+		finished := parseRestartDone(out)
 		escalationFailed := len(parsed) == 0 && err != nil
 		for _, svc := range batchable {
 			r, seen := parsed[svc]
+			fin, verified := finished[svc]
 			switch {
 			case escalationFailed:
 				fail(svc, stripAuthPromptNoise(err.Error()))
@@ -710,6 +826,17 @@ func (c *Client) RestartDeferredDetached(host models.Host, seal *crypto.SealBox,
 				dispatched = append(dispatched, svc)
 			case !seen:
 				fail(svc, "no result (restart may not have run)")
+			case r.rc == 0 && verified && fin.rc != 0:
+				// Dispatched, but the restart itself failed on the host. Not marked, so the next scan
+				// keeps it restartable (a retry) instead of learning it as reboot-only.
+				reason := "restart failed on the host; run Restart services again"
+				if fin.out != "" {
+					reason += " (" + fin.out + ")"
+				}
+				fail(svc, reason)
+			case r.rc == 0 && verified:
+				done[svc] = "✓ " + svc + " — restarted"
+				dispatched = append(dispatched, svc)
 			case r.rc == 0:
 				ok(svc)
 			case isUnitNotFoundText(r.out):
