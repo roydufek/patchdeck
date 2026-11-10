@@ -65,7 +65,8 @@ It's **agentless**: nothing to install on your hosts, no daemon phoning home. Pa
 - **First-connection host-key approval** — every new host's SSH key is captured and **held for your approval** before it's trusted; a changed key later pauses operations for re-approval (fail-closed, no silent trust)
 - **Live, filterable dashboard** — hosts that **need attention** are pinned on top and **re-file themselves the moment a scan changes their status** (no reload); filter by facet (updates · reboot/restart · healthy), search by name or tag, and optionally **group by tag** (tag hosts by role/site/environment)
 - **Scheduled maintenance** — cron schedules targeting a single host, a tag, several hosts, or the whole fleet, with per-job run history (last/next run, per-host outcomes)
-- **Bulk actions** — scan, apply, or reboot across the fleet, each host streaming independently on its own card; concurrency-capped (`PATCHDECK_BULK_CONCURRENCY`) with an optional apply stagger (`PATCHDECK_APPLY_STAGGER_SECONDS`) so a large fleet doesn't bounce everything at once
+- **Bulk actions** — scan, apply, restart, or reboot across the fleet, each host streaming independently on its own card; concurrency-capped (`PATCHDECK_BULK_CONCURRENCY`) with an optional apply stagger (`PATCHDECK_APPLY_STAGGER_SECONDS`) so a large fleet doesn't bounce everything at once
+- **Actions run on the server** — close the tab, lose your connection, or switch devices: every scan, apply, restart and reboot keeps going, and any page that opens later shows its live progress. A host does one thing at a time (manual, scheduled or API). If Patchdeck itself restarts mid-run, it reattaches to upgrades still running on hosts, finishes reboot watches, and offers **Resume remaining** for hosts that never started
 - **Activity log** — a timeline of every scan, apply, restart, reboot, and change, with configurable retention and CSV export
 - **Notifications** — native (no external dependency) alerts to Gotify, ntfy, Discord, Telegram, Slack, Pushover, email (SMTP), and webhooks — global and **per-host overrides**
 - **Single sign-on** — optional OIDC (Authorization Code + PKCE) alongside local password login
@@ -266,6 +267,8 @@ The web UI authenticates via an httpOnly session cookie. For automation, create 
 | `GET` | `/api/settings/ssh-key` | Patchdeck's public key (and the rotation's new key, if one is in progress) |
 | `POST` | `/api/settings/ssh-key/rotate` · `/check` · `/finish` · `/cancel` | Key rotation — `finish` takes optional `{"force": true}` |
 | `GET/PUT` | `/api/settings/*` | Notification, OIDC, audit, and token settings |
+
+Host actions answer **`409`** while the host is busy with another action (a dashboard task or a scheduled job); retry when it finishes.
 
 ## Development
 

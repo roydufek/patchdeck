@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"patchdeck/api/internal/models"
+	"patchdeck/api/internal/tasks"
 )
 
 // TestSnapshotClassification checks the db-snapshot -> view derivation (fillFromSnapshot) and the
@@ -100,7 +101,6 @@ func TestCardRestartRebootPresentation(t *testing.T) {
 	mustContain(t, "card/restart", out, `data-restart="1"`)
 	mustContain(t, "card/restart", out, `data-reboot="0"`)
 	mustContain(t, "card/restart", out, `data-pdbulk="restart"`)
-	mustContain(t, "card/restart", out, "/hosts/h-restart/restart?ctx=bulk")
 	mustNotContain(t, "card/restart", out, "Reboot needed")
 
 	// Healthy: up-to-date line, neither facet.
@@ -121,62 +121,74 @@ func TestCardRestartRebootPresentation(t *testing.T) {
 	out = exec(t, "card", protRestart)
 	mustNotContain(t, "card/protected-restart", out, `data-pdbulk="restart"`)
 
-	// "Apply all" patches the Patchdeck host last: only its apply trigger carries data-pdlast.
-	selfUpd := nextHostView{ID: "h-self", Name: "self", HasScan: true, UpdateCount: 3, IsSelf: true}
-	mustContain(t, "card/self-apply", exec(t, "card", selfUpd), `data-pdbulk="apply" data-host="h-self" data-pdlast="1"`)
-	otherUpd := nextHostView{ID: "h-o", Name: "o", HasScan: true, UpdateCount: 3}
-	mustNotContain(t, "card/other-apply", exec(t, "card", otherUpd), `data-pdlast`)
+	// Card buttons start server-side tasks (decision 0009), not browser-driven streams.
+	otherUpd := nextHostView{ID: "h-o", Name: "o", HasScan: true}
+	mustContain(t, "card/scan", exec(t, "card", otherUpd), `hx-post="/tasks" hx-vals='{"kind":"scan","host":"h-o"}'`)
 }
 
-// TestActionresultAutoRescan verifies the bulk restart path auto-fires a scan (no manual button),
-// while the non-bulk path keeps the manual "Re-scan to refresh" control.
-func TestActionresultAutoRescan(t *testing.T) {
-	// Bulk restart: auto-rescan into the card (default ctx => card swap on done), targeting the
-	// result's own element, and NO manual button.
-	bulk := exec(t, "actionresult", map[string]any{"ID": "h1", "Title": "Services restarted", "OK": "done", "AutoRescan": true, "Bulk": true})
-	mustContain(t, "actionresult/bulk", bulk, `hx-get="/hosts/h1/scanpanel"`)
-	mustContain(t, "actionresult/bulk", bulk, `hx-target="#actn-h1"`)
-	mustNotContain(t, "actionresult/bulk", bulk, "scanpanel?ctx=detail")
-	mustNotContain(t, "actionresult/bulk", bulk, "Re-scan to refresh")
+// TestBusyCard: a busy host's card loads its progress panel and offers no action buttons, so a
+// second action can't be started on it from this page.
+func TestBusyCard(t *testing.T) {
+	busy := nextHostView{ID: "h1", Name: "one", HasScan: true, UpdateCount: 2, Busy: true}
+	out := exec(t, "card", busy)
+	mustContain(t, "card/busy", out, `data-busy="1"`)
+	mustContain(t, "card/busy", out, `hx-get="/hosts/h1/taskpanel" hx-trigger="load"`)
+	mustNotContain(t, "card/busy", out, "Apply 2")
+	mustNotContain(t, "card/busy", out, `"kind":"scan"`)
 
-	// Single per-host restart (detail): auto-rescan with ctx=detail (reload on done), same self-target.
-	detail := exec(t, "actionresult", map[string]any{"ID": "h1", "Title": "Services restarted", "OK": "done", "AutoRescan": true, "Bulk": false})
-	mustContain(t, "actionresult/detail", detail, "/hosts/h1/scanpanel?ctx=detail")
-	mustContain(t, "actionresult/detail", detail, `hx-target="#actn-h1"`)
-	mustNotContain(t, "actionresult/detail", detail, "Re-scan to refresh")
-
-	// Partial-failure: the per-service breakdown renders, the header shows a problem dot (not the
-	// check), and it STILL auto-rescans (never a blanket dead-end).
-	partial := exec(t, "actionresult", map[string]any{
-		"ID": "h1", "Title": "Restart finished with issues", "HasIssues": true,
-		"OK":         "Restarted 12 of 13 service(s); 1 could not be restarted (see below). Re-scanning to confirm.",
-		"Breakdown":  []string{"✓ cron.service — restart dispatched (detached; reconnecting to confirm)", "✗ apcupsd.service — Password: su: Authentication failure"},
-		"AutoRescan": true, "Bulk": true,
-	})
-	mustContain(t, "actionresult/partial", partial, "✓ cron.service")
-	mustContain(t, "actionresult/partial", partial, "✗ apcupsd.service")
-	mustContain(t, "actionresult/partial", partial, "1 could not be restarted")
-	mustContain(t, "actionresult/partial", partial, `hx-get="/hosts/h1/scanpanel"`) // still auto-rescans
-	mustContain(t, "actionresult/partial", partial, "dot-down")                      // problem indicator, not the check
+	idle := exec(t, "card", nextHostView{ID: "h1", Name: "one", HasScan: true, UpdateCount: 2})
+	mustContain(t, "card/idle", idle, "Apply 2")
+	mustNotContain(t, "card/idle", idle, "taskpanel")
 }
 
-// TestRebootWatchAutoScan verifies the reconnect branch auto-scans instead of offering Refresh,
-// targeting the card (bulk) or the detail power area (detail), and that the still-offline poll
-// preserves ctx.
-func TestRebootWatchAutoScan(t *testing.T) {
-	bulk := exec(t, "rebootwatch", map[string]any{"ID": "h9", "Connected": true, "Ctx": "bulk"})
-	mustContain(t, "rebootwatch/bulk", bulk, `hx-target="#rbw-h9"`)
-	mustContain(t, "rebootwatch/bulk", bulk, `hx-get="/hosts/h9/scanpanel"`)
-	mustNotContain(t, "rebootwatch/bulk", bulk, "Refresh")
-	mustNotContain(t, "rebootwatch/bulk", bulk, "scanpanel?ctx=detail") // bulk => card-swap scan, not detail reload
+// TestTaskPanel renders a running host's panel (with its buffered lines + last seq, so the page
+// never repeats a line) and an idle host's (empty, so the card refreshes).
+func TestTaskPanel(t *testing.T) {
+	run := exec(t, "taskpanel", taskPanelView{ID: "h1", Name: "one", Label: "Applying updates", Status: "running", Busy: true, Managed: true,
+		Since: "2m ago", Seq: 2, Lines: []tasks.Line{{Seq: 1, Text: "Reading package lists"}, {Seq: 2, Class: "ok", Text: "<done>"}}})
+	mustContain(t, "taskpanel/running", run, `id="task-h1"`)
+	mustContain(t, "taskpanel/running", run, `data-pdtask="h1"`)
+	mustContain(t, "taskpanel/running", run, `id="tasklog-h1" class="scanlog" data-seq="2"`)
+	mustContain(t, "taskpanel/running", run, "Applying updates on one")
+	mustContain(t, "taskpanel/running", run, "&lt;done&gt;") // output is escaped
+	q := exec(t, "taskpanel", taskPanelView{ID: "h1", Name: "one", Label: "Scanning", Status: "queued", Busy: true, Managed: true})
+	mustContain(t, "taskpanel/queued", q, "Queued: Scanning on one")
+	sched := exec(t, "taskpanel", taskPanelView{ID: "h1", Name: "one", Label: "Scheduled apply", Status: "running", Busy: true})
+	mustContain(t, "taskpanel/scheduled", sched, "Started by a schedule or the API")
+	// An idle host's panel is just a marker: the page swaps it for a refreshed card.
+	idle := exec(t, "taskpanel", taskPanelView{ID: "h1"})
+	mustContain(t, "taskpanel/idle", idle, `data-pdidle="h1"`)
+	mustNotContain(t, "taskpanel/idle", idle, "data-pdtask")
+	banner := exec(t, "taskbanner", taskBanner{ID: "t1", What: "Apply on 3 host(s)", Hosts: "nova, orbit", OK: 1, Not: 2})
+	mustContain(t, "taskbanner", banner, `hx-post="/tasks/t1/resume"`)
+	mustContain(t, "taskbanner", banner, "2 not run")
+}
 
-	detail := exec(t, "rebootwatch", map[string]any{"ID": "h9", "Connected": true, "Ctx": ""})
-	mustContain(t, "rebootwatch/detail", detail, `hx-target="#rbw-h9"`)
-	mustContain(t, "rebootwatch/detail", detail, "scanpanel?ctx=detail")
-
-	offline := exec(t, "rebootwatch", map[string]any{"ID": "h9", "Connected": false, "Ctx": "bulk"})
-	mustContain(t, "rebootwatch/offline", offline, "/hosts/h9/reboot-watch?ctx=bulk")
-
-	panel := exec(t, "rebootpanel", map[string]any{"ID": "h9", "Name": "n", "Ctx": "bulk"})
-	mustContain(t, "rebootpanel", panel, "/hosts/h9/reboot-watch?ctx=bulk")
+// TestEligibleForAll: the "… all" buttons act on exactly the hosts the dashboard counts. The
+// Patchdeck host and protected hosts never get a fleet-wide reboot or restart, and unapproved
+// hosts get nothing.
+func TestEligibleForAll(t *testing.T) {
+	views := []nextHostView{
+		{ID: "upd", UpdateCount: 2},
+		{ID: "rb", RebootAny: true},
+		{ID: "rb-self", RebootAny: true, IsSelf: true},
+		{ID: "rb-prot", RebootAny: true, ExcludeFromBulk: true},
+		{ID: "rs", RestartOnly: true},
+		{ID: "new", Unverified: true, UpdateCount: 5},
+	}
+	ids := func(kind string) string {
+		var out []string
+		for _, h := range eligibleForAll(kind, views) {
+			out = append(out, h.ID)
+		}
+		return strings.Join(out, ",")
+	}
+	for kind, want := range map[string]string{
+		tasks.KindApply: "upd", tasks.KindReboot: "rb", tasks.KindRestart: "rs",
+		tasks.KindScan: "upd,rb,rb-self,rb-prot,rs",
+	} {
+		if got := ids(kind); got != want {
+			t.Errorf("%s: got %s want %s", kind, got, want)
+		}
+	}
 }

@@ -385,7 +385,7 @@
 
 {{define "dot"}}<span id="dot-{{.HostID}}" class="dot {{if .Connected}}dot-up{{else}}dot-down{{end}}" title="{{if .Connected}}reachable{{else}}unreachable{{end}}" aria-label="{{if .Connected}}reachable{{else}}unreachable{{end}}"></span>{{end}}
 
-{{define "card"}}<article id="card-{{.ID}}" class="card {{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}attn{{else}}calm{{end}}" data-name="{{.Name}}" data-addr="{{.Address}}" data-tags="{{range .Tags}}{{.}} {{end}}" data-attn="{{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}1{{else}}0{{end}}" data-updates="{{if gt .UpdateCount 0}}1{{else}}0{{end}}" data-reboot="{{if .RebootAny}}1{{else}}0{{end}}" data-restart="{{if .RestartOnly}}1{{else}}0{{end}}" data-updcount="{{.UpdateCount}}" data-seccount="{{.SecurityCount}}">
+{{define "card"}}<article id="card-{{.ID}}" class="card {{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}attn{{else}}calm{{end}}" data-name="{{.Name}}" data-addr="{{.Address}}" data-tags="{{range .Tags}}{{.}} {{end}}" data-attn="{{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}1{{else}}0{{end}}" data-updates="{{if gt .UpdateCount 0}}1{{else}}0{{end}}" data-reboot="{{if .RebootAny}}1{{else}}0{{end}}" data-restart="{{if .RestartOnly}}1{{else}}0{{end}}" data-updcount="{{.UpdateCount}}" data-seccount="{{.SecurityCount}}"{{if .Busy}} data-busy="1"{{end}}>
   <div class="c-top">
     <span class="host">
       <span id="dot-{{.ID}}" class="dot dot-checking" hx-get="/hosts/{{.ID}}/dot" hx-trigger="load" hx-swap="outerHTML" aria-label="checking connectivity"></span>
@@ -397,22 +397,24 @@
   <div class="signal">{{if or .Unverified .PendingKey}}<span class="pill warn">{{template "i-shield"}} {{if .PendingKey}}Key awaiting approval{{else}}Awaiting approval{{end}}</span>{{else}}{{template "signal" .}}{{end}}</div>
   <div class="c-actions">
     {{if or .Unverified .PendingKey}}<a class="btn primary" href="/hosts/{{.ID}}">Review &amp; approve</a>
+    {{else if .Busy}}<a class="btn ghost" href="/hosts/{{.ID}}">Details</a>
     {{else}}{{if gt .UpdateCount 0}}<button class="btn primary" hx-get="/hosts/{{.ID}}/apply-confirm" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Apply {{.UpdateCount}}</button>
-    {{else}}<button class="btn primary" hx-get="/hosts/{{.ID}}/scanpanel" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Scan</button>{{end}}
+    {{else}}<button class="btn primary" hx-post="/tasks" hx-vals='{"kind":"scan","host":"{{.ID}}"}' hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Scan</button>{{end}}
     <a class="btn ghost" href="/hosts/{{.ID}}">Details</a>
     {{if .HasScan}}<span class="age">scanned {{.ScanAge}}</span>{{end}}{{end}}
   </div>
-  <div id="scanarea-{{.ID}}"></div>
-  {{if not .Unverified}}<div hidden data-pdbulk="scan" data-host="{{.ID}}" hx-get="/hosts/{{.ID}}/scanpanel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>
-  {{if gt .UpdateCount 0}}<div hidden data-pdbulk="apply" data-host="{{.ID}}"{{if .IsSelf}} data-pdlast="1"{{end}} hx-get="/hosts/{{.ID}}/apply/panel" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML"></div>{{end}}
-  {{if and .RebootAny (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="reboot" data-host="{{.ID}}" hx-post="/hosts/{{.ID}}/reboot?ctx=bulk" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::after-request="document.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}
-  {{if and .RestartOnly (not .IsSelf) (not .ExcludeFromBulk)}}<div hidden data-pdbulk="restart" data-host="{{.ID}}" hx-post="/hosts/{{.ID}}/restart?ctx=bulk" hx-trigger="pdrun" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML" hx-on::before-request="window.pdInflight('scanarea-{{.ID}}','Restarting services')" hx-on::after-request="document.dispatchEvent(new CustomEvent('pd:done',{detail:{h:'{{.ID}}'}}))"></div>{{end}}{{end}}
+  {{/* A busy host (queued or running, here or in another tab/device) loads its progress panel. */}}
+  <div id="scanarea-{{.ID}}">{{if .Busy}}<div hx-get="/hosts/{{.ID}}/taskpanel" hx-trigger="load" hx-swap="outerHTML"></div>{{end}}</div>
+  {{/* Markers the dashboard counts for the "… all" buttons; the server applies the same rules. */}}
+  {{if not (or .Unverified .PendingKey)}}{{if gt .UpdateCount 0}}<i hidden data-pdbulk="apply"></i>{{end}}
+  {{if and .RebootAny (not .IsSelf) (not .ExcludeFromBulk)}}<i hidden data-pdbulk="reboot"></i>{{end}}
+  {{if and .RestartOnly (not .IsSelf) (not .ExcludeFromBulk)}}<i hidden data-pdbulk="restart"></i>{{end}}{{end}}
 </article>{{end}}
 
 {{define "applyconfirm"}}<div class="applyconfirm">
   <p class="confirm-q">Apply <b>{{.Count}}</b> update{{if ne .Count 1}}s{{end}} to <b>{{.Name}}</b>? This runs <span class="mono">apt upgrade</span> and may restart services.</p>
   <div class="c-actions">
-    <button class="btn danger" hx-get="/hosts/{{.ID}}/apply/panel?ctx={{.Ctx}}" hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Apply now</button>
+    <button class="btn danger" hx-post="/tasks" hx-vals='{"kind":"apply","host":"{{.ID}}"}' hx-target="#scanarea-{{.ID}}" hx-swap="innerHTML">Apply now</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
   </div>
 </div>{{end}}
@@ -423,59 +425,106 @@
   document.addEventListener('htmx:sseMessage',function(){requestAnimationFrame(pdScrollLogs)});
 </script>{{end}}
 
-{{/* bulkjs — the fleet fan-out scheduler. A bulk action fires each host's hidden trigger div
-     (data-pdbulk=<kind>), but only cap-many at a time: a host frees its slot when it finishes,
-     so peak concurrency stays bounded on large fleets. scan/apply "finish" when their card
-     swaps back in (htmx:afterSettle on #card-<id>); reboot "finishes" when its dispatch returns
-     (a pd:done beacon), since the recovery watch then runs on its own. staggerMs adds a minimum
-     gap between successive starts (apply uses it to avoid bouncing services fleet-wide at once).
-     A trigger marked data-pdlast (the host Patchdeck itself runs on — often the bastion too) starts
-     only after every other host has finished, so its own network/docker restarts can't cut other
-     hosts' applies mid-flight. */}}
-{{define "bulkjs"}}<script>
+{{/* tasksjs — follows the server's tasks (decision 0009). Actions run on the server; this page only
+     watches /events: "sync" (the busy hosts, on every (re)connect so a page that was away catches
+     up), "state" (a host queued / running / idle) and "line" (a host's output). A busy host shows its
+     progress panel; when it goes idle its card is re-fetched (dashboard) or the page reloads (detail).
+     Lines carry a sequence number, so a panel that's still loading buffers them and a reloaded panel
+     never repeats one. */}}
+{{define "tasksjs"}}<script>
 (function(){
-  var active=null;
-  function markDone(h){
-    if(!active||!h||!active.inflight[h]) return;
-    if(active.timers[h]){ clearTimeout(active.timers[h]); delete active.timers[h]; }
-    delete active.inflight[h]; active.finished++;
-    if(active.finished>=active.total){ active=null; return; }
-    active.schedule();
+  if(window.pdTasks) return; window.pdTasks=true;
+  var pend={};
+  function body(){ return document.body||{getAttribute:function(){return '';}}; }
+  function loadPanel(h){
+    var p=document.getElementById('task-'+h);
+    if(p){ htmx.ajax('GET','/hosts/'+h+'/taskpanel',{target:p,swap:'outerHTML'}); return; }
+    // No panel yet. The click that started this usually brings its own panel (into whatever area
+    // the button targets), so give that a moment before putting one in the host's scan area.
+    setTimeout(function(){
+      if(document.getElementById('task-'+h)) return;
+      var a=document.getElementById('scanarea-'+h);
+      if(a) htmx.ajax('GET','/hosts/'+h+'/taskpanel',{target:a,swap:'innerHTML'});
+    },1500);
   }
-  document.addEventListener('htmx:afterSettle',function(e){
-    var el=e.target; if(el&&el.id&&el.id.indexOf('card-')===0) markDone(el.id.slice(5));
+  // A host turned busy: a dashboard card still showing its idle buttons is re-rendered in its busy
+  // form (no buttons; it loads its own panel). Otherwise just (re)load the panel.
+  function busyView(h){
+    var c=document.getElementById('card-'+h);
+    if(c && c.getAttribute('data-busy')!=='1'){ htmx.ajax('GET','/hosts/'+h+'/card',{target:c,swap:'outerHTML'}); return; }
+    loadPanel(h);
+  }
+  function finished(h){
+    delete pend[h];
+    if(body().getAttribute('data-pdpage')==='detail'){ if(h===body().getAttribute('data-pdhost')) location.reload(); return; }
+    var c=document.getElementById('card-'+h);
+    if(c) htmx.ajax('GET','/hosts/'+h+'/card',{target:c,swap:'outerHTML'});
+  }
+  function addLine(d){
+    var log=document.getElementById('tasklog-'+d.h);
+    if(!log){ (pend[d.h]=pend[d.h]||[]).push(d); if(pend[d.h].length>300) pend[d.h].shift(); return; }
+    var last=parseInt(log.getAttribute('data-seq')||'0',10); if(d.q<=last) return;
+    var div=document.createElement('div'); div.className='ln'+(d.c?' '+d.c:''); div.textContent=d.t;
+    log.appendChild(div); log.setAttribute('data-seq',d.q); log.scrollTop=log.scrollHeight;
+  }
+  document.addEventListener('htmx:afterSettle',function(){
+    // A panel asked for after its host went idle comes back as an idle marker: refresh instead.
+    [].slice.call(document.querySelectorAll('[data-pdidle]')).forEach(function(m){ var h=m.getAttribute('data-pdidle'); m.remove(); finished(h); });
+    // Never two panels for one host: keep the newest (the one the click just brought).
+    [].slice.call(document.querySelectorAll('[data-pdtask]')).forEach(function(p){
+      var all=document.querySelectorAll('[data-pdtask="'+p.getAttribute('data-pdtask')+'"]');
+      if(all.length>1 && p!==all[all.length-1] && p.closest('[id^="scanarea-"]')) p.remove();
+    });
+    // A panel just loaded: append the lines that arrived while it was on its way.
+    Object.keys(pend).forEach(function(h){
+      if(!document.getElementById('tasklog-'+h)) return;
+      var q=pend[h]; delete pend[h]; q.forEach(addLine);
+    });
   });
-  // Listen on document (not document.body — this script runs in <head> where body is still null).
-  document.addEventListener('pd:done',function(e){ if(e.detail&&e.detail.h) markDone(e.detail.h); });
-  window.pdBulk=function(kind,cap,staggerMs,watchdogMs){
-    var els=[].slice.call(document.querySelectorAll('[data-pdbulk="'+kind+'"]'));
-    if(!els.length) return;
-    els.sort(function(a,b){return (a.hasAttribute('data-pdlast')?1:0)-(b.hasAttribute('data-pdlast')?1:0);});
-    cap=(cap&&cap>0)?cap:els.length; staggerMs=staggerMs||0; watchdogMs=watchdogMs||0;
-    var s={inflight:{},timers:{},pending:els.slice(),total:els.length,finished:0,last:0,timer:null};
-    s.count=function(){var n=0;for(var k in s.inflight){n++;} return n;};
-    s.schedule=function(){
-      if(s.timer) return;
-      while(s.pending.length && s.count()<cap){
-        if(s.pending[0].hasAttribute('data-pdlast') && s.count()>0) return; // waits for the rest; markDone re-schedules
-        var wait=staggerMs-(Date.now()-s.last);
-        if(staggerMs>0 && wait>0){ s.timer=setTimeout(function(){s.timer=null;s.schedule();},wait); return; }
-        var el=s.pending.shift(), h=el.getAttribute('data-host');
-        s.inflight[h]=1; s.last=Date.now();
-        // Failsafe: if a host never reports done (severed SSE), free its slot after watchdogMs so
-        // the rest of the fleet still runs. Cleared the moment the host completes normally.
-        if(watchdogMs>0){ s.timers[h]=setTimeout((function(hid){return function(){markDone(hid);};})(h),watchdogMs); }
-        if(window.htmx) htmx.trigger(el,'pdrun');
-      }
-    };
-    active=s; s.schedule();
-  };
-  // Immediate in-flight panel for the restart action, which (unlike scan/apply/reboot) is a
-  // blocking request with no stream — without this the card sits silent for the whole SSH restart
-  // and looks like nothing happened. The result swaps this out when the request returns.
-  window.pdInflight=function(areaId,label){var a=document.getElementById(areaId);if(a)a.innerHTML='<div class="scanpanel"><div class="scanhead"><span class="spinner"></span> '+(label||'Working')+'&hellip;</div></div>';};
+  function connect(){
+    var es=new EventSource('/events');
+    es.addEventListener('sync',function(e){
+      var busy={}; (JSON.parse(e.data)||[]).forEach(function(h){ busy[h]=1; });
+      // Catch up on everything that finished while this page wasn't listening: panels, cards
+      // rendered busy, and a detail page rendered busy.
+      [].slice.call(document.querySelectorAll('[data-pdtask]')).forEach(function(p){ var h=p.getAttribute('data-pdtask'); if(!busy[h]) finished(h); });
+      [].slice.call(document.querySelectorAll('article.card[data-busy="1"]')).forEach(function(c){ var h=c.id.slice(5); if(!busy[h]) finished(h); });
+      var dh=body().getAttribute('data-pdhost');
+      if(dh && body().getAttribute('data-pdbusy')==='1' && !busy[dh]) location.reload();
+      Object.keys(busy).forEach(busyView);
+    });
+    es.addEventListener('state',function(e){
+      var d=JSON.parse(e.data);
+      if(d.s==='idle'){ finished(d.h); return; }
+      var p=document.getElementById('task-'+d.h);
+      if(!p||p.getAttribute('data-st')!==d.s) busyView(d.h);
+    });
+    es.addEventListener('line',function(e){ addLine(JSON.parse(e.data)); });
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',connect); else connect();
 })();
 </script>{{end}}
+
+{{/* taskpanel — a busy host's progress: what it's doing, since when, and its live output. Empty
+     when the host is idle (the card is then refreshed by tasksjs). */}}
+{{define "taskpanel"}}{{if .Busy}}<div id="task-{{.ID}}" class="scanpanel" data-pdtask="{{.ID}}" data-st="{{.Status}}">
+  <div class="scanhead"><span class="spinner"></span> {{if eq .Status "queued"}}Queued: {{.Label}} on {{.Name}} (waiting for a free slot){{else}}{{.Label}} on {{.Name}}&hellip;{{end}} <span class="age">started {{.Since}}</span></div>
+  {{if .Managed}}<div id="tasklog-{{.ID}}" class="scanlog" data-seq="{{.Seq}}">{{range .Lines}}<div class="ln{{if .Class}} {{.Class}}{{end}}">{{.Text}}</div>{{end}}</div>
+  {{else}}<div class="scanlog"><div class="ln">Started by a schedule or the API, so there's no live output here. This refreshes when it finishes.</div></div>{{end}}
+</div>{{else if .ID}}<i hidden data-pdidle="{{.ID}}"></i>{{end}}{{end}}
+
+{{/* tasknote — the one-line answer to a bulk start / resume. */}}
+{{define "tasknote"}}<div class="flash {{if .Err}}err{{else}}ok{{end}}" style="margin-top:12px">{{.Msg}}</div>{{end}}
+
+{{/* taskbanner — a task a Patchdeck restart cut short. Nothing restarts on its own: the operator
+     resumes the hosts that never ran, or dismisses it. */}}
+{{define "taskbanner"}}<div id="tb-{{.ID}}" class="applyconfirm" style="margin-top:12px">
+  <p class="confirm-q"><b>{{.What}}</b> was cut short by a Patchdeck restart: {{.OK}} done{{if .Failed}}, {{.Failed}} failed{{end}}, <b>{{.Not}} not run</b>{{if .Hosts}} ({{.Hosts}}){{end}}.</p>
+  <div class="c-actions">
+    <button class="btn primary" hx-post="/tasks/{{.ID}}/resume" hx-target="#tb-{{.ID}}" hx-swap="outerHTML">Resume remaining</button>
+    <button class="btn ghost" hx-post="/tasks/{{.ID}}/dismiss" hx-target="#tb-{{.ID}}" hx-swap="outerHTML">Dismiss</button>
+  </div>
+</div>{{end}}
 
 {{/* pddash — the dashboard's live grouping/filtering. Cards render into a hidden flat pool;
      this groups them (by Status or Tag), sorts attention-first, applies the facet + search
@@ -608,26 +657,12 @@
 })();
 </script>{{end}}
 
-{{define "applypanel"}}<div class="scanpanel" hx-ext="sse" sse-connect="/hosts/{{.ID}}/apply/stream" sse-close="done">
-  <div class="scanhead"><span class="spinner"></span> Applying updates on {{.Name}}&hellip;</div>
-  <div class="scanlog" sse-swap="line" hx-swap="beforeend" hx-on::after-swap="this.scrollTop = this.scrollHeight"></div>
-  {{if eq .Ctx "detail"}}<div hidden hx-get="/hosts/{{.ID}}" hx-trigger="sse:done" hx-target="body" hx-swap="outerHTML"></div>
-  {{else}}<div hidden hx-get="/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML transition:true"></div>{{end}}
-</div>{{end}}
-
-{{define "scanpanel"}}<div class="scanpanel" hx-ext="sse" sse-connect="/hosts/{{.ID}}/scan/stream" sse-close="done">
-  <div class="scanhead"><span class="spinner"></span> Scanning {{.Name}}&hellip;</div>
-  <div class="scanlog" sse-swap="line" hx-swap="beforeend" hx-on::after-swap="this.scrollTop = this.scrollHeight"></div>
-  {{if eq .Ctx "detail"}}<div hidden hx-get="/hosts/{{.ID}}" hx-trigger="sse:done" hx-target="body" hx-swap="outerHTML"></div>
-  {{else}}<div hidden hx-get="/hosts/{{.ID}}/card" hx-trigger="sse:done" hx-target="#card-{{.ID}}" hx-swap="outerHTML transition:true"></div>{{end}}
-</div>{{end}}
-
 {{define "smartrestartconfirm"}}<div class="applyconfirm">
   <p class="confirm-q">Restart the <b>{{.Count}}</b> flagged service{{if ne .Count 1}}s{{end}} on <b>{{.Name}}</b>? Patchdeck picks the right method for each unit &mdash; a clean restart where it&rsquo;s safe, needrestart&rsquo;s coordinated handler where a naive restart would sever the session.</p>
   {{if .Disruptive}}<p class="confirm-q" style="color:var(--warn)">Heads up &mdash; {{len .Disruptive}} of these may briefly drop your SSH session or bounce containers as they restart: <b>{{range $i, $s := .Disruptive}}{{if $i}}, {{end}}{{$s}}{{end}}</b>. They&rsquo;re restarted detached so a connection flap can&rsquo;t interrupt them.</p>{{end}}
   <p class="formsub">Anything that comes back still flagged after this moves to &ldquo;reboot required&rdquo; automatically &mdash; you won&rsquo;t have to guess which need a reboot.</p>
   <div class="c-actions">
-    <button class="btn danger" hx-post="/hosts/{{.ID}}/restart" hx-target="#{{.Out}}" hx-swap="innerHTML" hx-disabled-elt="this">Restart services</button>
+    <button class="btn danger" hx-post="/tasks" hx-vals='{"kind":"restart","host":"{{.ID}}"}' hx-target="#{{.Out}}" hx-swap="innerHTML" hx-disabled-elt="this">Restart services</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
   </div>
 </div>{{end}}
@@ -661,9 +696,9 @@
 
 {{define "rebootconfirm"}}<div class="applyconfirm">
   <p class="confirm-q">Reboot <b>{{.Name}}</b> now? The host drops offline for a minute or two while it restarts. Patchdeck will watch for it to come back.</p>
-  {{if .Self}}<p class="confirm-q" style="color:var(--warn)">This is the host Patchdeck runs on &mdash; rebooting it restarts Patchdeck too. It can&rsquo;t watch its own recovery; reconnect once it&rsquo;s back.</p>{{end}}
+  {{if .Self}}<p class="confirm-q" style="color:var(--warn)">This is the host Patchdeck runs on &mdash; rebooting it restarts Patchdeck too. Reload this page once it&rsquo;s back: Patchdeck picks its recovery watch back up and re-scans it.</p>{{end}}
   <div class="c-actions">
-    <button class="btn danger" hx-post="/hosts/{{.ID}}/reboot" hx-target="#{{.Out}}" hx-swap="innerHTML">Reboot host</button>
+    <button class="btn danger" hx-post="/tasks" hx-vals='{"kind":"reboot","host":"{{.ID}}"}' hx-target="#{{.Out}}" hx-swap="innerHTML">Reboot host</button>
     <button class="btn ghost" onclick="this.closest('.applyconfirm').remove()">Cancel</button>
   </div>
 </div>{{end}}
@@ -672,21 +707,8 @@
   <div class="scanhead">{{if or .Err .HasIssues}}<span class="dot dot-down"></span> {{.Title}}{{else}}{{template "check"}} {{.Title}}{{end}}</div>
   <div class="scanlog">
     {{if .Err}}<div class="ln err">{{.Err}}</div>
-    {{else}}<div class="ln ok">{{.OK}}</div>{{range .Breakdown}}<div class="ln">{{.}}</div>{{end}}{{if and (not .Breakdown) .RebootRequired}}<div class="ln">{{len .RebootRequired}} unit(s) still need a reboot to fully apply:</div>{{range .RebootRequired}}<div class="ln">&bull; {{.}}</div>{{end}}{{end}}{{end}}
+    {{else}}<div class="ln ok">{{.OK}}</div>{{end}}
   </div>
-  {{/* Auto-rescan after the action, replacing this result in place. Target our own element so it
-       works wherever the result was rendered (a bulk/dashboard card's #scanarea, or the detail
-       page's #actionarea). Bulk => default scan (card swap on done); detail => ctx=detail (reload). */}}
-  {{/* delay lets the detached (systemd-run) restarts settle before the rescan reads needrestart, so a
-       slow-to-restart unit isn't re-flagged and wrongly learned reboot-only (self-heals next scan, but
-       this avoids the transient). */}}
-  {{if .AutoRescan}}<div hidden hx-get="/hosts/{{.ID}}/scanpanel{{if not .Bulk}}?ctx=detail{{end}}" hx-trigger="load delay:2500ms" hx-target="#actn-{{.ID}}" hx-swap="outerHTML"></div>
-  {{else if .Rescan}}<div class="actionrow"><button class="btn primary" hx-get="/hosts/{{.ID}}/scanpanel?ctx=detail" hx-target="#actionarea-{{.ID}}" hx-swap="innerHTML">Re-scan to refresh</button></div>{{end}}
-</div>{{end}}
-
-{{define "rebootpanel"}}<div class="scanpanel">
-  <div class="scanhead"><span class="spinner"></span> Reboot initiated on {{.Name}} &mdash; waiting for it to come back&hellip;</div>
-  <div id="rbw-{{.ID}}" hx-get="/hosts/{{.ID}}/reboot-watch?ctx={{.Ctx}}" hx-trigger="load delay:12s" hx-swap="outerHTML"></div>
 </div>{{end}}
 
 {{define "jobcard"}}<div id="job-{{.ID}}" class="job{{if not .Enabled}} off{{end}}">
@@ -725,15 +747,3 @@
     {{if .Summary}}<div class="actsum">{{.Summary}}</div>{{end}}
   </div>
 </div>{{end}}{{if not .Entries}}<p class="empty">No activity yet — scans, applies, restarts and reboots will show up here.</p>{{end}}{{if .HasMore}}<button class="btn ghost block" style="margin-top:13px" hx-get="/activity/rows?offset={{.NextOffset}}{{if .Host}}&host={{.Host}}{{end}}" hx-swap="outerHTML">Load older</button>{{end}}{{end}}
-
-{{define "rebootwatch"}}{{if .Connected}}<div id="rbw-{{.ID}}" class="reboot-watch">
-  <span class="dot dot-up"></span>
-  <span class="calm-line">Back online &mdash; re-scanning to clear its flags&hellip;</span>
-  {{/* Auto-rescan on reconnect (replaces the old manual "Refresh" button). Target the watcher's
-       own element so it works wherever the reboot panel lives — a dashboard/bulk card's scanarea,
-       or the detail page's power/restart-intel area. bulk => card swap on done; detail => reload. */}}
-  <div hidden hx-get="/hosts/{{.ID}}/scanpanel{{if ne .Ctx "bulk"}}?ctx=detail{{end}}" hx-trigger="load" hx-target="#rbw-{{.ID}}" hx-swap="outerHTML"></div>
-</div>{{else}}<div id="rbw-{{.ID}}" class="reboot-watch" hx-get="/hosts/{{.ID}}/reboot-watch?ctx={{.Ctx}}" hx-trigger="every 8s" hx-swap="outerHTML">
-  <span class="dot dot-checking"></span>
-  <span class="calm-line">Still offline &mdash; checking every 8s&hellip;</span>
-</div>{{end}}{{end}}

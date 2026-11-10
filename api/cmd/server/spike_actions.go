@@ -25,31 +25,6 @@ func (a *app) nextRebootConfirm(w http.ResponseWriter, r *http.Request) {
 	a.renderNext(w, "rebootconfirm", map[string]any{"ID": v.ID, "Name": v.Name, "Out": r.URL.Query().Get("out"), "Self": v.IsSelf})
 }
 
-// nextReboot initiates a reboot and renders a recovery panel that watches the host come
-// back on its own (the dot polls independently — each host has its own life in the browser).
-func (a *app) nextReboot(w http.ResponseWriter, r *http.Request) {
-	host, err := db.GetHost(a.db, chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, "host not found", http.StatusNotFound)
-		return
-	}
-	if err := a.sshClient.Power(host, a.secrets, "reboot"); err != nil {
-		msg := err.Error()
-		var hkErr *sshx.HostKeyError
-		if errors.As(err, &hkErr) {
-			msg = hkErr.Message
-		}
-		_ = db.RecordActivity(a.db, host.ID, host.Name, "reboot_fail", fmt.Sprintf("Reboot failed: %v", err))
-		a.renderNext(w, "actionresult", map[string]any{"ID": host.ID, "Title": "Reboot failed", "Err": msg})
-		return
-	}
-	_ = db.RecordActivity(a.db, host.ID, host.Name, "reboot_ok", fmt.Sprintf("Reboot initiated on %s", host.Name))
-	// ctx flows through to the recovery watch so that, once the host is back, it auto-rescans in the
-	// right place: "bulk" (a dashboard card / Reboot all) re-scans into the card; anything else
-	// (the detail page) re-scans and refreshes the detail view. Clears the reboot flag on its own.
-	a.renderNext(w, "rebootpanel", map[string]any{"ID": host.ID, "Name": host.Name, "Ctx": r.URL.Query().Get("ctx")})
-}
-
 // nextShutdownConfirm renders the confirm step before powering a host off.
 func (a *app) nextShutdownConfirm(w http.ResponseWriter, r *http.Request) {
 	v, _, err := a.nextHostView(chi.URLParam(r, "id"))
@@ -68,6 +43,11 @@ func (a *app) nextShutdown(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "host not found", http.StatusNotFound)
 		return
 	}
+	if !a.tasks.TryLock(host.ID, "Shutting down") {
+		a.renderNext(w, "actionresult", map[string]any{"ID": host.ID, "Title": "Host is busy", "Err": "Another action is running on this host. Shut it down once that finishes."})
+		return
+	}
+	defer a.tasks.Unlock(host.ID)
 	if err := a.sshClient.Power(host, a.secrets, "shutdown"); err != nil {
 		msg := err.Error()
 		var hkErr *sshx.HostKeyError
@@ -80,14 +60,4 @@ func (a *app) nextShutdown(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = db.RecordActivity(a.db, host.ID, host.Name, "shutdown_ok", fmt.Sprintf("Shutdown initiated on %s", host.Name))
 	a.renderNext(w, "actionresult", map[string]any{"ID": host.ID, "Title": "Shutdown initiated", "OK": host.Name + " is powering off. It won't return until it's powered back on."})
-}
-
-// nextRebootWatch is a self-refreshing fragment: while the host is unreachable it re-polls
-// itself every 8s; once it answers SSH again it swaps to a static "back online" row (no
-// trigger), so polling stops by construction. Each host's watcher runs on its own.
-func (a *app) nextRebootWatch(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	checker := a.sshClient.WithTimeouts(a.cfg.ConnectivityTimeout, a.cfg.ConnectivityTimeout)
-	st := a.probeConnectivity(checker, id)
-	a.renderNext(w, "rebootwatch", map[string]any{"ID": id, "Connected": st.Connected, "Ctx": r.URL.Query().Get("ctx")})
 }

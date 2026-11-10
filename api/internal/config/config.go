@@ -23,7 +23,7 @@ type Config struct {
 	TLSKeyPath          string
 	// BulkConcurrency caps how many hosts a fleet-wide action (scan-all / apply-all /
 	// reboot-all) drives at once, so a large fleet doesn't open hundreds of SSH sessions in
-	// one burst. The fan-out is client-driven; this value is handed to the dashboard JS.
+	// one burst. The server-side task runner (internal/tasks) enforces it; <1 = no cap.
 	BulkConcurrency int
 	// ApplyStaggerSeconds inserts a minimum gap between successive apply-all starts, to avoid
 	// bouncing services across the whole fleet simultaneously. 0 = no stagger (start as soon
@@ -87,7 +87,7 @@ func Load() (Config, error) {
 		}
 	}
 	cfg := Config{
-		AppVersion:          envOr("PATCHDECK_VERSION", "2.9.2"),
+		AppVersion:          envOr("PATCHDECK_VERSION", "2.10.0"),
 		Port:                port,
 		DatabasePath:        envOr("PATCHDECK_DB_PATH", "/data/patchdeck.db"),
 		MasterKey:           os.Getenv("PATCHDECK_MASTER_KEY"),

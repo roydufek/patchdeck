@@ -87,6 +87,10 @@ else echo __PD_APPLY_LOST__; fi
 `, from, from)
 }
 
+// ErrApplyNotStarted: a reattach found no trace of the upgrade on the host — the Patchdeck that
+// recorded its id stopped before the start script got there. Nothing ran, so it's safe to run again.
+var ErrApplyNotStarted = errors.New("the upgrade never started on the host")
+
 var (
 	applyRCRe    = regexp.MustCompile(`(?m)^__PD_APPLY_RC__=(\d+)\s*$`)
 	applySetupRe = regexp.MustCompile(`(?m)^__PD_SETUP_COUNT__=(\d+)\s*$`)
@@ -111,10 +115,39 @@ func retryableApplyErr(err error) bool {
 // across dropped connections. onLine (may be nil) receives the upgrade's output lines plus a note
 // when a reattach happens.
 func (c *Client) applyDetached(ctx context.Context, host models.Host, seal *crypto.SealBox, onLine func(string)) (models.ApplyResult, error) {
+	return c.applyTracked(ctx, host, seal, nil, onLine)
+}
+
+// ApplyUpdatesTracked is ApplyUpdatesStreaming that first hands the run's id to onID (before the
+// upgrade starts), so a caller can record it and reattach with ReattachApply after its OWN restart.
+func (c *Client) ApplyUpdatesTracked(ctx context.Context, host models.Host, seal *crypto.SealBox, onID func(id string), onLine func(string)) (models.ApplyResult, error) {
+	return c.applyTracked(ctx, host, seal, onID, onLine)
+}
+
+// ReattachApply follows an upgrade started earlier (by id) to completion, replaying its log from the
+// first line. Used when Patchdeck restarted mid-apply: the upgrade kept running on the host.
+func (c *Client) ReattachApply(ctx context.Context, host models.Host, seal *crypto.SealBox, id string, onLine func(string)) (models.ApplyResult, error) {
+	if !applyIDRe.MatchString(id) {
+		return models.ApplyResult{}, fmt.Errorf("bad apply id")
+	}
+	return c.followApply(ctx, host, seal, id, applyFollowScript(id, 1), true, onLine)
+}
+
+func (c *Client) applyTracked(ctx context.Context, host models.Host, seal *crypto.SealBox, onID func(string), onLine func(string)) (models.ApplyResult, error) {
 	id := newApplyID()
 	if !applyIDRe.MatchString(id) { // defensive: the id is interpolated into a shell script
 		return models.ApplyResult{}, fmt.Errorf("bad apply id")
 	}
+	if onID != nil {
+		onID(id)
+	}
+	return c.followApply(ctx, host, seal, id, applyStartScript(id), false, onLine)
+}
+
+// followApply runs script (the start script, or a follow script when reattaching) and keeps
+// following the upgrade until its exit status is known. reattach=true means the upgrade was started
+// by an earlier Patchdeck process, so "not found" is an interruption, not a failure to start.
+func (c *Client) followApply(ctx context.Context, host models.Host, seal *crypto.SealBox, id, script string, reattach bool, onLine func(string)) (models.ApplyResult, error) {
 	var logBuf strings.Builder
 	seen := 0
 	emit := func(l string) {
@@ -136,7 +169,6 @@ func (c *Client) applyDetached(ctx context.Context, host models.Host, seal *cryp
 
 	started := time.Now()
 	var dropSince time.Time
-	script := applyStartScript(id)
 	for attempt := 0; ; attempt++ {
 		seenBefore := seen
 		out, err := c.runPrivilegedStreaming(ctx, host, seal, script, emit)
@@ -153,8 +185,11 @@ func (c *Client) applyDetached(ctx context.Context, host models.Host, seal *cryp
 				DpkgStarted:  true,
 			}
 		case strings.Contains(out, "__PD_APPLY_NOTFOUND__"):
-			if attempt == 0 {
+			if attempt == 0 && !reattach {
 				return models.ApplyResult{}, errors.New("the upgrade could not be started on the host")
+			}
+			if attempt == 0 && reattach {
+				return models.ApplyResult{}, ErrApplyNotStarted
 			}
 			return models.ApplyResult{}, &ApplyInterruptedError{Underlying: errors.New("the upgrade's log is gone from the host")}
 		}
@@ -162,7 +197,7 @@ func (c *Client) applyDetached(ctx context.Context, host models.Host, seal *cryp
 			err = errors.New("the upgrade's output ended without a result")
 		}
 		// Before the upgrade started (auth, host key, escalation…) there is nothing to reattach to.
-		if attempt == 0 && seen == 0 && !retryableApplyErr(err) {
+		if attempt == 0 && seen == 0 && !reattach && !retryableApplyErr(err) {
 			return models.ApplyResult{}, err
 		}
 		if ctx.Err() != nil {

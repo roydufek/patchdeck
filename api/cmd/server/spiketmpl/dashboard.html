@@ -10,13 +10,12 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <script src="/assets/htmx.min.js"></script>
-<script src="/assets/sse.min.js"></script>
 {{template "themeinit"}}
 {{template "logscroll"}}
-{{template "bulkjs"}}
+{{template "tasksjs"}}
 {{template "styles"}}
 </head>
-<body>
+<body data-pdpage="dash">
 <div class="app wide">
   <header class="appbar">
     <div class="brand"><span class="mark"></span><b>Patchdeck</b></div>
@@ -49,32 +48,34 @@
        them (hosts clear) live, with no page reload. Counts (button + confirm .bulkn / .cf-* spans) are
        recomputed by updateBulk from the per-card bulk triggers — the exact set the server gates on. */}}
   <div class="bulkbar">
-    <button class="btn ghost" onclick="pdBulk('scan',{{.BulkConcurrency}},0,{{.WatchdogMs}})">{{template "i-scanall"}} Scan all</button>
+    <button class="btn ghost" hx-post="/tasks" hx-vals='{"kind":"scan","scope":"all"}' hx-target="#bulkmsg" hx-swap="innerHTML">{{template "i-scanall"}} Scan all</button>
     <button id="applyAllBtn" class="btn primary"{{if not (gt .Summary.Updates 0)}} hidden{{end}} onclick="document.getElementById('bulkconfirm').hidden=false;this.hidden=true">Apply all updates</button>
     <button id="rebootAllBtn" class="btn ghost"{{if not (gt .Summary.RebootHosts 0)}} hidden{{end}} onclick="document.getElementById('rebootconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Reboot all (<span class="bulkn">{{.Summary.RebootHosts}}</span>)</button>
     <button id="restartAllBtn" class="btn ghost"{{if not (gt .Summary.RestartHosts 0)}} hidden{{end}} onclick="document.getElementById('restartconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Restart all (<span class="bulkn">{{.Summary.RestartHosts}}</span>)</button>
   </div>
   <div id="bulkconfirm" class="applyconfirm" hidden style="margin-top:12px">
-    <p class="confirm-q">Apply updates on the <b><span class="cf-hosts">{{.Summary.NeedAttention}}</span> host(s)</b> that need them (<span class="cf-updates">{{.Summary.Updates}}</span> update(s) total)? Each host runs <span class="mono">apt upgrade</span> independently and streams on its own card{{if gt .BulkConcurrency 0}}, up to {{.BulkConcurrency}} at a time{{end}}{{if gt .ApplyStagger 0}}, staggered {{.ApplyStagger}}s apart{{end}}. The host Patchdeck runs on goes last, once the others finish.</p>
+    <p class="confirm-q">Apply updates on the <b><span class="cf-hosts">{{.Summary.NeedAttention}}</span> host(s)</b> that need them (<span class="cf-updates">{{.Summary.Updates}}</span> update(s) total)? Each host runs <span class="mono">apt upgrade</span> independently and streams on its own card{{if gt .BulkConcurrency 0}}, up to {{.BulkConcurrency}} at a time{{end}}{{if gt .ApplyStagger 0}}, staggered {{.ApplyStagger}}s apart{{end}}. The host Patchdeck runs on goes last, once the others finish. It keeps running if you leave this page.</p>
     <div class="c-actions">
-      <button class="btn danger" onclick="pdBulk('apply',{{.BulkConcurrency}},{{.ApplyStagger}}*1000,{{.WatchdogMs}});document.getElementById('bulkconfirm').hidden=true">Apply all now</button>
+      <button class="btn danger" hx-post="/tasks" hx-vals='{"kind":"apply","scope":"all"}' hx-target="#bulkmsg" hx-swap="innerHTML" onclick="document.getElementById('bulkconfirm').hidden=true">Apply all now</button>
       <button class="btn ghost" onclick="document.getElementById('bulkconfirm').hidden=true">Cancel</button>
     </div>
   </div>
   <div id="rebootconfirm" class="applyconfirm" hidden style="margin-top:12px">
     <p class="confirm-q">Reboot the <b><span class="bulkn">{{.Summary.RebootHosts}}</span> host(s)</b> that need it? Each reboots independently and shows its own recovery watch{{if gt .BulkConcurrency 0}}, up to {{.BulkConcurrency}} at a time{{end}}.{{if gt .Summary.RebootExcluded 0}} <b>{{.Summary.RebootExcluded}}</b> host{{if ne .Summary.RebootExcluded 1}}s are{{else}} is{{end}} held back (the Patchdeck host and any you&rsquo;ve protected).{{end}}</p>
     <div class="c-actions">
-      <button class="btn danger" onclick="pdBulk('reboot',{{.BulkConcurrency}},0,{{.WatchdogMs}});document.getElementById('rebootconfirm').hidden=true">Reboot all now</button>
+      <button class="btn danger" hx-post="/tasks" hx-vals='{"kind":"reboot","scope":"all"}' hx-target="#bulkmsg" hx-swap="innerHTML" onclick="document.getElementById('rebootconfirm').hidden=true">Reboot all now</button>
       <button class="btn ghost" onclick="document.getElementById('rebootconfirm').hidden=true">Cancel</button>
     </div>
   </div>
   <div id="restartconfirm" class="applyconfirm" hidden style="margin-top:12px">
     <p class="confirm-q">Restart flagged services on the <b><span class="bulkn">{{.Summary.RestartHosts}}</span> host(s)</b> that need only a restart? Patchdeck picks the safe method per unit &mdash; a clean restart where it&rsquo;s safe, needrestart&rsquo;s coordinated handler where a naive restart would sever the session &mdash; then re-scans each host to confirm{{if gt .BulkConcurrency 0}}, up to {{.BulkConcurrency}} at a time{{end}}. Hosts that need a reboot aren&rsquo;t included &mdash; reboot those instead.</p>
     <div class="c-actions">
-      <button class="btn danger" onclick="pdBulk('restart',{{.BulkConcurrency}},0,{{.WatchdogMs}});document.getElementById('restartconfirm').hidden=true">Restart all now</button>
+      <button class="btn danger" hx-post="/tasks" hx-vals='{"kind":"restart","scope":"all"}' hx-target="#bulkmsg" hx-swap="innerHTML" onclick="document.getElementById('restartconfirm').hidden=true">Restart all now</button>
       <button class="btn ghost" onclick="document.getElementById('restartconfirm').hidden=true">Cancel</button>
     </div>
   </div>
+  <div id="bulkmsg"></div>
+  {{range .Banners}}{{template "taskbanner" .}}{{end}}
 
   <div class="filters">
     <input class="search" id="hostsearch" type="search" placeholder="Search name or tag&hellip;" oninput="pdApply()" autocomplete="off">

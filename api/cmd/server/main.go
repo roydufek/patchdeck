@@ -33,6 +33,7 @@ import (
 	"patchdeck/api/internal/rbac"
 	"patchdeck/api/internal/scheduler"
 	"patchdeck/api/internal/sshx"
+	"patchdeck/api/internal/tasks"
 	"patchdeck/api/internal/tlsutil"
 
 	"github.com/go-chi/chi/v5"
@@ -50,6 +51,7 @@ type app struct {
 	coalescer    *notify.Coalescer // groups dashboard/API notifications in digest delivery
 	appKeys      *appkey.Store     // Patchdeck's own SSH keypair (auth_type "app_key")
 	sched        *scheduler.Engine
+	tasks        *tasks.Manager // server-side host actions (decision 0009)
 	limiter      *ratelimit.HostLimiter
 	loginLimiter *ratelimit.LoginLimiter
 	startTime    time.Time
@@ -136,6 +138,8 @@ func main() {
 	}
 	a.sched = scheduler.NewEngine(database, a.sshClient, seal, notifier, cfg.AppriseURL)
 	a.sched.SetSelfBootID(a.selfBootID)
+	a.tasks = a.newTaskManager()
+	a.sched.SetLocker(a.tasks) // a scheduled job and a manual action never overlap on one host
 	a.coalescer = notify.NewCoalescer(coalesceQuiet, coalesceMaxHold, func(d notify.Digest) {
 		if !d.Notable() { // e.g. only "Apply" on hosts that had nothing to apply
 			return
@@ -144,6 +148,9 @@ func main() {
 			log.Printf("notifications: digest send failed: %v", err)
 		}
 	})
+
+	// Pick up applies/reboots still running when Patchdeck last stopped (needs the notifier ready).
+	a.tasks.Recover()
 
 	// Best-effort purge of expired web sessions on startup.
 	_ = db.DeleteExpiredSessions(database)
@@ -245,18 +252,17 @@ func main() {
 		nr.Get("/hosts/{id}/card", a.nextCard)
 		nr.Get("/hosts/{id}/dot", a.nextDot)
 		nr.Get("/hosts/{id}/connline", a.nextConnLine)
-		nr.Get("/hosts/{id}/scanpanel", a.nextScanPanel)
-		nr.Get("/hosts/{id}/scan/stream", a.nextScanStream)
+		// Scan / apply / restart / reboot run as server-side tasks (spike_tasks.go, decision 0009).
+		nr.Post("/tasks", a.nextTaskStart)
+		nr.Post("/tasks/{id}/resume", a.nextTaskResume)
+		nr.Post("/tasks/{id}/dismiss", a.nextTaskDismiss)
+		nr.Get("/events", a.nextEvents)
+		nr.Get("/hosts/{id}/taskpanel", a.nextTaskPanel)
 		nr.Get("/hosts/{id}/apply-confirm", a.nextApplyConfirm)
-		nr.Get("/hosts/{id}/apply/panel", a.nextApplyPanel)
-		nr.Get("/hosts/{id}/apply/stream", a.nextApplyStream)
 		nr.Get("/hosts/{id}/restart-confirm", a.nextRestartConfirmSmart)
-		nr.Post("/hosts/{id}/restart", a.nextRestartSmart)
 		nr.Post("/hosts/{id}/exclude-bulk", a.nextToggleExcludeBulk)
 		nr.Post("/hosts/{id}/notifications", a.nextHostNotifPrefs)
 		nr.Get("/hosts/{id}/reboot-confirm", a.nextRebootConfirm)
-		nr.Post("/hosts/{id}/reboot", a.nextReboot)
-		nr.Get("/hosts/{id}/reboot-watch", a.nextRebootWatch)
 		nr.Get("/hosts/{id}/shutdown-confirm", a.nextShutdownConfirm)
 		nr.Post("/hosts/{id}/shutdown", a.nextShutdown)
 		nr.Get("/add", a.nextHostNew)
@@ -861,6 +867,10 @@ func (a *app) scanHost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
 		return
 	}
+	if !a.lockHost(w, id, "API scan") {
+		return
+	}
+	defer a.unlockHost(id)
 	host, err := db.GetHost(a.db, id)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "host not found"})
@@ -898,6 +908,10 @@ func (a *app) applyUpdates(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
 		return
 	}
+	if !a.lockHost(w, id, "API apply") {
+		return
+	}
+	defer a.unlockHost(id)
 	host, err := db.GetHost(a.db, id)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "host not found"})
@@ -931,6 +945,10 @@ func (a *app) restartServices(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
 		return
 	}
+	if !a.lockHost(w, id, "API restart") {
+		return
+	}
+	defer a.unlockHost(id)
 	host, err := db.GetHost(a.db, id)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "host not found"})
@@ -983,6 +1001,10 @@ func (a *app) restartAll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
 		return
 	}
+	if !a.lockHost(w, id, "API restart") {
+		return
+	}
+	defer a.unlockHost(id)
 	host, err := db.GetHost(a.db, id)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "host not found"})
@@ -1013,6 +1035,10 @@ func (a *app) restartDeferred(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
 		return
 	}
+	if !a.lockHost(w, id, "API restart") {
+		return
+	}
+	defer a.unlockHost(id)
 	host, err := db.GetHost(a.db, id)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "host not found"})
@@ -1159,6 +1185,10 @@ func (a *app) powerAction(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 429, map[string]any{"error": "rate limited", "retry_after_seconds": retryAfter})
 		return
 	}
+	if !a.lockHost(w, id, "API power") {
+		return
+	}
+	defer a.unlockHost(id)
 	host, err := db.GetHost(a.db, id)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "host not found"})
@@ -2030,7 +2060,12 @@ func (a *app) scanAllHosts(w http.ResponseWriter, _ *http.Request) {
 			results = append(results, scanAllResult{HostID: host.ID, HostName: host.Name, Success: false, Error: err.Error()})
 			continue
 		}
+		if a.tasks != nil && !a.tasks.TryLock(host.ID, "API scan") {
+			results = append(results, scanAllResult{HostID: host.ID, HostName: host.Name, Success: false, Error: "busy with another action"})
+			continue
+		}
 		res, err := a.sshClient.ScanHost(fullHost, a.secrets)
+		a.unlockHost(host.ID)
 		if err != nil {
 			results = append(results, scanAllResult{HostID: host.ID, HostName: host.Name, Success: false, Error: err.Error()})
 			continue
@@ -2426,6 +2461,10 @@ func sseWrite(w http.ResponseWriter, flusher http.Flusher, event string, data an
 
 func (a *app) scanHostStream(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !a.lockHost(w, id, "API scan") {
+		return
+	}
+	defer a.unlockHost(id)
 	host, err := db.GetHost(a.db, id)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "host not found"})
@@ -2491,6 +2530,10 @@ func (a *app) scanHostStream(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) applyStream(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !a.lockHost(w, id, "API apply") {
+		return
+	}
+	defer a.unlockHost(id)
 	host, err := db.GetHost(a.db, id)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "host not found"})

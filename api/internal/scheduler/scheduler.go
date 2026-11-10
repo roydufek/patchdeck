@@ -31,7 +31,18 @@ type Engine struct {
 	lastPurgeDate string            // "2006-01-02" — run once per day
 	sem           chan struct{}     // bounds concurrent job execution
 	selfBootID    string            // the machine Patchdeck runs on (see SetSelfBootID)
+	locker        Locker            // shared per-host busy lock (see SetLocker); nil = none
 }
+
+// Locker is the per-host busy lock shared with dashboard actions (internal/tasks), so a scheduled
+// job never runs on a host while a manual action is queued or running there, and vice versa.
+type Locker interface {
+	TryLock(hostID, what string) bool
+	Unlock(hostID string)
+}
+
+// SetLocker installs the shared per-host lock.
+func (e *Engine) SetLocker(l Locker) { e.locker = l }
 
 // SetSelfBootID tells the engine which managed host is the machine Patchdeck itself runs on
 // (matched by its scanned boot_id), so apply jobs patch that host LAST — its own network or
@@ -345,15 +356,31 @@ func (e *Engine) runJob(ctx context.Context, j models.Job) {
 			details = append(details, host.Name+": skipped (checks disabled)")
 			continue
 		}
-		var hostOK bool
-		switch mode {
-		case "scan":
-			hostOK = e.runScan(j, host, notes)
-		case "apply":
-			hostOK = e.runApply(j, host, notes)
-		case "scan_apply":
-			hostOK = e.runScanApply(j, host, notes)
-		default:
+		if !e.waitLock(host.ID, scheduledLabel(mode)) {
+			// Never a silent skip: it counts as failed, and the digest says so.
+			log.Printf("scheduler: job=%s host=%s still busy with another action after %s; not run", j.ID, host.Name, schedLockWait)
+			total++
+			failed++
+			details = append(details, host.Name+": not run (busy with another action)")
+			e.noteScanFailure(notes, host, fmt.Sprintf("Patchdeck: scheduled job skipped %s (busy with another action)", host.Name), "busy with another action; the scheduled job didn't run here")
+			continue
+		}
+		var hostOK, known bool
+		func() {
+			defer e.unlock(host.ID) // released even if the step panics (runJob recovers it)
+			known = true
+			switch mode {
+			case "scan":
+				hostOK = e.runScan(j, host, notes)
+			case "apply":
+				hostOK = e.runApply(j, host, notes)
+			case "scan_apply":
+				hostOK = e.runScanApply(j, host, notes)
+			default:
+				known = false
+			}
+		}()
+		if !known {
 			log.Printf("scheduler: job=%s unknown mode=%q", j.ID, j.Mode)
 			details = append(details, host.Name+": unknown mode")
 			continue
@@ -377,6 +404,45 @@ func (e *Engine) runJob(ctx context.Context, j models.Job) {
 	e.sendDigest(notes)
 	_ = db.PruneJobRuns(e.db, j.ID, 50)
 	_ = ctx
+}
+
+// How long a scheduled job waits for a host a manual action holds (an apply can take up to 2 h),
+// and how often it checks. Vars so tests can shorten them.
+var (
+	schedLockWait = 2 * time.Hour
+	schedLockPoll = 5 * time.Second
+)
+
+// waitLock claims the host for the job, waiting while a manual action holds it.
+func (e *Engine) waitLock(hostID, what string) bool {
+	if e.locker == nil {
+		return true
+	}
+	deadline := time.Now().Add(schedLockWait)
+	for !e.locker.TryLock(hostID, what) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(schedLockPoll)
+	}
+	return true
+}
+
+func (e *Engine) unlock(hostID string) {
+	if e.locker != nil {
+		e.locker.Unlock(hostID)
+	}
+}
+
+// scheduledLabel is what a busy card says while a scheduled job runs on the host.
+func scheduledLabel(mode string) string {
+	switch mode {
+	case "apply":
+		return "Scheduled apply"
+	case "scan_apply":
+		return "Scheduled scan + apply"
+	}
+	return "Scheduled scan"
 }
 
 func (e *Engine) finishRun(runID, status string, total, ok, failed int, detail string) {

@@ -148,6 +148,18 @@ func Migrate(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS restart_marks (host_id TEXT NOT NULL, service TEXT NOT NULL, boot_id TEXT NOT NULL, created_at DATETIME NOT NULL, PRIMARY KEY(host_id, service))`); err != nil {
 		return err
 	}
+	// tasks / task_hosts: server-side host actions (internal/tasks, decision 0009). A task is one
+	// action on one or more hosts; task_hosts tracks each host's progress so a Patchdeck restart can
+	// resume what's still running on a host (ref = e.g. the detached apply's id) and report the rest.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, kind TEXT NOT NULL, created_by TEXT NOT NULL DEFAULT '', created_at DATETIME NOT NULL, status TEXT NOT NULL, finished_at DATETIME)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS task_hosts (task_id TEXT NOT NULL, host_id TEXT NOT NULL, host_name TEXT NOT NULL DEFAULT '', seq INTEGER NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', ref TEXT NOT NULL DEFAULT '', started_at DATETIME, finished_at DATETIME, PRIMARY KEY(task_id, host_id))`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`); err != nil {
+		return err
+	}
 	// One-time (v2.9.2): forget marks learned before restarts were verified. Until then a restart
 	// that failed on the host (journald racing a systemd re-exec) was still marked, so the next scan
 	// wrongly promoted the unit to reboot-only. A mark costs at most one restart to relearn.

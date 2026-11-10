@@ -10,12 +10,12 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <script src="/assets/htmx.min.js"></script>
-<script src="/assets/sse.min.js"></script>
 {{template "themeinit"}}
 {{template "logscroll"}}
+{{template "tasksjs"}}
 {{template "styles"}}
 </head>
-<body>
+<body data-pdpage="detail" data-pdhost="{{.V.ID}}"{{if .V.Busy}} data-pdbusy="1"{{end}}>
 <div class="app">
   <div class="detail-top">
     <a class="back-btn" href="/"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg> All hosts</a>
@@ -32,13 +32,13 @@
     <div class="c-actions" style="margin-top:14px"><span class="pill warn">{{template "i-shield"}} Awaiting host-key approval</span></div>
     {{else}}
     <div class="c-actions" style="margin-top:14px">
-      {{if gt .V.UpdateCount 0}}<button class="btn primary" hx-get="/hosts/{{.V.ID}}/apply-confirm?ctx=detail" hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Apply {{.V.UpdateCount}}</button>
-      <button class="btn ghost" hx-get="/hosts/{{.V.ID}}/scanpanel?ctx=detail" hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Scan now</button>
-      {{else}}<button class="btn primary" hx-get="/hosts/{{.V.ID}}/scanpanel?ctx=detail" hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Scan now</button>{{end}}
+      {{if .V.Busy}}{{else if gt .V.UpdateCount 0}}<button class="btn primary" hx-get="/hosts/{{.V.ID}}/apply-confirm?ctx=detail" hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Apply {{.V.UpdateCount}}</button>
+      <button class="btn ghost" hx-post="/tasks" hx-vals='{"kind":"scan","host":"{{.V.ID}}"}' hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Scan now</button>
+      {{else}}<button class="btn primary" hx-post="/tasks" hx-vals='{"kind":"scan","host":"{{.V.ID}}"}' hx-target="#scanarea-{{.V.ID}}" hx-swap="innerHTML">Scan now</button>{{end}}
       {{if .V.HasScan}}<span class="age">scanned {{.V.ScanAge}}</span>{{end}}
     </div>
     {{end}}
-    <div id="scanarea-{{.V.ID}}"></div>
+    <div id="scanarea-{{.V.ID}}">{{if .V.Busy}}<div hx-get="/hosts/{{.V.ID}}/taskpanel" hx-trigger="load" hx-swap="outerHTML"></div>{{end}}</div>
     <div id="actionarea-{{.V.ID}}"></div>
   </div>
 

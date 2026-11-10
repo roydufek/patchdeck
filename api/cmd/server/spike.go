@@ -1,11 +1,8 @@
 package main
 
 import (
-	"context"
 	"embed"
-	"errors"
 	"fmt"
-	"html"
 	"html/template"
 	"log"
 	"net/http"
@@ -17,7 +14,6 @@ import (
 	"patchdeck/api/internal/auth"
 	"patchdeck/api/internal/db"
 	"patchdeck/api/internal/models"
-	"patchdeck/api/internal/sshx"
 )
 
 // --- The server-rendered UI (Go html/template + HTMX + SSE), served at the root. It reuses
@@ -83,6 +79,9 @@ type nextHostView struct {
 	RestartOnly     bool
 	IsSelf          bool // this host is the machine Patchdeck runs on (boot_id match)
 	ExcludeFromBulk bool // operator-protected: kept out of fleet-wide reboots
+	// Busy: the host is queued or running an action (a task, a scheduled job, the JSON API). The
+	// card then shows the action's panel instead of its buttons (decision 0009).
+	Busy bool
 }
 
 // resolveRestartBuckets splits a snapshot's needs-restart list into the restartable bucket and
@@ -193,6 +192,7 @@ func (a *app) nextHostViews() ([]nextHostView, error) {
 			v.IsSelf = a.isSelfHost(s)
 		}
 		v.State = deriveState(v)
+		v.Busy = a.hostBusy(h.ID)
 		out = append(out, v)
 	}
 	return out, nil
@@ -231,6 +231,7 @@ func (a *app) nextHostView(id string) (nextHostView, models.ScanSnapshot, error)
 		}
 	}
 	v.State = deriveState(v)
+	v.Busy = a.hostBusy(h.ID)
 	return v, snap, nil
 }
 
@@ -405,15 +406,10 @@ func (a *app) nextDashboard(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	// Fan-out watchdog: how long a host may hold a concurrency slot before it's force-freed, so a
-	// severed SSE stream (proxy idle-timeout, server restart) can never permanently stall the
-	// remaining hosts. A generous ceiling — the exec timeout plus a minute — since a real scan can
-	// legitimately run that long; it's a failsafe, not the normal completion path.
-	watchdogMs := a.cfg.ExecTimeout.Milliseconds() + 60000
 	a.renderNext(w, "dashboard.html", map[string]any{
 		"Summary": summary, "AllHosts": views, "HasTags": hasTags,
 		"BulkConcurrency": a.cfg.BulkConcurrency, "ApplyStagger": a.cfg.ApplyStaggerSeconds,
-		"WatchdogMs": watchdogMs,
+		"Banners": a.taskBanners(),
 	})
 }
 
@@ -436,15 +432,6 @@ func (a *app) nextCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.renderNext(w, "card", v)
-}
-
-func (a *app) nextScanPanel(w http.ResponseWriter, r *http.Request) {
-	h, err := db.GetHost(a.db, chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, "host not found", http.StatusNotFound)
-		return
-	}
-	a.renderNext(w, "scanpanel", map[string]string{"ID": h.ID, "Name": h.Name, "Ctx": r.URL.Query().Get("ctx")})
 }
 
 func (a *app) nextDot(w http.ResponseWriter, r *http.Request) {
@@ -483,57 +470,6 @@ func humanUptime(sec int64) string {
 	}
 }
 
-// nextScanStream runs a live scan and streams it as HTML fragments over SSE — the
-// server-rendered analogue of scanHostStream (which emits JSON for the SPA). It reuses the
-// same backend scan and persists the result, so the card refresh the browser fires on the
-// terminal `done` event reads fresh data. Closing the EventSource aborts the scan (ctx).
-func (a *app) nextScanStream(w http.ResponseWriter, r *http.Request) {
-	host, err := db.GetHost(a.db, chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, "host not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	line := func(class, text string) {
-		fmt.Fprintf(w, "event: line\ndata: <div class=\"ln %s\">%s</div>\n\n", class, html.EscapeString(text))
-		flusher.Flush()
-	}
-	done := func() {
-		fmt.Fprint(w, "event: done\ndata: {}\n\n")
-		flusher.Flush()
-	}
-
-	line("", "Connecting to "+host.Name+"…")
-	prev, _, _ := db.GetScanSnapshot(a.db, host.ID) // captured before the upsert, for new-updates detection
-	res, err := a.sshClient.ScanHostStreaming(r.Context(), host, a.secrets, func(l string) { line("", l) })
-	if err != nil {
-		if r.Context().Err() != nil {
-			return // client disconnected — scan aborted on purpose, record nothing
-		}
-		a.notifyScanFailure(host, fmt.Sprintf("Patchdeck: scan FAILED on %s (%v)", host.Name, err), err.Error())
-		_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_fail", fmt.Sprintf("Scan failed: %v", err))
-		line("err", "Scan failed: "+err.Error())
-		done()
-		return
-	}
-	_ = db.UpsertScanResult(a.db, host.ID, res)
-	_ = db.RecordActivity(a.db, host.ID, host.Name, "scan_ok", fmt.Sprintf("Scan completed: %d packages available", len(res.Packages)))
-	a.notifyIfNewUpdates(host, prev.Packages, res)
-	line("ok", fmt.Sprintf("Scan complete — %d update(s) available.", len(res.Packages)))
-	done()
-}
-
 // nextApplyConfirm renders the "are you sure?" step — applying is destructive.
 func (a *app) nextApplyConfirm(w http.ResponseWriter, r *http.Request) {
 	v, _, err := a.nextHostView(chi.URLParam(r, "id"))
@@ -544,68 +480,4 @@ func (a *app) nextApplyConfirm(w http.ResponseWriter, r *http.Request) {
 	a.renderNext(w, "applyconfirm", map[string]any{
 		"ID": v.ID, "Name": v.Name, "Count": v.UpdateCount, "Ctx": r.URL.Query().Get("ctx"),
 	})
-}
-
-func (a *app) nextApplyPanel(w http.ResponseWriter, r *http.Request) {
-	h, err := db.GetHost(a.db, chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, "host not found", http.StatusNotFound)
-		return
-	}
-	a.renderNext(w, "applypanel", map[string]string{"ID": h.ID, "Name": h.Name, "Ctx": r.URL.Query().Get("ctx")})
-}
-
-// nextApplyStream runs apt upgrade and streams it as HTML fragments, then re-scans so the
-// card/detail reflects the new (lower) update count. Reuses the same backend apply as the
-// SPA; apply runs on a background context (aborting mid-configure risks a half-configured
-// dpkg). The upgrade runs detached on the host; a dropped connection reattaches, and only a host
-// unreachable for 5 minutes is reported as interrupted (verify by re-scanning) rather than a failure.
-func (a *app) nextApplyStream(w http.ResponseWriter, r *http.Request) {
-	host, err := db.GetHost(a.db, chi.URLParam(r, "id"))
-	if err != nil {
-		http.Error(w, "host not found", http.StatusNotFound)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	line := func(class, text string) {
-		fmt.Fprintf(w, "event: line\ndata: <div class=\"ln %s\">%s</div>\n\n", class, html.EscapeString(text))
-		flusher.Flush()
-	}
-	done := func() {
-		fmt.Fprint(w, "event: done\ndata: {}\n\n")
-		flusher.Flush()
-	}
-
-	line("", "Applying updates on "+host.Name+"…")
-	res, err := a.sshClient.ApplyUpdatesStreaming(context.Background(), host, a.secrets, func(l string) { line("", l) })
-	if err != nil {
-		var interrupted *sshx.ApplyInterruptedError
-		if errors.As(err, &interrupted) {
-			_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_interrupted", fmt.Sprintf("Lost the running upgrade and couldn't reattach within 5 min (%d changed so far) — host may be rebooting or unreachable", interrupted.ChangedSoFar))
-			line("ok", "Couldn't reattach to the running upgrade for 5 minutes — the host may be rebooting or unreachable. Re-scan to verify.")
-		} else {
-			_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_fail", fmt.Sprintf("Apply failed: %v", err))
-			line("err", "Apply failed: "+err.Error())
-		}
-		done()
-		return
-	}
-	_ = db.RecordActivity(a.db, host.ID, host.Name, "apply_ok", fmt.Sprintf("Applied updates: %d packages changed", res.ChangedPackages))
-	line("ok", fmt.Sprintf("Applied — %d package(s) changed. Re-scanning…", res.ChangedPackages))
-	if sres, serr := a.sshClient.ScanHostStreaming(context.Background(), host, a.secrets, func(string) {}); serr == nil {
-		_ = db.UpsertScanResult(a.db, host.ID, sres)
-		line("ok", fmt.Sprintf("Now %d update(s) remaining.", len(sres.Packages)))
-	}
-	done()
 }
