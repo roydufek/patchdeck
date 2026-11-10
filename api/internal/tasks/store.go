@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"patchdeck/api/internal/db"
 )
 
 // The tables (tasks, task_hosts) are created in db.Migrate.
@@ -95,8 +97,11 @@ func (m *Manager) Recover() {
 		case p.status == StRunning && m.cfg.Resumable[p.kind] && p.ref != "":
 			resume[p.taskID] = append(resume[p.taskID], p)
 		case p.status == StRunning && p.kind == KindReboot:
-			// The reboot may or may not have been sent: never offer to send it again.
-			m.setHostStatus(p.taskID, p.host.ID, StFailed, "Patchdeck restarted while sending the reboot: check the host, then scan it", time.Time{}, now)
+			// The reboot may or may not have been sent: never offer to send it again. Say so in the
+			// activity log, where the operator will see it.
+			msg := "Patchdeck restarted while sending the reboot: check the host, then scan it"
+			m.setHostStatus(p.taskID, p.host.ID, StFailed, msg, time.Time{}, now)
+			_ = db.RecordActivity(m.db, p.host.ID, p.host.Name, "reboot_fail", msg)
 		case p.status == StRunning:
 			// A scan or restart cut off mid-run: running it again is safe.
 			m.setHostStatus(p.taskID, p.host.ID, StInterrupted, "cut off: Patchdeck restarted mid-run", time.Time{}, now)
@@ -137,6 +142,7 @@ type Summary struct {
 	OK        int
 	Failed    int
 	NotRun    int // interrupted
+	Resumed   int // handed to a new task by "Resume remaining" (its outcome shows there, not here)
 	Hosts     []string
 }
 
@@ -165,8 +171,10 @@ func (m *Manager) Interrupted() []Summary {
 				continue
 			}
 			switch st {
-			case StOK, StSkipped, StResumed:
+			case StOK, StSkipped:
 				out[i].OK++
+			case StResumed:
+				out[i].Resumed++
 			case StInterrupted:
 				out[i].NotRun++
 				out[i].Hosts = append(out[i].Hosts, name)

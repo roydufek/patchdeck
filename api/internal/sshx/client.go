@@ -893,10 +893,27 @@ func (c *Client) Power(host models.Host, seal *crypto.SealBox, action string) er
 	// We intentionally ignore the EOF error caused by the server closing the connection.
 	cmd := fmt.Sprintf("nohup setsid systemctl %s &>/dev/null & sleep 0.2", action)
 	_, err := c.runPrivileged(context.Background(), host, seal, cmd)
-	// A non-nil error here is often just the SSH connection dropping (expected on reboot).
-	// Return nil so callers treat the action as successfully initiated.
-	_ = err
+	// A dropped connection is expected (the host is going down), so that counts as initiated. But
+	// an error from BEFORE the command could run — host key, login, privilege escalation — means
+	// nothing was sent: report it, or a reboot would wait 15 minutes for a host that never went down.
+	if err != nil && powerNeverSent(err) {
+		return err
+	}
 	return nil
+}
+
+// powerNeverSent reports whether a power command's error means it never reached the host.
+func powerNeverSent(err error) bool {
+	if isHostKeyErr(err) {
+		return true
+	}
+	m := strings.ToLower(err.Error())
+	for _, s := range []string{"privilege escalation", "unable to authenticate", "permission denied", "no supported methods", "cipher too short", "decrypt"} {
+		if strings.Contains(m, s) {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckConnectivity verifies SSH reachability and, in the same round-trip, returns

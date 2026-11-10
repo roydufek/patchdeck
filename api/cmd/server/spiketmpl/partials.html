@@ -164,7 +164,6 @@
   .selfnote{display:flex;align-items:flex-start;gap:9px;margin:15px 0 4px;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:11px 13px;font-size:13px;color:var(--muted);line-height:1.5}
   .selfnote .ico{flex:none;width:16px;height:16px;margin-top:2px;color:var(--muted)}
   .bulkprotect{margin-top:12px}
-  .reboot-watch{display:flex;align-items:center;gap:9px;margin-top:10px;background:var(--surface-2);border-radius:12px;padding:11px 13px}
   .actionrow{display:flex;align-items:center;gap:8px;margin-top:11px;flex-wrap:wrap}
   .filters{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:18px 2px 2px}
   .search{flex:1;min-width:150px;font-family:var(--fsans);font-size:14px;color:var(--ink);background:var(--surface);border:1px solid var(--border-2);border-radius:11px;padding:9px 13px;outline:none;-webkit-appearance:none;appearance:none}
@@ -439,7 +438,6 @@
 {{define "logscroll"}}<script>
   function pdScrollLogs(){document.querySelectorAll('.scanlog').forEach(function(l){l.scrollTop=l.scrollHeight})}
   document.addEventListener('htmx:afterSwap',pdScrollLogs);
-  document.addEventListener('htmx:sseMessage',function(){requestAnimationFrame(pdScrollLogs)});
 </script>{{end}}
 
 {{/* tasksjs — follows the server's tasks (decision 0009). Actions run on the server; this page only
@@ -451,15 +449,16 @@
 {{define "tasksjs"}}<script>
 (function(){
   if(window.pdTasks) return; window.pdTasks=true;
-  var pend={};
+  var pend={}, busyNow={};
   function body(){ return document.body||{getAttribute:function(){return '';}}; }
   function loadPanel(h){
     var p=document.getElementById('task-'+h);
     if(p){ htmx.ajax('GET','/hosts/'+h+'/taskpanel',{target:p,swap:'outerHTML'}); return; }
     // No panel yet. The click that started this usually brings its own panel (into whatever area
-    // the button targets), so give that a moment before putting one in the host's scan area.
+    // the button targets), so give that a moment before putting one in the host's scan area — and
+    // only if the host is still busy (a brief lock, e.g. a shutdown, must not wipe the area).
     setTimeout(function(){
-      if(document.getElementById('task-'+h)) return;
+      if(document.getElementById('task-'+h) || !busyNow[h]) return;
       var a=document.getElementById('scanarea-'+h);
       if(a) htmx.ajax('GET','/hosts/'+h+'/taskpanel',{target:a,swap:'innerHTML'});
     },1500);
@@ -472,8 +471,14 @@
     loadPanel(h);
   }
   function finished(h){
-    delete pend[h];
-    if(body().getAttribute('data-pdpage')==='detail'){ if(h===body().getAttribute('data-pdhost')) location.reload(); return; }
+    delete pend[h]; delete busyNow[h];
+    // Detail page: reload only when it was showing this host's action (a panel, or it was rendered
+    // busy) — never for a brief lock like a shutdown, whose own result would be wiped.
+    if(body().getAttribute('data-pdpage')==='detail'){
+      var shown=document.querySelector('[data-pdtask="'+h+'"]') || body().getAttribute('data-pdbusy')==='1';
+      if(h===body().getAttribute('data-pdhost') && shown) location.reload();
+      return;
+    }
     var c=document.getElementById('card-'+h);
     if(c) htmx.ajax('GET','/hosts/'+h+'/card',{target:c,swap:'outerHTML'});
   }
@@ -501,18 +506,26 @@
   function connect(){
     var es=new EventSource('/events');
     es.addEventListener('sync',function(e){
-      var busy={}; (JSON.parse(e.data)||[]).forEach(function(h){ busy[h]=1; });
+      var d=JSON.parse(e.data)||{}, busy={}, seq=d.seq||{};
+      (d.busy||[]).forEach(function(h){ busy[h]=1; });
+      busyNow=Object.assign({},busy);
       // Catch up on everything that finished while this page wasn't listening: panels, cards
       // rendered busy, and a detail page rendered busy.
       [].slice.call(document.querySelectorAll('[data-pdtask]')).forEach(function(p){ var h=p.getAttribute('data-pdtask'); if(!busy[h]) finished(h); });
       [].slice.call(document.querySelectorAll('article.card[data-busy="1"]')).forEach(function(c){ var h=c.id.slice(5); if(!busy[h]) finished(h); });
       var dh=body().getAttribute('data-pdhost');
       if(dh && body().getAttribute('data-pdbusy')==='1' && !busy[dh]) location.reload();
-      Object.keys(busy).forEach(busyView);
+      // Busy hosts: (re)load a panel only if it's missing or behind (a reconnect after a lag).
+      Object.keys(busy).forEach(function(h){
+        var log=document.getElementById('tasklog-'+h);
+        if(log && parseInt(log.getAttribute('data-seq')||'0',10)>=(seq[h]||0)) return;
+        busyView(h);
+      });
     });
     es.addEventListener('state',function(e){
       var d=JSON.parse(e.data);
       if(d.s==='idle'){ finished(d.h); return; }
+      busyNow[d.h]=1;
       var p=document.getElementById('task-'+d.h);
       if(!p||p.getAttribute('data-st')!==d.s) busyView(d.h);
     });
@@ -531,7 +544,7 @@
 </div>{{else if .ID}}<i hidden data-pdidle="{{.ID}}"></i>{{end}}{{end}}
 
 {{/* tasknote — the one-line answer to a bulk start / resume. */}}
-{{define "tasknote"}}<div class="flash {{if .Err}}err{{else}}ok{{end}}" style="margin-top:12px">{{.Msg}}</div>{{end}}
+{{define "tasknote"}}<div class="flash {{if .Err}}err{{else}}ok{{end}}"{{if .Started}} data-started="1"{{end}} style="margin-top:12px">{{.Msg}}</div>{{end}}
 
 {{/* seljs — select mode (decision 0009 part 2). A capture-phase click handler turns a tap on a card
      into a toggle, so the card's own buttons and links never fire while selecting. The bar counts,
@@ -578,7 +591,7 @@
   // for on document: htmx swaps the note in (removing the button) before afterRequest fires.
   document.addEventListener('htmx:afterRequest',function(e){
     var t=e.detail.target, x=e.detail.xhr;
-    if(!on || !t || t.id!=='selconfirm' || !e.detail.successful || !x || x.responseText.indexOf('Started:')<0) return;
+    if(!on || !t || t.id!=='selconfirm' || !e.detail.successful || !x || x.responseText.indexOf('data-started="1"')<0) return;
     $('bulkmsg').innerHTML=x.responseText;
     window.pdSel.toggle();
   });
@@ -620,7 +633,7 @@
 {{/* taskbanner — a task a Patchdeck restart cut short. Nothing restarts on its own: the operator
      resumes the hosts that never ran, or dismisses it. */}}
 {{define "taskbanner"}}<div id="tb-{{.ID}}" class="applyconfirm" style="margin-top:12px">
-  <p class="confirm-q"><b>{{.What}}</b> was cut short by a Patchdeck restart: {{.OK}} done{{if .Failed}}, {{.Failed}} failed{{end}}, <b>{{.Not}} not run</b>{{if .Hosts}} ({{.Hosts}}){{end}}.</p>
+  <p class="confirm-q"><b>{{.What}}</b> was cut short by a Patchdeck restart: {{.OK}} done{{if .Failed}}, {{.Failed}} failed{{end}}{{if .Resumed}}, {{.Resumed}} resumed{{end}}, <b>{{.Not}} not run</b>{{if .Hosts}} ({{.Hosts}}){{end}}.</p>
   <div class="c-actions">
     <button class="btn primary" hx-post="/tasks/{{.ID}}/resume" hx-target="#tb-{{.ID}}" hx-swap="outerHTML">Resume remaining</button>
     <button class="btn ghost" hx-post="/tasks/{{.ID}}/dismiss" hx-target="#tb-{{.ID}}" hx-swap="outerHTML">Dismiss</button>
@@ -630,8 +643,8 @@
 {{/* pddash — the dashboard's live grouping/filtering. Cards render into a hidden flat pool;
      this groups them (by Status or Tag), sorts attention-first, applies the facet + search
      filter, and updates the summary counts — re-running whenever a card is swapped in after a
-     scan/apply/reboot, so a host re-files itself with no reload. While any card is still
-     streaming it filters in place (no reparenting) to avoid disturbing a live SSE panel. */}}
+     scan/apply/reboot, so a host re-files itself with no reload. Moving a card is always safe:
+     its task panel is plain DOM that tasksjs feeds by id (no per-panel stream to disturb). */}}
 {{define "pddash"}}<script>
 (function(){
   var POOL=document.getElementById('hostpool'), GROUPS=document.getElementById('hostgroups'), EMPTY=document.getElementById('emptymsg');
@@ -657,7 +670,6 @@
     return (a.getAttribute('data-name')||'').toLowerCase()<(b.getAttribute('data-name')||'').toLowerCase()?-1:1;
   }
   function groupKey(c,g){ if(g==='tags'){ var t=(c.getAttribute('data-tags')||'').trim(); return t?t.split(/\s+/)[0]:'Untagged'; } return c.getAttribute('data-attn')==='1'?'Needs attention':'Healthy'; }
-  function streaming(){ return !!document.querySelector('.scanpanel'); }
   function updateSummary(cards){
     var attn=0,upd=0,sec=0,e;
     cards.forEach(function(c){ if(c.getAttribute('data-attn')==='1') attn++; upd+=num(c,'data-updcount'); sec+=num(c,'data-seccount'); });
@@ -738,7 +750,6 @@
   }
   function render(){
     var st=readState();
-    if(streaming()){ [].slice.call(document.querySelectorAll('article.card')).forEach(function(c){ c.hidden=!matches(c,st.f,st.q); }); tidy(); return; }
     var all=[].slice.call(document.querySelectorAll('article.card'));
     all.forEach(function(c){ c.hidden=false; POOL.appendChild(c); });
     GROUPS.textContent='';
@@ -747,12 +758,10 @@
   }
   window.pdApply=render;
   window.pdChip=function(b){ var g=b.parentNode; g.querySelectorAll('.chip').forEach(function(c){c.classList.remove('active');}); b.classList.add('active'); render(); };
-  // Each card is swapped in when its scan/apply finishes; re-file just that card (its panel is
-  // gone, so moving it is safe) while any row-mates still stream. Once the fleet is idle, a full
-  // render tidies ordering. (Reboot leaves its card in place for the recovery watch — exempt.)
+  // Each card is swapped in when its action starts or finishes; re-file just that card.
   document.addEventListener('htmx:afterSettle',function(e){
     var t=e.target; if(!(t&&t.classList&&t.classList.contains('card'))) return;
-    if(streaming()){ placeCard(t); tidy(); } else render();
+    placeCard(t); tidy();
   });
   render();
 })();

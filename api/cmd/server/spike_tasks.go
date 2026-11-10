@@ -353,20 +353,20 @@ type selection struct {
 	HasSelf   bool     // Patchdeck's own host is included (an apply runs it last)
 }
 
-// names and ids of the hosts a selection runs on.
+// names ("a, b" for people) and ids ("x,y" for the form) of the hosts a selection runs on.
 func (s selection) names() string {
-	return joinHosts(s.Take, func(h tasks.HostRef) string { return h.Name })
+	return joinHosts(s.Take, ", ", func(h tasks.HostRef) string { return h.Name })
 }
 func (s selection) ids() string {
-	return joinHosts(s.Take, func(h tasks.HostRef) string { return h.ID })
+	return joinHosts(s.Take, ",", func(h tasks.HostRef) string { return h.ID })
 }
 
-func joinHosts(hs []tasks.HostRef, f func(tasks.HostRef) string) string {
+func joinHosts(hs []tasks.HostRef, sep string, f func(tasks.HostRef) string) string {
 	out := make([]string, len(hs))
 	for i, h := range hs {
 		out[i] = f(h)
 	}
-	return strings.Join(out, ", ")
+	return strings.Join(out, sep)
 }
 
 func (a *app) pickSelection(kind string, views []nextHostView, ids []string) selection {
@@ -422,7 +422,7 @@ func (a *app) nextSelConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := a.pickSelection(kind, views, strings.Split(r.FormValue("hosts"), ","))
-	v := selConfirmView{Kind: kind, Count: len(s.Take), IDs: strings.ReplaceAll(s.ids(), " ", ""), Names: s.names(),
+	v := selConfirmView{Kind: kind, Count: len(s.Take), IDs: s.ids(), Names: s.names(),
 		LeftOut: strings.Join(s.LeftOut, ", "), Protected: s.Protected}
 	n := len(s.Take)
 	switch kind {
@@ -503,7 +503,7 @@ func (a *app) nextTaskStart(w http.ResponseWriter, r *http.Request) {
 				msg += fmt.Sprintf(" %d busy host(s) left out.", skipped)
 			}
 		}
-		a.renderNext(w, "tasknote", map[string]any{"Msg": msg, "Err": err != nil})
+		a.renderNext(w, "tasknote", map[string]any{"Msg": msg, "Err": err != nil, "Started": n > 0 && err == nil})
 		return
 	}
 	host, err := db.GetHost(a.db, r.FormValue("host"))
@@ -568,8 +568,8 @@ func (a *app) nextTaskDismiss(w http.ResponseWriter, r *http.Request) {
 
 // taskBanner is one "cut short by a restart" notice on the dashboard.
 type taskBanner struct {
-	ID, What, Hosts string
-	OK, Failed, Not int
+	ID, What, Hosts          string
+	OK, Failed, Not, Resumed int
 }
 
 func (a *app) taskBanners() []taskBanner {
@@ -579,8 +579,8 @@ func (a *app) taskBanners() []taskBanner {
 	var out []taskBanner
 	for _, s := range a.tasks.Interrupted() {
 		out = append(out, taskBanner{
-			ID: s.ID, What: fmt.Sprintf("%s%s on %d host(s)", strings.ToUpper(s.Kind[:1]), s.Kind[1:], s.OK+s.Failed+s.NotRun),
-			Hosts: strings.Join(s.Hosts, ", "), OK: s.OK, Failed: s.Failed, Not: s.NotRun,
+			ID: s.ID, What: fmt.Sprintf("%s%s on %d host(s)", strings.ToUpper(s.Kind[:1]), s.Kind[1:], s.OK+s.Failed+s.NotRun+s.Resumed),
+			Hosts: strings.Join(s.Hosts, ", "), OK: s.OK, Failed: s.Failed, Not: s.NotRun, Resumed: s.Resumed,
 		})
 	}
 	return out
@@ -608,7 +608,7 @@ func (a *app) nextEvents(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 	fmt.Fprint(w, "retry: 2000\n\n") // reconnect quickly after a drop
-	send("sync", a.tasks.BusyHosts())
+	send("sync", map[string]any{"busy": a.tasks.BusyHosts(), "seq": a.tasks.Seqs()})
 	ping := time.NewTicker(25 * time.Second) // keeps proxies from closing an idle stream
 	defer ping.Stop()
 	for {

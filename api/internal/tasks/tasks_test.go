@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -325,7 +326,7 @@ func waitIdle2(t *testing.T, m *Manager, host string) {
 // page reconnects and resyncs) instead of silently missing a host's "idle".
 func TestLaggingSubscriberIsClosed(t *testing.T) {
 	m := New(testDB(t), Config{Steps: map[string]Step{KindScan: func(_ context.Context, r *Run) Result {
-		for i := 0; i < 2000; i++ {
+		for i := 0; i < 6000; i++ {
 			r.Line("", "x")
 		}
 		return Result{}
@@ -338,8 +339,126 @@ func TestLaggingSubscriberIsClosed(t *testing.T) {
 	for range ch { // must terminate: the channel was closed when it filled
 		n++
 	}
-	if n == 0 || n > 1024 {
-		t.Errorf("drained %d events, want 1..1024 then closed", n)
+	if n == 0 || n > 4096 {
+		t.Errorf("drained %d events, want 1..4096 then closed", n)
+	}
+}
+
+// trackPeak returns a step that records peak concurrency and holds each host for d.
+func trackPeak(running, peak *int32, d time.Duration, starts *[]string, mu *sync.Mutex) Step {
+	return func(_ context.Context, r *Run) Result {
+		n := atomic.AddInt32(running, 1)
+		for {
+			p := atomic.LoadInt32(peak)
+			if n <= p || atomic.CompareAndSwapInt32(peak, p, n) {
+				break
+			}
+		}
+		if starts != nil {
+			mu.Lock()
+			*starts = append(*starts, r.HostID)
+			mu.Unlock()
+		}
+		time.Sleep(d)
+		atomic.AddInt32(running, -1)
+		return Result{}
+	}
+}
+
+// TestCapIsFleetWide: two tasks side by side share PATCHDECK_BULK_CONCURRENCY (code review v2.11.1).
+func TestCapIsFleetWide(t *testing.T) {
+	var running, peak int32
+	m := New(testDB(t), Config{Concurrency: 2, Steps: map[string]Step{KindScan: trackPeak(&running, &peak, 40*time.Millisecond, nil, nil)}})
+	m.Start(KindScan, "t", []HostRef{{ID: "a1"}, {ID: "a2"}, {ID: "a3"}})
+	m.Start(KindScan, "t", []HostRef{{ID: "b1"}, {ID: "b2"}, {ID: "b3"}})
+	waitIdle(t, m)
+	if peak > 2 {
+		t.Errorf("peak %d across two tasks, cap 2", peak)
+	}
+}
+
+// TestSelfWaitsForOtherTasks: Patchdeck's own host doesn't start its apply while ANOTHER task (or
+// a scheduled job) is still applying elsewhere.
+func TestSelfWaitsForOtherTasks(t *testing.T) {
+	old := selfWaitPoll
+	selfWaitPoll = 5 * time.Millisecond
+	defer func() { selfWaitPoll = old }()
+	var mu sync.Mutex
+	var order []string
+	release := make(chan struct{})
+	step := func(_ context.Context, r *Run) Result {
+		mu.Lock()
+		order = append(order, "start:"+r.HostID)
+		mu.Unlock()
+		if r.HostID == "other" {
+			<-release
+		}
+		mu.Lock()
+		order = append(order, "end:"+r.HostID)
+		mu.Unlock()
+		return Result{}
+	}
+	m := New(testDB(t), Config{IsSelf: func(id string) bool { return id == "self" }, Steps: map[string]Step{KindApply: step}})
+	m.Start(KindApply, "t", []HostRef{{ID: "other"}})
+	time.Sleep(20 * time.Millisecond)
+	m.Start(KindApply, "t", []HostRef{{ID: "self"}})
+	time.Sleep(60 * time.Millisecond)
+	mu.Lock()
+	early := strings.Contains(strings.Join(order, ","), "start:self")
+	mu.Unlock()
+	if early {
+		t.Fatalf("self started while another task was applying: %v", order)
+	}
+	// A scheduled apply (TryLock) counts too: hold one, release the other task.
+	if !m.TryLock("sched", "Scheduled apply") {
+		t.Fatal("lock sched")
+	}
+	close(release)
+	time.Sleep(60 * time.Millisecond)
+	mu.Lock()
+	early = strings.Contains(strings.Join(order, ","), "start:self")
+	mu.Unlock()
+	if early {
+		t.Fatalf("self started while a scheduled apply held another host: %v", order)
+	}
+	m.Unlock("sched")
+	waitIdle(t, m)
+	if got := strings.Join(order, ","); got != "start:other,end:other,start:self,end:self" {
+		t.Errorf("order %s", got)
+	}
+}
+
+// TestTwoSelfHostsDontDeadlock: hosts that both count as "self" (a lab: every container shares
+// the kernel's boot_id) must not wait on each other.
+func TestTwoSelfHostsDontDeadlock(t *testing.T) {
+	old := selfWaitPoll
+	selfWaitPoll = 5 * time.Millisecond
+	defer func() { selfWaitPoll = old }()
+	m := New(testDB(t), Config{Concurrency: 1, IsSelf: func(string) bool { return true },
+		Steps: map[string]Step{KindApply: func(context.Context, *Run) Result { time.Sleep(10 * time.Millisecond); return Result{} }}})
+	m.Start(KindApply, "t", hostsN(2))
+	waitIdle(t, m)
+}
+
+// TestResumeIgnoresCapAndStagger: upgrades already running on hosts are followed at once after a
+// restart — no slot, no stagger.
+func TestResumeIgnoresCapAndStagger(t *testing.T) {
+	d := testDB(t)
+	now := time.Now().UTC()
+	if _, err := d.Exec(`INSERT INTO tasks(id,kind,created_by,created_at,status) VALUES('ta','apply','t',?,'running')`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO task_hosts(task_id,host_id,host_name,seq,status,ref) VALUES('ta','h0','h0',0,'running','r0'),('ta','h1','h1',1,'running','r1'),('ta','h2','h2',2,'running','r2')`); err != nil {
+		t.Fatal(err)
+	}
+	var running, peak int32
+	m := New(d, Config{Concurrency: 1, ApplyStagger: time.Hour, Steps: map[string]Step{KindApply: trackPeak(&running, &peak, 40*time.Millisecond, nil, nil)},
+		Resumable: map[string]bool{KindApply: true}})
+	start := time.Now()
+	m.Recover()
+	waitIdle(t, m)
+	if peak != 3 || time.Since(start) > 2*time.Second {
+		t.Errorf("peak %d in %s; want all 3 reattached at once", peak, time.Since(start))
 	}
 }
 

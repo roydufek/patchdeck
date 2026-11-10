@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -135,14 +136,28 @@ type Manager struct {
 	mu    sync.Mutex
 	hosts map[string]*HostState
 	subs  map[chan Event]struct{}
+
+	// The cap, the apply stagger and "Patchdeck's own host last" hold across ALL tasks, so two
+	// selections running side by side still respect them (code review, v2.11.1).
+	slots     chan struct{} // nil = no cap
+	staggerMu sync.Mutex
+	lastApply time.Time
 }
+
+// selfWaitPoll is how often Patchdeck's own host re-checks whether other applies are still
+// running before it starts its own. A var so tests can shorten it.
+var selfWaitPoll = 2 * time.Second
 
 // New builds a manager. Call Recover once at startup, before serving.
 func New(db *sql.DB, cfg Config) *Manager {
 	if cfg.IsSelf == nil {
 		cfg.IsSelf = func(string) bool { return false }
 	}
-	return &Manager{db: db, cfg: cfg, hosts: map[string]*HostState{}, subs: map[chan Event]struct{}{}}
+	m := &Manager{db: db, cfg: cfg, hosts: map[string]*HostState{}, subs: map[chan Event]struct{}{}}
+	if cfg.Concurrency > 0 {
+		m.slots = make(chan struct{}, cfg.Concurrency)
+	}
+	return m
 }
 
 // Labels for the in-progress panel.
@@ -213,42 +228,97 @@ func (m *Manager) order(kind string, hosts []HostRef) (rest, last []HostRef) {
 	return
 }
 
-// run executes a task's hosts. refs (resume only) maps host → the ref to resume with.
+// run executes a task's hosts. refs (resume only) maps host → the ref to resume with: that work is
+// already running on the host, so it's followed at once — no slot, no stagger, no waiting.
 func (m *Manager) run(taskID, kind string, hosts []HostRef, total int, refs map[string]string) {
-	rest, last := m.order(kind, hosts)
-	limit := m.cfg.Concurrency
-	if limit < 1 || limit > len(hosts) {
-		limit = len(hosts)
-	}
-	sem := make(chan struct{}, limit)
+	resume := refs != nil
 	var wg sync.WaitGroup
-	var lastStart time.Time
 	launch := func(h HostRef) {
-		sem <- struct{}{}
-		if kind == KindApply && m.cfg.ApplyStagger > 0 && !lastStart.IsZero() {
-			if wait := m.cfg.ApplyStagger - time.Since(lastStart); wait > 0 {
-				time.Sleep(wait)
-			}
+		if !resume {
+			m.acquire(kind)
 		}
-		lastStart = time.Now()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
+			if !resume {
+				defer m.release()
+			}
 			m.runHost(taskID, kind, h, total, refs[h.ID])
 		}()
 	}
+	if resume {
+		for _, h := range hosts {
+			launch(h)
+		}
+		wg.Wait()
+		m.finishTask(taskID)
+		return
+	}
+	rest, last := m.order(kind, hosts)
 	for _, h := range rest {
 		launch(h)
 	}
 	if len(last) > 0 {
-		wg.Wait() // Patchdeck's own host starts only once every other host has finished
+		wg.Wait() // Patchdeck's own host starts only once every other host has finished…
 		for _, h := range last {
+			m.waitOtherApplies(h.ID) // …including other tasks' and scheduled applies
 			launch(h)
 		}
 	}
 	wg.Wait()
 	m.finishTask(taskID)
+}
+
+// acquire takes a fleet-wide slot (the cap) and, for an apply, keeps the fleet-wide stagger.
+func (m *Manager) acquire(kind string) {
+	if m.slots != nil {
+		m.slots <- struct{}{}
+	}
+	if kind != KindApply || m.cfg.ApplyStagger <= 0 {
+		return
+	}
+	m.staggerMu.Lock()
+	defer m.staggerMu.Unlock()
+	if !m.lastApply.IsZero() {
+		if wait := m.cfg.ApplyStagger - time.Since(m.lastApply); wait > 0 {
+			time.Sleep(wait)
+		}
+	}
+	m.lastApply = time.Now()
+}
+
+func (m *Manager) release() {
+	if m.slots != nil {
+		<-m.slots
+	}
+}
+
+// waitOtherApplies blocks until no other host is applying updates — in any task, a scheduled job
+// or the API — so Patchdeck's own host (its docker/network restarts) can't cut them mid-run.
+// Other self-hosts are ignored: they wait the same way, so waiting on each other would deadlock
+// (in prod only one host is self; in a lab every container shares the kernel's boot_id).
+func (m *Manager) waitOtherApplies(selfID string) {
+	for {
+		var applying []string
+		m.mu.Lock()
+		for id, st := range m.hosts {
+			if id != selfID && strings.Contains(strings.ToLower(st.Kind), KindApply) {
+				applying = append(applying, id)
+			}
+		}
+		m.mu.Unlock()
+		busy := false
+		for _, id := range applying { // IsSelf reads the DB: outside the lock
+			if !m.cfg.IsSelf(id) {
+				busy = true
+				break
+			}
+		}
+		if !busy {
+			return
+		}
+		time.Sleep(selfWaitPoll)
+	}
 }
 
 func (m *Manager) runHost(taskID, kind string, h HostRef, total int, ref string) {
@@ -357,6 +427,18 @@ func (m *Manager) BusyHosts() []string {
 	return out
 }
 
+// Seqs returns each busy host's latest line number, so a reconnecting page reloads only the
+// panels that fell behind.
+func (m *Manager) Seqs() map[string]int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make(map[string]int, len(m.hosts))
+	for id, st := range m.hosts {
+		out[id] = st.seq
+	}
+	return out
+}
+
 // Log returns a busy host's recent output.
 func (m *Manager) Log(hostID string) []Line {
 	m.mu.Lock()
@@ -372,7 +454,7 @@ func (m *Manager) Log(hostID string) []Line {
 // (its buffer fills) has its channel CLOSED rather than silently missing events: its stream ends,
 // the page's EventSource reconnects, and the fresh "sync" puts every card right again.
 func (m *Manager) Subscribe() (<-chan Event, func()) {
-	ch := make(chan Event, 1024)
+	ch := make(chan Event, 4096)
 	m.mu.Lock()
 	m.subs[ch] = struct{}{}
 	m.mu.Unlock()

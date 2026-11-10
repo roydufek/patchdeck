@@ -21,7 +21,7 @@ import (
 // probeConnectivity). Handlers are named nextXxx for historical reasons — the UI was first
 // built under a /next path prefix (v2.0–v2.2) before it took over the root in v2.3.
 
-//go:embed spikeassets/htmx.min.js spikeassets/sse.min.js spikeassets/logo.png
+//go:embed spikeassets/htmx.min.js spikeassets/logo.png
 //go:embed spikeassets/icon-512.png spikeassets/icon-maskable-192.png spikeassets/icon-maskable-512.png spikeassets/apple-touch-icon.png
 var nextAssets embed.FS
 
@@ -265,8 +265,6 @@ func (a *app) nextAsset(w http.ResponseWriter, r *http.Request) {
 	switch chi.URLParam(r, "file") {
 	case "htmx.min.js":
 		path, ctype = "spikeassets/htmx.min.js", "application/javascript; charset=utf-8"
-	case "sse.min.js":
-		path, ctype = "spikeassets/sse.min.js", "application/javascript; charset=utf-8"
 	case "logo.png", "icon-512.png", "icon-maskable-192.png", "icon-maskable-512.png", "apple-touch-icon.png":
 		path, ctype = "spikeassets/"+chi.URLParam(r, "file"), "image/png"
 	default:
