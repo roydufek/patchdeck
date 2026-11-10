@@ -176,9 +176,26 @@
   .chip:hover{border-color:var(--accent)}
   .chip.active{background:var(--accent-bg);color:var(--accent-2);border-color:var(--accent)}
   .cnt-q{background:var(--surface-2)!important;color:var(--muted)!important}
-  .bulkbar{display:flex;gap:9px;margin:13px 2px 0}
+  .bulkbar{display:flex;flex-wrap:wrap;gap:9px;margin:13px 2px 0}
   .bulkbar .btn{display:inline-flex;align-items:center;gap:7px}
   .bulkbar .btn .ico{width:15px;height:15px}
+  /* Selection (v2.11): in select mode a tap on a card toggles it instead of acting on it. */
+  body.selecting article.card{cursor:pointer;-webkit-user-select:none;user-select:none}
+  article.card.sel{outline:2px solid var(--accent);outline-offset:2px}
+  article.card.sel::after{content:"\2713";position:absolute;top:-9px;right:-9px;width:24px;height:24px;border-radius:50%;background:var(--accent);color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:var(--card-shadow)}
+  .btn.on{background:var(--accent-bg);color:var(--accent-2);border-color:var(--accent)}
+  .selbar{position:fixed;left:0;right:0;bottom:0;z-index:50;background:var(--surface);border-top:1px solid var(--border);box-shadow:0 -12px 30px -18px rgba(0,0,0,.35);padding:10px 16px calc(10px + env(safe-area-inset-bottom))}
+  .selbar .in{max-width:1060px;margin:0 auto;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .selbar .seln{font-weight:600;font-size:14px;margin-right:auto}
+  .selbar .btn{padding:8px 12px}
+  .selbar .btn:disabled{opacity:.4;cursor:default;border-color:var(--border-2)}
+  .selbar .acts{flex-basis:100%;display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+  .selbar .acts .btn{padding:9px 4px;justify-content:center;display:inline-flex;gap:5px}
+  .selbar .acts .c{font-family:var(--fmono);font-size:12px;opacity:.85}
+  @media (min-width:760px){.selbar .acts{flex-basis:auto;display:flex}.selbar .acts .btn{padding:8px 12px}}
+  #selconfirm{flex-basis:100%}
+  #selconfirm .applyconfirm{margin:0 0 6px;border-top:0;padding-top:0}
+  body.selecting{padding-bottom:150px}
 
   .nav{display:flex;align-items:center;gap:7px}
   .iconbtn{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:11px;border:1px solid var(--border);background:var(--surface);color:var(--ink-2);box-shadow:var(--card-shadow);transition:border-color .15s,color .15s;cursor:pointer}
@@ -385,7 +402,7 @@
 
 {{define "dot"}}<span id="dot-{{.HostID}}" class="dot {{if .Connected}}dot-up{{else}}dot-down{{end}}" title="{{if .Connected}}reachable{{else}}unreachable{{end}}" aria-label="{{if .Connected}}reachable{{else}}unreachable{{end}}"></span>{{end}}
 
-{{define "card"}}<article id="card-{{.ID}}" class="card {{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}attn{{else}}calm{{end}}" data-name="{{.Name}}" data-addr="{{.Address}}" data-tags="{{range .Tags}}{{.}} {{end}}" data-attn="{{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}1{{else}}0{{end}}" data-updates="{{if gt .UpdateCount 0}}1{{else}}0{{end}}" data-reboot="{{if .RebootAny}}1{{else}}0{{end}}" data-restart="{{if .RestartOnly}}1{{else}}0{{end}}" data-updcount="{{.UpdateCount}}" data-seccount="{{.SecurityCount}}"{{if .Busy}} data-busy="1"{{end}}>
+{{define "card"}}<article id="card-{{.ID}}" class="card {{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}attn{{else}}calm{{end}}" data-name="{{.Name}}" data-addr="{{.Address}}" data-tags="{{range .Tags}}{{.}} {{end}}" data-attn="{{if or .PendingKey .Unverified (and .HasScan (or (gt .UpdateCount 0) .NeedsReboot (gt .RestartCount 0)))}}1{{else}}0{{end}}" data-updates="{{if gt .UpdateCount 0}}1{{else}}0{{end}}" data-reboot="{{if .RebootAny}}1{{else}}0{{end}}" data-restart="{{if .RestartOnly}}1{{else}}0{{end}}" data-updcount="{{.UpdateCount}}" data-seccount="{{.SecurityCount}}"{{if .Busy}} data-busy="1"{{end}}{{if .IsSelf}} data-self="1"{{end}}{{if or .Unverified .PendingKey}} data-locked="1"{{end}} data-fits="{{.Fits}}">
   <div class="c-top">
     <span class="host">
       <span id="dot-{{.ID}}" class="dot dot-checking" hx-get="/hosts/{{.ID}}/dot" hx-trigger="load" hx-swap="outerHTML" aria-label="checking connectivity"></span>
@@ -515,6 +532,90 @@
 
 {{/* tasknote — the one-line answer to a bulk start / resume. */}}
 {{define "tasknote"}}<div class="flash {{if .Err}}err{{else}}ok{{end}}" style="margin-top:12px">{{.Msg}}</div>{{end}}
+
+{{/* seljs — select mode (decision 0009 part 2). A capture-phase click handler turns a tap on a card
+     into a toggle, so the card's own buttons and links never fire while selecting. The bar counts,
+     per action, how many selected hosts it applies to (the same rules the server applies; the
+     server's confirm has the final say and names what it leaves out). The selection survives card
+     refreshes (re-painted after every swap). */}}
+{{define "seljs"}}<script>
+(function(){
+  var sel=new Set(), on=false;
+  function $(id){ return document.getElementById(id); }
+  function cards(){ return [].slice.call(document.querySelectorAll('article.card')); }
+  // Only cards the current filter + search show count (a hidden card is never acted on unseen).
+  function shown(c){ return !c.hidden && !!c.closest('#hostgroups'); }
+  // The server decides what fits (data-fits); a busy host fits nothing until it's done.
+  function fits(c,k){ return c.getAttribute('data-busy')!=='1' && (' '+(c.getAttribute('data-fits')||'')+' ').indexOf(' '+k+' ')>=0; }
+  function picked(){ var out=[]; sel.forEach(function(h){ var c=$('card-'+h); if(!c){ sel.delete(h); return; } if(shown(c)) out.push(c); }); return out; }
+  function closeConfirm(){ var c=$('selconfirm'); if(c) c.innerHTML=''; }
+  function paint(){
+    cards().forEach(function(c){ c.classList.toggle('sel', on && sel.has(c.id.slice(5))); });
+    var p=picked(), cnt={scan:0,apply:0,restart:0,reboot:0};
+    p.forEach(function(c){ Object.keys(cnt).forEach(function(k){ if(fits(c,k)) cnt[k]++; }); });
+    var hid=sel.size-p.length;
+    if($('seln')) $('seln').textContent=p.length+' selected'+(hid>0?' ('+hid+' hidden by the filter)':'');
+    document.querySelectorAll('#selbar [data-k]').forEach(function(b){
+      var k=b.getAttribute('data-k'); b.querySelector('.c').textContent=cnt[k]; b.disabled=!cnt[k];
+    });
+  }
+  window.pdSel={
+    toggle:function(){
+      on=!on; document.body.classList.toggle('selecting',on);
+      $('selbar').hidden=!on; $('selectBtn').classList.toggle('on',on);
+      $('selectBtn').textContent=on?'Done selecting':'Select';
+      if(!on) sel.clear(); closeConfirm(); paint();
+    },
+    all:function(){ cards().forEach(function(c){ if(shown(c)) sel.add(c.id.slice(5)); }); closeConfirm(); paint(); },
+    clear:function(){ sel.clear(); closeConfirm(); paint(); },
+    act:function(k){
+      var ids=picked().map(function(c){ return c.id.slice(5); }).join(',');
+      htmx.ajax('GET','/tasks/confirm?kind='+k+'&hosts='+encodeURIComponent(ids),{target:'#selconfirm',swap:'innerHTML'});
+    }
+  };
+  // After "… now": the note lands in the bar. Only a real start closes select mode (the note then
+  // moves up to the dashboard); anything else stays in the bar with the selection intact. Listened
+  // for on document: htmx swaps the note in (removing the button) before afterRequest fires.
+  document.addEventListener('htmx:afterRequest',function(e){
+    var t=e.detail.target, x=e.detail.xhr;
+    if(!on || !t || t.id!=='selconfirm' || !e.detail.successful || !x || x.responseText.indexOf('Started:')<0) return;
+    $('bulkmsg').innerHTML=x.responseText;
+    window.pdSel.toggle();
+  });
+  document.addEventListener('click',function(e){
+    if(!on||!e.target.closest) return;
+    var c=e.target.closest('article.card'); if(!c) return;
+    e.preventDefault(); e.stopPropagation();
+    var h=c.id.slice(5); if(sel.has(h)) sel.delete(h); else sel.add(h);
+    closeConfirm(); paint();
+  },true);
+  // Esc closes an open confirm first, then select mode; never while typing in a field.
+  document.addEventListener('keydown',function(e){
+    if(!on || e.key!=='Escape') return;
+    if(e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    if($('selconfirm') && $('selconfirm').innerHTML.trim()){ closeConfirm(); return; }
+    window.pdSel.toggle();
+  });
+  // Re-paint when a card is swapped in (a refresh drops its .sel class) or the filter changes.
+  document.addEventListener('htmx:afterSettle',function(e){
+    var t=e.target; if(on && t && t.classList && t.classList.contains('card')) paint();
+  });
+  document.addEventListener('input',function(e){ if(on && e.target && e.target.id==='hostsearch') setTimeout(paint,0); });
+  document.addEventListener('click',function(e){ if(on && e.target.closest && e.target.closest('#facetchips,#groupchips')) setTimeout(paint,0); });
+})();
+</script>{{end}}
+
+{{/* selconfirm — the confirm for an action on the selected cards (server-built: the final word). */}}
+{{define "selconfirm"}}<div class="applyconfirm">
+  {{if .Count}}<p class="confirm-q">{{.Lead}} <b>{{.Count}} host{{if ne .Count 1}}s{{end}}</b>: {{.Names}}?{{if .Note}} {{.Note}}{{end}}</p>
+  {{$w := .Warn}}{{range .Protected}}<p class="confirm-q" style="color:var(--warn)">&#9888; <b>{{.}}</b> {{$w}}</p>{{end}}
+  {{else}}<p class="confirm-q">None of the selected hosts can be {{.None}} right now.</p>{{end}}
+  {{if .LeftOut}}<p class="formsub" style="margin:0 0 10px">Left out: {{.LeftOut}}.</p>{{end}}
+  <div class="c-actions">
+    {{if .Count}}<button class="btn {{if eq .Kind "scan"}}primary{{else}}danger{{end}}" hx-post="/tasks" hx-vals='{"kind":"{{.Kind}}","scope":"selected","hosts":"{{.IDs}}"}' hx-target="#selconfirm" hx-swap="innerHTML">{{.Button}}</button>{{end}}
+    <button class="btn ghost" onclick="document.getElementById('selconfirm').innerHTML=''">Cancel</button>
+  </div>
+</div>{{end}}
 
 {{/* taskbanner — a task a Patchdeck restart cut short. Nothing restarts on its own: the operator
      resumes the hosts that never ran, or dismisses it. */}}

@@ -276,30 +276,176 @@ func (a *app) stepReboot(ctx context.Context, r *tasks.Run) tasks.Result {
 	return tasks.Result{Status: tasks.StOK, Summary: "rebooted"}
 }
 
+// actionFits reports whether kind applies to a host, and if not, why (for the selection confirm).
+// Protection is NOT checked here: "… all" leaves protected hosts out, an explicit selection keeps
+// them (with a warning, decision 0009). Patchdeck's own host never gets a bulk reboot or restart.
+func actionFits(kind string, v nextHostView) (bool, string) {
+	if v.Unverified || v.PendingKey {
+		return false, "awaiting key approval"
+	}
+	switch kind {
+	case tasks.KindScan:
+		return true, ""
+	case tasks.KindApply:
+		if v.UpdateCount == 0 {
+			return false, "no updates"
+		}
+		return true, ""
+	case tasks.KindReboot:
+		switch {
+		case v.IsSelf:
+			return false, "Patchdeck's own host"
+		case !v.RebootAny:
+			return false, "doesn't need a reboot"
+		}
+		return true, ""
+	case tasks.KindRestart:
+		switch {
+		case v.IsSelf:
+			return false, "Patchdeck's own host"
+		case v.RebootAny:
+			return false, "needs a reboot instead"
+		case !v.RestartOnly:
+			return false, "nothing to restart"
+		}
+		return true, ""
+	}
+	return false, "unknown action"
+}
+
+// protectedFrom: a protected host ("Protect from Reboot all") is kept out of these actions when
+// they run fleet-wide, and flagged when the operator selects it on purpose.
+func protectedFrom(kind string, v nextHostView) bool {
+	return v.ExcludeFromBulk && (kind == tasks.KindReboot || kind == tasks.KindRestart)
+}
+
+// fitsList is the card's data-fits: the actions a selection may run on this host (the select bar
+// counts from it, so the browser never re-derives the rules).
+func fitsList(v nextHostView) string {
+	var out []string
+	for _, k := range []string{tasks.KindScan, tasks.KindApply, tasks.KindRestart, tasks.KindReboot} {
+		if ok, _ := actionFits(k, v); ok {
+			out = append(out, k)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 // eligibleForAll returns the hosts an "… all" button acts on: exactly the set the dashboard's
 // counts show (the self-host and protected hosts never get a fleet-wide reboot or restart).
 func eligibleForAll(kind string, views []nextHostView) []tasks.HostRef {
 	var out []tasks.HostRef
 	for _, v := range views {
-		if v.Unverified || v.PendingKey {
+		if ok, _ := actionFits(kind, v); !ok || protectedFrom(kind, v) {
 			continue
 		}
-		ok := false
-		switch kind {
-		case tasks.KindScan:
-			ok = true
-		case tasks.KindApply:
-			ok = v.UpdateCount > 0
-		case tasks.KindReboot:
-			ok = v.RebootAny && !v.IsSelf && !v.ExcludeFromBulk
-		case tasks.KindRestart:
-			ok = v.RestartOnly && !v.IsSelf && !v.ExcludeFromBulk
-		}
-		if ok {
-			out = append(out, tasks.HostRef{ID: v.ID, Name: v.Name})
-		}
+		out = append(out, tasks.HostRef{ID: v.ID, Name: v.Name})
 	}
 	return out
+}
+
+// selection is what an action on the selected cards would do.
+type selection struct {
+	Take      []tasks.HostRef
+	Protected []string // protected hosts included on purpose (reboot / restart)
+	LeftOut   []string // "name (why)"
+	Busy      int      // selected hosts left out only because they're busy
+	HasSelf   bool     // Patchdeck's own host is included (an apply runs it last)
+}
+
+// names and ids of the hosts a selection runs on.
+func (s selection) names() string {
+	return joinHosts(s.Take, func(h tasks.HostRef) string { return h.Name })
+}
+func (s selection) ids() string {
+	return joinHosts(s.Take, func(h tasks.HostRef) string { return h.ID })
+}
+
+func joinHosts(hs []tasks.HostRef, f func(tasks.HostRef) string) string {
+	out := make([]string, len(hs))
+	for i, h := range hs {
+		out[i] = f(h)
+	}
+	return strings.Join(out, ", ")
+}
+
+func (a *app) pickSelection(kind string, views []nextHostView, ids []string) selection {
+	want := map[string]bool{}
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			want[id] = true
+		}
+	}
+	var s selection
+	for _, v := range views {
+		if !want[v.ID] {
+			continue
+		}
+		ok, why := actionFits(kind, v)
+		if ok && v.Busy {
+			ok, why = false, "busy right now"
+			s.Busy++
+		}
+		if !ok {
+			s.LeftOut = append(s.LeftOut, v.Name+" ("+why+")")
+			continue
+		}
+		s.Take = append(s.Take, tasks.HostRef{ID: v.ID, Name: v.Name})
+		if protectedFrom(kind, v) {
+			s.Protected = append(s.Protected, v.Name)
+		}
+		if v.IsSelf {
+			s.HasSelf = true
+		}
+	}
+	return s
+}
+
+// selConfirmView is the confirm for an action on the selected cards.
+type selConfirmView struct {
+	Kind, Lead, Note, Warn, Button, None, IDs, Names, LeftOut string
+	Count                                                     int
+	Protected                                                 []string
+}
+
+// nextSelConfirm renders the confirm for an action on the selected cards: the hosts it runs on,
+// the protected ones it includes on purpose, and what it leaves out and why.
+func (a *app) nextSelConfirm(w http.ResponseWriter, r *http.Request) {
+	kind, ok := taskKind(r.FormValue("kind"))
+	if !ok {
+		http.Error(w, "unknown action", http.StatusBadRequest)
+		return
+	}
+	views, err := a.nextHostViews()
+	if err != nil {
+		http.Error(w, "failed to load hosts", http.StatusInternalServerError)
+		return
+	}
+	s := a.pickSelection(kind, views, strings.Split(r.FormValue("hosts"), ","))
+	v := selConfirmView{Kind: kind, Count: len(s.Take), IDs: strings.ReplaceAll(s.ids(), " ", ""), Names: s.names(),
+		LeftOut: strings.Join(s.LeftOut, ", "), Protected: s.Protected}
+	n := len(s.Take)
+	switch kind {
+	case tasks.KindScan:
+		v.Lead, v.Button, v.None = "Scan", fmt.Sprintf("Scan %d now", n), "scanned"
+	case tasks.KindApply:
+		v.Lead, v.Button, v.None = "Apply updates on", fmt.Sprintf("Apply on %d now", n), "updated"
+		v.Note = "Each runs apt upgrade and may restart services."
+		if s.HasSelf {
+			v.Note += " The host Patchdeck runs on goes last."
+		}
+	case tasks.KindRestart:
+		v.Lead, v.Button, v.None = "Restart flagged services on", fmt.Sprintf("Restart %d now", n), "restarted"
+		v.Warn = "is protected from fleet-wide actions: its services restart under whatever runs there."
+	case tasks.KindReboot:
+		v.Lead, v.Button, v.None = "Reboot", fmt.Sprintf("Reboot %d now", n), "rebooted"
+		v.Note = "Each drops offline for a minute or two; Patchdeck watches each one come back."
+		v.Warn = "is protected from fleet reboots: whatever runs there (watchers, monitoring) is down until it's back."
+	}
+	if p := len(s.Protected); p > 0 {
+		v.Button += fmt.Sprintf(" (incl. %d protected)", p)
+	}
+	a.renderNext(w, "selconfirm", v)
 }
 
 func taskKind(s string) (string, bool) {
@@ -318,32 +464,42 @@ func (a *app) taskUser(r *http.Request) string {
 }
 
 // nextTaskStart starts an action. host=<id> → that host; the response is its progress panel.
-// scope=all → every eligible host; the response is a one-line note, and the cards follow /events.
+// scope=all → every eligible host; scope=selected + hosts=<ids> → the selected cards it applies to.
+// For both, the response is a one-line note, and the cards follow /events.
 func (a *app) nextTaskStart(w http.ResponseWriter, r *http.Request) {
 	kind, ok := taskKind(r.FormValue("kind"))
 	if !ok {
 		http.Error(w, "unknown action", http.StatusBadRequest)
 		return
 	}
-	if r.FormValue("scope") == "all" {
+	if scope := r.FormValue("scope"); scope == "all" || scope == "selected" {
 		views, err := a.nextHostViews()
 		if err != nil {
 			http.Error(w, "failed to load hosts", http.StatusInternalServerError)
 			return
 		}
-		hosts := eligibleForAll(kind, views)
+		var hosts []tasks.HostRef
+		busySel := 0
+		if scope == "all" {
+			hosts = eligibleForAll(kind, views)
+		} else {
+			s := a.pickSelection(kind, views, strings.Split(r.FormValue("hosts"), ","))
+			hosts, busySel = s.Take, s.Busy
+		}
 		_, n, err := a.tasks.Start(kind, a.taskUser(r), hosts)
 		msg := ""
 		switch {
 		case err != nil:
 			msg = "Couldn't start: " + err.Error()
+		case n == 0 && len(hosts) == 0 && busySel > 0:
+			msg = "Those hosts are busy right now. Try again once they finish."
 		case n == 0 && len(hosts) == 0:
 			msg = "Nothing to do: no host needs this right now."
 		case n == 0:
 			msg = "Every eligible host is already busy."
 		default:
 			msg = fmt.Sprintf("Started: %s on %d host(s). It keeps running if you leave this page.", kind, n)
-			if skipped := len(hosts) - n; skipped > 0 {
+			if skipped := len(hosts) - n + busySel; skipped > 0 {
 				msg += fmt.Sprintf(" %d busy host(s) left out.", skipped)
 			}
 		}

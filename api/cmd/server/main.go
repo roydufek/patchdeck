@@ -254,6 +254,7 @@ func main() {
 		nr.Get("/hosts/{id}/connline", a.nextConnLine)
 		// Scan / apply / restart / reboot run as server-side tasks (spike_tasks.go, decision 0009).
 		nr.Post("/tasks", a.nextTaskStart)
+		nr.Get("/tasks/confirm", a.nextSelConfirm) // confirm for an action on the selected cards (v2.11)
 		nr.Post("/tasks/{id}/resume", a.nextTaskResume)
 		nr.Post("/tasks/{id}/dismiss", a.nextTaskDismiss)
 		nr.Get("/events", a.nextEvents)

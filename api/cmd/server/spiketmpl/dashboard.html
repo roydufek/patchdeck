@@ -13,6 +13,7 @@
 {{template "themeinit"}}
 {{template "logscroll"}}
 {{template "tasksjs"}}
+{{template "seljs"}}
 {{template "styles"}}
 </head>
 <body data-pdpage="dash">
@@ -49,6 +50,7 @@
        recomputed by updateBulk from the per-card bulk triggers — the exact set the server gates on. */}}
   <div class="bulkbar">
     <button class="btn ghost" hx-post="/tasks" hx-vals='{"kind":"scan","scope":"all"}' hx-target="#bulkmsg" hx-swap="innerHTML">{{template "i-scanall"}} Scan all</button>
+    <button id="selectBtn" class="btn ghost" onclick="pdSel.toggle()">Select</button>
     <button id="applyAllBtn" class="btn primary"{{if not (gt .Summary.Updates 0)}} hidden{{end}} onclick="document.getElementById('bulkconfirm').hidden=false;this.hidden=true">Apply all updates</button>
     <button id="rebootAllBtn" class="btn ghost"{{if not (gt .Summary.RebootHosts 0)}} hidden{{end}} onclick="document.getElementById('rebootconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Reboot all (<span class="bulkn">{{.Summary.RebootHosts}}</span>)</button>
     <button id="restartAllBtn" class="btn ghost"{{if not (gt .Summary.RestartHosts 0)}} hidden{{end}} onclick="document.getElementById('restartconfirm').hidden=false;this.hidden=true">{{template "reboot"}} Restart all (<span class="bulkn">{{.Summary.RestartHosts}}</span>)</button>
@@ -97,6 +99,21 @@
   <div id="hostpool" hidden>{{range .AllHosts}}{{template "card" .}}{{end}}</div>
   <div id="hostgroups"></div>
   <p class="empty" id="emptymsg" hidden>No hosts match your filter.</p>
+  {{/* Select mode's action bar: counts are how many selected hosts each action applies to. */}}
+  <div id="selbar" class="selbar" hidden>
+    <div class="in">
+      <div id="selconfirm"></div>
+      <span class="seln" id="seln">0 selected</span>
+      <button class="btn ghost" onclick="pdSel.all()">All shown</button>
+      <button class="btn ghost" onclick="pdSel.clear()">Clear</button>
+      <div class="acts">
+        <button class="btn ghost" data-k="scan" onclick="pdSel.act('scan')" disabled>Scan <span class="c">0</span></button>
+        <button class="btn primary" data-k="apply" onclick="pdSel.act('apply')" disabled>Apply <span class="c">0</span></button>
+        <button class="btn ghost" data-k="restart" onclick="pdSel.act('restart')" disabled>Restart <span class="c">0</span></button>
+        <button class="btn ghost" data-k="reboot" onclick="pdSel.act('reboot')" disabled>Reboot <span class="c">0</span></button>
+      </div>
+    </div>
+  </div>
   {{else}}
   <p class="empty">No hosts yet — hit the + to add your first one.</p>
   {{end}}

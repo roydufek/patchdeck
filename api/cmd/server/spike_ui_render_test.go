@@ -164,6 +164,69 @@ func TestTaskPanel(t *testing.T) {
 	mustContain(t, "taskbanner", banner, "2 not run")
 }
 
+// TestPickSelection: an explicitly selected PROTECTED host is included in a reboot (and named, for
+// the warning); Patchdeck's own host, busy hosts, unapproved hosts and hosts the action doesn't fit
+// are left out WITH the reason (decision 0009).
+func TestPickSelection(t *testing.T) {
+	views := []nextHostView{
+		{ID: "rb", Name: "rb", RebootAny: true},
+		{ID: "prot", Name: "prot", RebootAny: true, ExcludeFromBulk: true},
+		{ID: "self", Name: "self", RebootAny: true, IsSelf: true, UpdateCount: 2},
+		{ID: "busy", Name: "busy", RebootAny: true, Busy: true},
+		{ID: "new", Name: "new", RebootAny: true, PendingKey: true},
+		{ID: "ok", Name: "ok"},
+		{ID: "notsel", Name: "notsel", RebootAny: true},
+	}
+	ids := []string{"rb", "prot", "self", "busy", "new", "ok"}
+	s := (&app{}).pickSelection(tasks.KindReboot, views, ids)
+	if got := s.names(); got != "rb, prot" {
+		t.Errorf("reboot takes %s, want rb,prot", got)
+	}
+	if strings.Join(s.Protected, ",") != "prot" {
+		t.Errorf("protected = %v, want [prot]", s.Protected)
+	}
+	left := strings.Join(s.LeftOut, "; ")
+	for _, want := range []string{"self (Patchdeck's own host)", "busy (busy right now)", "new (awaiting key approval)", "ok (doesn't need a reboot)"} {
+		if !strings.Contains(left, want) {
+			t.Errorf("left out %q missing %q", left, want)
+		}
+	}
+	// Apply on the self host is fine (it runs last); restart never touches a reboot-needing host.
+	if a := (&app{}).pickSelection(tasks.KindApply, views, ids); a.names() != "self" || !a.HasSelf {
+		t.Errorf("apply takes %v (self=%v), want [self]", a.names(), a.HasSelf)
+	}
+	if r := (&app{}).pickSelection(tasks.KindRestart, views, ids); len(r.Take) != 0 {
+		t.Errorf("restart should take nothing here, took %v", r.names())
+	}
+	if s.Busy != 1 {
+		t.Errorf("busy count %d, want 1", s.Busy)
+	}
+	// The card carries what fits it, so the select bar never re-derives the rules.
+	for v, want := range map[string]string{
+		fitsList(nextHostView{UpdateCount: 2}):                         "scan apply",
+		fitsList(nextHostView{RebootAny: true, IsSelf: true}):          "scan",
+		fitsList(nextHostView{RebootAny: true, ExcludeFromBulk: true}): "scan reboot",
+		fitsList(nextHostView{RestartOnly: true}):                      "scan restart",
+		fitsList(nextHostView{PendingKey: true, UpdateCount: 1}):       "",
+	} {
+		if v != want {
+			t.Errorf("fitsList = %q, want %q", v, want)
+		}
+	}
+	mustContain(t, "card/fits", exec(t, "card", nextHostView{ID: "x", Name: "x", HasScan: true, UpdateCount: 1, Fits: "scan apply"}), `data-fits="scan apply"`)
+
+	out := exec(t, "selconfirm", selConfirmView{Kind: "reboot", Lead: "Reboot", Count: 2, Names: "rb, prot", IDs: "rb,prot",
+		Button: "Reboot 2 now (incl. 1 protected)", Protected: []string{"prot"}, Warn: "is protected from fleet reboots: whatever runs there (watchers, monitoring) is down until it's back.",
+		LeftOut: "self (Patchdeck's own host)"})
+	mustContain(t, "selconfirm", out, "Reboot 2 now (incl. 1 protected)")
+	mustContain(t, "selconfirm", out, "<b>prot</b> is protected from fleet reboots")
+	mustContain(t, "selconfirm", out, `"scope":"selected","hosts":"rb,prot"`)
+	mustContain(t, "selconfirm", out, "Left out: self (Patchdeck&#39;s own host)")
+	none := exec(t, "selconfirm", selConfirmView{Kind: "apply", None: "updated", LeftOut: "ok (no updates)"})
+	mustContain(t, "selconfirm/none", none, "None of the selected hosts can be updated right now.")
+	mustNotContain(t, "selconfirm/none", none, "hx-post")
+}
+
 // TestEligibleForAll: the "… all" buttons act on exactly the hosts the dashboard counts. The
 // Patchdeck host and protected hosts never get a fleet-wide reboot or restart, and unapproved
 // hosts get nothing.

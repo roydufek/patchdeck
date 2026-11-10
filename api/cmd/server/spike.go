@@ -82,6 +82,8 @@ type nextHostView struct {
 	// Busy: the host is queued or running an action (a task, a scheduled job, the JSON API). The
 	// card then shows the action's panel instead of its buttons (decision 0009).
 	Busy bool
+	// Fits: the actions a card selection may run on this host (data-fits; actionFits decides).
+	Fits string
 }
 
 // resolveRestartBuckets splits a snapshot's needs-restart list into the restartable bucket and
@@ -193,6 +195,7 @@ func (a *app) nextHostViews() ([]nextHostView, error) {
 		}
 		v.State = deriveState(v)
 		v.Busy = a.hostBusy(h.ID)
+		v.Fits = fitsList(v)
 		out = append(out, v)
 	}
 	return out, nil
@@ -232,6 +235,7 @@ func (a *app) nextHostView(id string) (nextHostView, models.ScanSnapshot, error)
 	}
 	v.State = deriveState(v)
 	v.Busy = a.hostBusy(h.ID)
+	v.Fits = fitsList(v)
 	return v, snap, nil
 }
 
