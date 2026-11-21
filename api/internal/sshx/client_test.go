@@ -1,6 +1,9 @@
 package sshx
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseScanOutput_Packages(t *testing.T) {
 	raw := "Listing...\n" +
@@ -124,5 +127,35 @@ func TestLastLines(t *testing.T) {
 	}
 	if got := lastLines("   ", 3); got != "" {
 		t.Fatalf("lastLines(blank) = %q, want empty", got)
+	}
+}
+
+func TestApplyStartScriptSupportsRPMManagers(t *testing.T) {
+	s := applyStartScript("20261103T051200Z-abcd1234")
+
+	for _, want := range []string{
+		"dnf -y --refresh upgrade",
+		"yum -y update",
+		"apt-get -y",
+		"__PD_UNSUPPORTED_PM__",
+		"nohup setsid sh -c",
+		"tail -n +1",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("apply script lacks %q", want)
+		}
+	}
+}
+
+func TestCountChangedPackages(t *testing.T) {
+	log := `Setting up nginx (1.2)
+Setting up openssl (3.0)
+Upgraded: kernel
+Installed: curl
+Updated: systemd
+`
+
+	if got := countChangedPackages(log); got != 5 {
+		t.Fatalf("countChangedPackages = %d, want 5", got)
 	}
 }
